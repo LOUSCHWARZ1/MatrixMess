@@ -355,7 +355,10 @@ final class MatrixService {
     ) -> MatrixWorkspace {
         let isIncrementalSync = storedSession.syncToken != nil
         let joinedRooms = response.rooms?.join ?? [:]
-        let leftRoomIDs = Set(response.rooms?.leave?.keys ?? [String]())
+        let leftRoomIDs = Set(
+            response.rooms?.leave?.keys
+            ?? Dictionary<String, MatrixSyncResponse.LeftRoom>().keys
+        )
         let parsedRooms = joinedRooms.map { roomID, room in
             ParsedRoomSnapshot(
                 roomID: roomID,
