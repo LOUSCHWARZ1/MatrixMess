@@ -616,9 +616,7 @@ final class AppState: ObservableObject {
             let granted = try await notificationService.requestAuthorization()
             pushNotificationsAuthorized = granted
             if granted {
-                await MainActor.run {
-                    notificationService.registerForRemoteNotifications()
-                }
+                await notificationService.registerForRemoteNotifications()
             }
         } catch {
             errorMessage = error.localizedDescription

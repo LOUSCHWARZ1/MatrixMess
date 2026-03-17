@@ -91,7 +91,7 @@ final class MatrixCallService: NSObject, ObservableObject {
     }
 }
 
-@preconcurrency extension MatrixCallService: CXProviderDelegate {
+extension MatrixCallService: CXProviderDelegate {
     nonisolated func providerDidReset(_ provider: CXProvider) {
         Task { @MainActor in
             await webRTCEngine.endCurrentCall()
