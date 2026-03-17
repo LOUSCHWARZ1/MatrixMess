@@ -1,0 +1,49 @@
+name: MatrixMess
+
+options:
+  createIntermediateGroups: true
+
+packages:
+  MatrixRustSDK:
+    url: https://github.com/matrix-org/matrix-rust-components-swift.git
+    branch: main
+
+settings:
+  base:
+    SWIFT_VERSION: 5.10
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+
+targets:
+  MatrixMess:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources/App
+    dependencies:
+      - package: MatrixRustSDK
+    settings:
+      base:
+        PRODUCT_NAME: MatrixMess
+        PRODUCT_BUNDLE_IDENTIFIER: dev.matrixmess.app
+        CODE_SIGN_ENTITLEMENTS: Sources/App/MatrixMess.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: MatrixMess
+        INFOPLIST_KEY_CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: dev.matrixmess.app.oauth
+            CFBundleURLSchemes:
+              - dev.matrixmess.app
+              - msauth.dev.matrixmess.app
+        INFOPLIST_KEY_NSCalendarsUsageDescription: MatrixMess nutzt Kalenderzugriff, um Termine aus Chats in verbundene Kalender einzutragen.
+        INFOPLIST_KEY_NSCameraUsageDescription: MatrixMess nutzt die Kamera, damit du Bilder und Videos direkt in Chats teilen kannst.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: MatrixMess nutzt das Mikrofon fuer Calls und Sprachnachrichten.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: MatrixMess nutzt die Fotomediathek, damit du Bilder und Videos auswaehlen kannst.
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: MatrixMess kann Medien lokal sichern, wenn du das in den Einstellungen aktivierst.
+        INFOPLIST_KEY_UIBackgroundModes:
+          - fetch
+          - processing
+          - remote-notification
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES

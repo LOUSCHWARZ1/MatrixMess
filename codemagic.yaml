@@ -1,0 +1,46 @@
+workflows:
+  ios-simulator-validation:
+    name: iOS Simulator Validation
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+      - name: Generate Xcode project
+        script: |
+          cd ios/MatrixMess
+          xcodegen generate
+      - name: Build for iOS Simulator
+        script: |
+          cd ios/MatrixMess
+          xcodebuild \
+            -project MatrixMess.xcodeproj \
+            -scheme MatrixMess \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+  ios-unsigned-ipa:
+    name: iOS Unsigned IPA for AltStore
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+      - name: Build unsigned IPA
+        script: |
+          cd ios/MatrixMess
+          sh scripts/build-unsigned-ipa.sh
+    artifacts:
+      - ios/MatrixMess/build/export/MatrixMess-unsigned.ipa

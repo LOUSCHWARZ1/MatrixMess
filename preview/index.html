@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MatrixMess Preview</title>
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+    <div class="scene">
+        <div class="scene__orb scene__orb--blue"></div>
+        <div class="scene__orb scene__orb--green"></div>
+        <div class="scene__grid"></div>
+
+        <main class="preview-layout">
+            <section class="brief-card">
+                <p class="eyebrow">WEB PREVIEW</p>
+                <h1>MatrixMess</h1>
+                <p class="brief-copy">
+                    This browser mockup now behaves more like a real messenger app: bottom tabs,
+                    space switching, better back flow, richer messages and a settings area inspired
+                    by modern messaging apps with organization, privacy and media controls.
+                </p>
+
+                <div class="feature-list">
+                    <div class="feature-item">
+                        <span class="feature-item__label">Navigation</span>
+                        <p>Chats, Calls, Calendar and Settings live in separate tabs with cleaner back behavior.</p>
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-item__label">Messages</span>
+                        <p>Voice notes, images, video cards, files and actions hidden behind chat-first menus.</p>
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-item__label">Calendar</span>
+                        <p>Plan events from chats and connect Apple Calendar, Google or Outlook.</p>
+                    </div>
+                </div>
+
+                <div class="brief-actions">
+                    <button id="resetPreview" class="secondary-action" type="button">Reset Demo</button>
+                    <span class="hint-text">
+                        Use the app tabs, browser back and in-app back. The preview state tracks navigation.
+                    </span>
+                </div>
+            </section>
+
+            <section class="device-stage">
+                <div class="phone-frame">
+                    <div class="phone-notch"></div>
+
+                    <div class="phone-screen">
+                        <header class="status-bar">
+                            <span>9:41</span>
+                            <div class="status-bar__icons">
+                                <span>5G</span>
+                                <span>100%</span>
+                            </div>
+                        </header>
+
+                        <div class="app-shell">
+                            <section id="screenChats" class="screen screen--active"></section>
+                            <section id="screenCalls" class="screen screen--hidden"></section>
+                            <section id="screenCalendar" class="screen screen--hidden"></section>
+                            <section id="screenSettings" class="screen screen--hidden"></section>
+                        </div>
+
+                        <nav id="bottomNav" class="bottom-nav"></nav>
+
+                        <aside id="detailPanel" class="detail-panel detail-panel--hidden" aria-live="polite">
+                            <header class="detail-header">
+                                <button id="closeDetail" class="ghost-button" type="button">Back</button>
+                                <div id="detailHeaderMeta" class="detail-header__meta"></div>
+                                <button id="detailPinButton" class="ghost-button ghost-button--accent" type="button">
+                                    Main
+                                </button>
+                            </header>
+
+                            <section id="detailHero" class="detail-hero"></section>
+                            <section id="messageList" class="message-list"></section>
+
+                            <section id="composerTools" class="composer-tools composer-tools--hidden">
+                                <button data-attach="voice" type="button">Voice</button>
+                                <button data-attach="image" type="button">Photo</button>
+                                <button data-attach="video" type="button">Video</button>
+                                <button data-attach="file" type="button">File</button>
+                                <button data-schedule-chat-event type="button">Plan</button>
+                            </section>
+
+                            <form id="composerForm" class="composer-bar">
+                                <button id="toggleComposerTools" class="ghost-button" type="button">+</button>
+                                <input id="composerInput" type="text" placeholder="Message">
+                                <button id="sendMessage" type="submit">Send</button>
+                            </form>
+                        </aside>
+
+                        <section id="forwardSheet" class="sheet sheet--hidden" aria-live="polite">
+                            <div class="sheet__backdrop"></div>
+                            <div class="sheet__card">
+                                <header class="sheet__header">
+                                    <div>
+                                        <p class="sheet__eyebrow">FORWARD</p>
+                                        <h3>Choose a target chat</h3>
+                                    </div>
+                                    <button id="closeForwardSheet" class="ghost-button" type="button">Close</button>
+                                </header>
+                                <div id="forwardTargets" class="forward-targets"></div>
+                            </div>
+                        </section>
+
+                        <div id="toast" class="toast toast--hidden"></div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="./data.js"></script>
+    <script src="./ui.js"></script>
+    <script src="./app.js"></script>
+</body>
+</html>

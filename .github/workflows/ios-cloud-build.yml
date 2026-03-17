@@ -1,0 +1,91 @@
+name: iOS Cloud Build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "ios/MatrixMess/**"
+      - ".github/workflows/ios-cloud-build.yml"
+      - "codemagic.yaml"
+  pull_request:
+    paths:
+      - "ios/MatrixMess/**"
+      - ".github/workflows/ios-cloud-build.yml"
+      - "codemagic.yaml"
+  workflow_dispatch:
+    inputs:
+      build_unsigned_ipa:
+        description: "Zusatzlich eine unsigned IPA fuer AltStore erzeugen"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  validate-simulator:
+    name: Validate iOS Simulator Build
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ios/MatrixMess
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode Version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Generate Project
+        run: xcodegen generate
+
+      - name: Build for iOS Simulator
+        run: |
+          xcodebuild \
+            -project MatrixMess.xcodeproj \
+            -scheme MatrixMess \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+  build-unsigned-ipa:
+    name: Build Unsigned IPA
+    if: github.event_name == 'workflow_dispatch' && inputs.build_unsigned_ipa
+    runs-on: macos-latest
+    needs:
+      - validate-simulator
+    defaults:
+      run:
+        shell: bash
+        working-directory: ios/MatrixMess
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode Version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Build Unsigned IPA
+        run: sh scripts/build-unsigned-ipa.sh
+
+      - name: Upload Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MatrixMess-unsigned-ipa
+          path: ios/MatrixMess/build/export/MatrixMess-unsigned.ipa
+          if-no-files-found: error
