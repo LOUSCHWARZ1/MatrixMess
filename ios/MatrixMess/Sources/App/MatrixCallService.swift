@@ -79,12 +79,12 @@ final class MatrixCallService: NSObject, ObservableObject {
     }
 
     private func request(_ transaction: CXTransaction) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             controller.request(transaction) { error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
-                    continuation.resume()
+                    continuation.resume(returning: ())
                 }
             }
         }
