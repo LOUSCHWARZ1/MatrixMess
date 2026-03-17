@@ -76,7 +76,7 @@ actor MatrixNotificationService {
             let appDisplayName = "MatrixMess"
             let deviceDisplayName = "iPhone"
             let profileTag = "matrixmess-ios"
-            let lang = Locale.current.language.languageCode?.identifier ?? "en"
+            let lang = Locale.current.languageCode ?? "en"
             let data: PusherData
             let append = false
 

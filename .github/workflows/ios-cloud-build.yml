@@ -48,13 +48,22 @@ jobs:
 
       - name: Build for iOS Simulator
         run: |
+          set -o pipefail
           xcodebuild \
             -project MatrixMess.xcodeproj \
             -scheme MatrixMess \
             -configuration Debug \
             -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            build | tee simulator-build.log
+
+      - name: Upload Simulator Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-build-log
+          path: ios/MatrixMess/simulator-build.log
+          if-no-files-found: ignore
 
   build-unsigned-ipa:
     name: Build Unsigned IPA
@@ -81,7 +90,9 @@ jobs:
           fi
 
       - name: Build Unsigned IPA
-        run: sh scripts/build-unsigned-ipa.sh
+        run: |
+          set -o pipefail
+          sh scripts/build-unsigned-ipa.sh | tee unsigned-ipa-build.log
 
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
@@ -89,3 +100,11 @@ jobs:
           name: MatrixMess-unsigned-ipa
           path: ios/MatrixMess/build/export/MatrixMess-unsigned.ipa
           if-no-files-found: error
+
+      - name: Upload Unsigned IPA Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa-build-log
+          path: ios/MatrixMess/unsigned-ipa-build.log
+          if-no-files-found: ignore

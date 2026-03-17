@@ -13,7 +13,7 @@ actor MatrixSyncEngine {
 
     func start(
         minimumInterval: TimeInterval = 20,
-        syncOperation: @escaping @Sendable () async throws -> Void
+        syncOperation: @escaping () async throws -> Void
     ) {
         stop()
 
