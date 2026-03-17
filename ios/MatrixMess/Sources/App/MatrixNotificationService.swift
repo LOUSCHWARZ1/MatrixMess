@@ -41,8 +41,7 @@ actor MatrixNotificationService {
         try await notificationCenter.requestAuthorization(options: [.alert, .badge, .sound])
     }
 
-    nonisolated @MainActor
-    func registerForRemoteNotifications() {
+    @MainActor nonisolated func registerForRemoteNotifications() {
         UIApplication.shared.registerForRemoteNotifications()
     }
 

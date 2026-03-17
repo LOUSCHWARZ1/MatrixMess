@@ -91,21 +91,25 @@ final class MatrixCallService: NSObject, ObservableObject {
     }
 }
 
-extension MatrixCallService: CXProviderDelegate {
-    func providerDidReset(_ provider: CXProvider) {
-        Task { await webRTCEngine.endCurrentCall() }
-        activeCallRoomID = nil
-        currentUUID = nil
+@preconcurrency extension MatrixCallService: CXProviderDelegate {
+    nonisolated func providerDidReset(_ provider: CXProvider) {
+        Task { @MainActor in
+            await webRTCEngine.endCurrentCall()
+            activeCallRoomID = nil
+            currentUUID = nil
+        }
     }
 
-    func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+    nonisolated func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         action.fulfill()
     }
 
-    func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        Task { await webRTCEngine.endCurrentCall() }
-        activeCallRoomID = nil
-        currentUUID = nil
-        action.fulfill()
+    nonisolated func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        Task { @MainActor in
+            await webRTCEngine.endCurrentCall()
+            activeCallRoomID = nil
+            currentUUID = nil
+            action.fulfill()
+        }
     }
 }

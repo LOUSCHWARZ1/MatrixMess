@@ -443,9 +443,9 @@ final class AppState: ObservableObject {
         matrixService: MatrixService = MatrixService(),
         mediaService: MatrixMediaService = MatrixMediaService(),
         notificationService: MatrixNotificationService = MatrixNotificationService(),
-        callService: MatrixCallService = MatrixCallService(),
+        callService: MatrixCallService? = nil,
         cryptoService: MatrixCryptoService = MatrixCryptoService(),
-        oauthService: CalendarOAuthService = CalendarOAuthService(),
+        oauthService: CalendarOAuthService? = nil,
         syncEngine: MatrixSyncEngine = MatrixSyncEngine(),
         sessionStore: MatrixSessionStore = MatrixSessionStore(),
         snapshotStore: AppSnapshotStore = AppSnapshotStore()
@@ -453,9 +453,9 @@ final class AppState: ObservableObject {
         self.matrixService = matrixService
         self.mediaService = mediaService
         self.notificationService = notificationService
-        self.callService = callService
+        self.callService = callService ?? MatrixCallService()
         self.cryptoService = cryptoService
-        self.oauthService = oauthService
+        self.oauthService = oauthService ?? CalendarOAuthService()
         self.syncEngine = syncEngine
         self.sessionStore = sessionStore
         self.snapshotStore = snapshotStore
