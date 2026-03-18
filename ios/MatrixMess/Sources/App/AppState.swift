@@ -128,6 +128,12 @@ enum ChatMessageKind: String, Hashable, Codable {
     case event
 }
 
+enum ChatMessageSendStatus: String, Hashable, Codable {
+    case sending
+    case sent
+    case failed
+}
+
 struct MessageReaction: Identifiable, Hashable, Codable {
     var id: String { emoji }
     let emoji: String
@@ -171,6 +177,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
     var timestamp: Date
     var isOutgoing: Bool
     var kind: ChatMessageKind
+    var sendStatus: ChatMessageSendStatus?
     var attachment: MessageAttachment?
     var forwardedFrom: String?
     var linkedEventID: UUID?
@@ -185,6 +192,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         timestamp: Date,
         isOutgoing: Bool,
         kind: ChatMessageKind = .text,
+        sendStatus: ChatMessageSendStatus? = nil,
         attachment: MessageAttachment? = nil,
         forwardedFrom: String? = nil,
         linkedEventID: UUID? = nil,
@@ -198,6 +206,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         self.timestamp = timestamp
         self.isOutgoing = isOutgoing
         self.kind = kind
+        self.sendStatus = sendStatus
         self.attachment = attachment
         self.forwardedFrom = forwardedFrom
         self.linkedEventID = linkedEventID
@@ -355,6 +364,7 @@ final class AppState: ObservableObject {
         keyBackupConfigured: false,
         deviceVerificationAvailable: false
     )
+    @Published var showRecoveryPrompt = false
     @Published private(set) var pushNotificationsAuthorized = false
     @Published private(set) var remoteNotificationTokenAvailable = false
     @Published private(set) var activeCallRoomID: String?
@@ -524,6 +534,10 @@ final class AppState: ObservableObject {
             await startSyncLoopIfPossible()
             await refreshCryptoStatus()
 
+            if cryptoStatus.encryptionAvailable && !cryptoStatus.keyBackupConfigured {
+                showRecoveryPrompt = true
+            }
+
             AppLogger.info("Login erfolgreich fuer \(session.userID).")
         } catch {
             errorMessage = error.localizedDescription
@@ -547,6 +561,7 @@ final class AppState: ObservableObject {
         currentUserID = nil
         password = ""
         errorMessage = nil
+        showRecoveryPrompt = false
         isSyncing = false
         syncEngineState = .init()
         clearWorkspaceData()
@@ -1002,7 +1017,7 @@ final class AppState: ObservableObject {
 
     func threadCount(for spaceID: String) -> Int {
         if spaceID == ChatSpace.mainID {
-            return mainPinnedThreadIDs.count
+            return mainPinnedThreadIDs.isEmpty ? threadsByID.count : mainPinnedThreadIDs.count
         }
 
         return threadsByID.values.filter { $0.homeSpaceID == spaceID }.count
@@ -1010,9 +1025,13 @@ final class AppState: ObservableObject {
 
     func visibleThreads(in spaceID: String? = nil) -> [ChatThread] {
         let activeSpaceID = spaceID ?? selectedSpaceID
-        let baseThreads: [ChatThread] = activeSpaceID == ChatSpace.mainID
-            ? mainPinnedThreadIDs.compactMap { threadsByID[$0] }
-            : threadsByID.values.filter { $0.homeSpaceID == activeSpaceID }
+        let baseThreads: [ChatThread]
+        if activeSpaceID == ChatSpace.mainID {
+            let pinned = mainPinnedThreadIDs.compactMap { threadsByID[$0] }
+            baseThreads = pinned.isEmpty ? Array(threadsByID.values) : pinned
+        } else {
+            baseThreads = threadsByID.values.filter { $0.homeSpaceID == activeSpaceID }
+        }
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = baseThreads.filter { thread in
@@ -1141,8 +1160,25 @@ final class AppState: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        let messageID = UUID()
         var sentEventID: String?
         var requiresFollowupRefresh = false
+        var sendFailed = false
+
+        appendMessage(
+            ChatMessage(
+                id: messageID,
+                senderDisplayName: "Du",
+                body: trimmed,
+                timestamp: .now,
+                isOutgoing: true,
+                sendStatus: .sending
+            ),
+            to: threadID,
+            preview: trimmed
+        )
+        draftsByThreadID.removeValue(forKey: threadID)
+
         if let currentSession, let thread = thread(withID: threadID) {
             do {
                 sentEventID = try await matrixService.sendMessage(
@@ -1153,28 +1189,25 @@ final class AppState: ObservableObject {
                 )
                 requiresFollowupRefresh = thread.isEncrypted || sentEventID == nil
             } catch {
+                sendFailed = true
                 errorMessage = error.localizedDescription
 
                 var updatedDiagnostics = diagnostics
                 updatedDiagnostics.lastErrorDescription = error.localizedDescription
                 updatedDiagnostics.statusNote = "Nachricht konnte nicht an den Homeserver gesendet werden."
                 diagnostics = updatedDiagnostics
-                return
             }
         }
 
-        appendMessage(
-            ChatMessage(
-                matrixEventID: sentEventID,
-                senderDisplayName: "Du",
-                body: trimmed,
-                timestamp: .now,
-                isOutgoing: true
-            ),
-            to: threadID,
-            preview: trimmed
-        )
-        draftsByThreadID.removeValue(forKey: threadID)
+        if var messages = messagesByThreadID[threadID],
+           let index = messages.firstIndex(where: { $0.id == messageID }) {
+            if let sentEventID {
+                messages[index].matrixEventID = sentEventID
+            }
+            messages[index].sendStatus = sendFailed ? .failed : .sent
+            messagesByThreadID[threadID] = messages
+        }
+
         persistSnapshotIfPossible()
 
         if requiresFollowupRefresh {
@@ -2016,7 +2049,7 @@ final class AppState: ObservableObject {
             ]
 
             threadsByID = Dictionary(uniqueKeysWithValues: seededThreads.map { ($0.id, $0) })
-            mainPinnedThreadIDs = ["thread.signal.lena", "thread.matrix.family", "thread.instagram.design", "thread.whatsapp.home"]
+            mainPinnedThreadIDs = seededThreads.map(\.id)
 
             let familyDinner = ScheduledChatEvent(threadID: "thread.matrix.family", title: "Familienessen", note: "Abendessen bei Mara, bitte Dessert mitbringen.", startDate: now.addingTimeInterval(86400), endDate: now.addingTimeInterval(88200), createdBy: "Du", providerIDs: ["apple", "google"])
             let creatorReview = ScheduledChatEvent(threadID: "thread.instagram.design", title: "Campaign Review", note: "Kurz die Story-Karten und Reels durchgehen.", startDate: now.addingTimeInterval(172800), endDate: now.addingTimeInterval(175500), createdBy: "Mina", providerIDs: ["apple", "outlook"])
