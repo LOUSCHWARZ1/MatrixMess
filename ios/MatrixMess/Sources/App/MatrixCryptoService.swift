@@ -25,6 +25,30 @@ struct MatrixCryptoStatus: Hashable {
     }
 }
 
+struct MatrixVerificationEmoji: Hashable {
+    let symbol: String
+    let description: String
+}
+
+struct MatrixVerificationFlowState: Hashable {
+    var statusLabel: String = "Keine aktive Verifizierung"
+    var detailLabel: String? = nil
+    var senderUserID: String? = nil
+    var deviceID: String? = nil
+    var flowID: String? = nil
+    var emojis: [MatrixVerificationEmoji] = []
+    var decimals: [UInt16] = []
+    var canStartSas = false
+    var canApprove = false
+    var canDecline = false
+    var canCancel = false
+    var isVerified = false
+
+    var isActive: Bool {
+        senderUserID != nil || !emojis.isEmpty || !decimals.isEmpty || canStartSas || canApprove || canDecline || canCancel || isVerified
+    }
+}
+
 actor MatrixCryptoService {
     private let matrixService: MatrixService
 
@@ -46,5 +70,25 @@ actor MatrixCryptoService {
 
     func requestDeviceVerification(session: MatrixSession) async throws {
         try await matrixService.requestOwnDeviceVerification(session: session)
+    }
+
+    func currentVerificationState() async -> MatrixVerificationFlowState {
+        await matrixService.currentVerificationFlowState()
+    }
+
+    func startSasVerification(session: MatrixSession) async throws {
+        try await matrixService.startSasVerification(session: session)
+    }
+
+    func approveVerification(session: MatrixSession) async throws {
+        try await matrixService.approveVerification(session: session)
+    }
+
+    func declineVerification(session: MatrixSession) async throws {
+        try await matrixService.declineVerification(session: session)
+    }
+
+    func cancelVerification(session: MatrixSession) async throws {
+        try await matrixService.cancelVerification(session: session)
     }
 }
