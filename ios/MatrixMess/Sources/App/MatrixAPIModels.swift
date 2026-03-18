@@ -165,14 +165,20 @@ struct MatrixSyncResponse: Decodable {
             }
         }
 
+        struct Ephemeral: Decodable {
+            let events: [MatrixEphemeralEvent]
+        }
+
         let timeline: Timeline?
         let state: State?
         let unreadNotifications: UnreadNotifications?
+        let ephemeral: Ephemeral?
 
         enum CodingKeys: String, CodingKey {
             case timeline
             case state
             case unreadNotifications = "unread_notifications"
+            case ephemeral
         }
     }
 
@@ -207,6 +213,16 @@ struct MatrixTimelineEvent: Decodable {
         case redacts
         case content
     }
+}
+
+struct MatrixEphemeralEvent: Decodable {
+    let type: String
+    let content: [String: MatrixJSONValue]?
+}
+
+struct MatrixTypingRequest: Encodable {
+    let typing: Bool
+    let timeout: Int
 }
 
 struct MatrixSendMessageRequest: Encodable {
