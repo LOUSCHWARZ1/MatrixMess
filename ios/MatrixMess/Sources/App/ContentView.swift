@@ -185,6 +185,9 @@ private struct LoginField: View {
 
 private struct MessengerShellView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var showingPostLoginSetup = false
+    @State private var postLoginShowRecovery = false
+    @State private var postLoginShowVerify = false
 
     var body: some View {
         TabView(selection: $appState.selectedTab) {
@@ -206,6 +209,40 @@ private struct MessengerShellView: View {
         }
         .accentColor(.blue)
         .preferredColorScheme(appState.preferredColorScheme)
+        .sheet(isPresented: $showingPostLoginSetup) {
+            PostLoginSetupSheet(
+                onRecovery: { postLoginShowRecovery = true },
+                onVerify: {
+                    Task {
+                        await appState.requestCurrentDeviceVerification()
+                        postLoginShowVerify = true
+                    }
+                },
+                onDismiss: {
+                    appState.needsPostLoginSetup = false
+                    showingPostLoginSetup = false
+                }
+            )
+            .environmentObject(appState)
+        }
+        .sheet(isPresented: $postLoginShowRecovery) {
+            RecoveryKeySheet { key in
+                await appState.recoverEncryption(with: key)
+                appState.needsPostLoginSetup = false
+            }
+        }
+        .sheet(isPresented: $postLoginShowVerify) {
+            E2EEVerifySheet()
+                .environmentObject(appState)
+                .onDisappear {
+                    if appState.verificationFlowState.isVerified {
+                        appState.needsPostLoginSetup = false
+                    }
+                }
+        }
+        .onChange(of: appState.needsPostLoginSetup) { needs in
+            if needs { showingPostLoginSetup = true }
+        }
     }
 }
 
@@ -2473,6 +2510,114 @@ private struct SettingsView: View {
             Text(value)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct PostLoginSetupSheet: View {
+    @EnvironmentObject private var appState: AppState
+    let onRecovery: () -> Void
+    let onVerify: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 32) {
+                VStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.blue.opacity(0.12))
+                            .frame(width: 80, height: 80)
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 32, weight: .semibold))
+                            .foregroundColor(.blue)
+                    }
+
+                    Text("Ende-zu-Ende-Verschlüsselung")
+                        .font(.title2.weight(.bold))
+
+                    Text("Richte die Verschlüsselung ein, damit deine Nachrichten sicher bleiben und auf allen Geräten lesbar sind.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+                }
+                .padding(.top, 12)
+
+                VStack(spacing: 12) {
+                    Button(action: onRecovery) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "key.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.blue)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Recovery Key eingeben")
+                                    .font(.body.weight(.semibold))
+                                Text("Verschlüsselung aus bestehender Sitzung wiederherstellen")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(Color(uiColor: .tertiaryLabel))
+                        }
+                        .padding(16)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: onVerify) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.green)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Gerät verifizieren")
+                                    .font(.body.weight(.semibold))
+                                Text("Mit einem anderen angemeldeten Gerät gegenseitig bestätigen")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(Color(uiColor: .tertiaryLabel))
+                        }
+                        .padding(16)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                Button("Später einrichten", action: onDismiss)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .padding(.bottom, 8)
+            }
+            .padding(.horizontal, 24)
+            .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Überspringen", action: onDismiss)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
     }
 }

@@ -369,6 +369,7 @@ final class AppState: ObservableObject {
     @Published private(set) var diagnostics = AppDiagnostics()
     @Published var errorMessage: String?
     @Published var isSigningIn = false
+    @Published var needsPostLoginSetup = false
 
     @Published var selectedTab: AppTab = .chats {
         didSet { persistSnapshotIfPossible() }
@@ -534,6 +535,13 @@ final class AppState: ObservableObject {
             await startSyncLoopIfPossible()
             await refreshCryptoStatus()
 
+            // Prompt the user to verify their device or enter a recovery key if encryption
+            // is active but the device is not yet verified and no recovery is set up.
+            if cryptoStatus.encryptionAvailable &&
+                cryptoStatus.verificationStateLabel != "Verifiziert" {
+                needsPostLoginSetup = true
+            }
+
             AppLogger.info("Login erfolgreich fuer \(session.userID).")
         } catch {
             errorMessage = error.localizedDescription
@@ -560,6 +568,7 @@ final class AppState: ObservableObject {
         isSyncing = false
         syncEngineState = .init()
         verificationFlowState = MatrixVerificationFlowState()
+        needsPostLoginSetup = false
         stopVerificationPolling()
         typingDebounceTask?.cancel()
         typingDebounceTask = nil
@@ -1099,7 +1108,7 @@ final class AppState: ObservableObject {
     func visibleThreads(in spaceID: String? = nil) -> [ChatThread] {
         let activeSpaceID = spaceID ?? selectedSpaceID
         let baseThreads: [ChatThread] = activeSpaceID == ChatSpace.mainID
-            ? mainPinnedThreadIDs.compactMap { threadsByID[$0] }
+            ? Array(threadsByID.values)
             : threadsByID.values.filter { $0.homeSpaceID == activeSpaceID }
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1276,7 +1285,7 @@ final class AppState: ObservableObject {
                 body: trimmed,
                 timestamp: .now,
                 isOutgoing: true,
-                isPending: sentEventID == nil
+                isPending: false
             ),
             to: threadID,
             preview: trimmed
