@@ -320,4 +320,6 @@ struct MatrixWorkspace {
     let threadsByID: [String: ChatThread]
     let messagesByThreadID: [String: [ChatMessage]]
     let mainPinnedThreadIDs: [String]
+    /// Maps room-IDs to the list of user-IDs currently typing in that room.
+    let typingUsersByThreadID: [String: [String]]
 }

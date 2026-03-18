@@ -772,36 +772,42 @@ private struct ConversationDetailView: View {
                     }
                 }
                   .safeAreaInset(edge: .bottom) {
-                      ComposerBar(
-                          draft: draftBinding,
-                          accent: thread.accent,
-                          isSending: isSending,
-                          sendAction: {
-                              Task {
-                                  isSending = true
-                                  await appState.sendMessage(appState.draft(for: thread.id), to: thread.id)
-                                  isSending = false
-                              }
-                          },
-                          attachmentAction: { kind in
-                              switch kind {
-                              case .voice:
-                                  appState.sendAttachment(kind, to: thread.id)
-                              case .image, .video:
-                                  pendingImportKind = kind
-                                  showingMediaLibraryPicker = true
-                              case .file:
-                                  pendingImportKind = kind
-                                  showingFileImporter = true
-                              case .text, .event:
-                                  break
-                              }
-                          },
-                        eventAction: {
-                            showingEventSheet = true
-                        }
-                    )
-                }
+                      VStack(spacing: 0) {
+                          let typingUsers = appState.typingUsersByThreadID[thread.id] ?? []
+                          if appState.typingIndicatorsEnabled, !typingUsers.isEmpty {
+                              TypingIndicatorBanner(userIDs: typingUsers)
+                          }
+                          ComposerBar(
+                              draft: draftBinding,
+                              accent: thread.accent,
+                              isSending: isSending,
+                              sendAction: {
+                                  Task {
+                                      isSending = true
+                                      await appState.sendMessage(appState.draft(for: thread.id), to: thread.id)
+                                      isSending = false
+                                  }
+                              },
+                              attachmentAction: { kind in
+                                  switch kind {
+                                  case .voice:
+                                      appState.sendAttachment(kind, to: thread.id)
+                                  case .image, .video:
+                                      pendingImportKind = kind
+                                      showingMediaLibraryPicker = true
+                                  case .file:
+                                      pendingImportKind = kind
+                                      showingFileImporter = true
+                                  case .text, .event:
+                                      break
+                                  }
+                              },
+                            eventAction: {
+                                showingEventSheet = true
+                            }
+                        )
+                      }
+                  }
                 .sheet(isPresented: $showingMediaSheet) {
                     SharedMediaSheet(thread: thread)
                         .environmentObject(appState)
@@ -1166,6 +1172,15 @@ private struct MessageBubble: View {
                       .foregroundColor(.secondary)
                       .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
 
+                  if message.isOutgoing {
+                      HStack(spacing: 3) {
+                          Spacer()
+                          Image(systemName: message.isPending ? "clock" : "checkmark")
+                              .font(.caption2)
+                              .foregroundColor(.secondary)
+                      }
+                  }
+
                   if message.isEdited {
                       Text("Bearbeitet")
                           .font(.caption2.weight(.semibold))
@@ -1497,6 +1512,52 @@ private struct AttachmentCard: View {
             }
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct TypingIndicatorBanner: View {
+    let userIDs: [String]
+
+    @State private var dotPhase = 0
+
+    private var label: String {
+        switch userIDs.count {
+        case 1: return "\(userIDs[0]) tippt…"
+        case 2: return "\(userIDs[0]) und \(userIDs[1]) tippen…"
+        default: return "\(userIDs.count) Personen tippen…"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .frame(width: 6, height: 6)
+                        .scaleEffect(dotPhase == index ? 1.4 : 1.0)
+                        .animation(
+                            .easeInOut(duration: 0.4)
+                                .repeatForever()
+                                .delay(Double(index) * 0.15),
+                            value: dotPhase
+                        )
+                }
+            }
+            .foregroundColor(.secondary)
+
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(Color(uiColor: .systemBackground).opacity(0.92))
+        .onAppear {
+            withAnimation(.linear(duration: 0.4).repeatForever()) {
+                dotPhase = (dotPhase + 1) % 3
+            }
+        }
     }
 }
 
