@@ -2,6 +2,8 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 
+private let appBuildLabel = "v0.2.0 – 2026-03-18"
+
 private let quickReactionEmoji = [
     "\u{1F44D}",
     "\u{2764}\u{FE0F}",
@@ -29,28 +31,48 @@ struct ContentView: View {
 }
 
 private struct BootstrapView: View {
+    @State private var isPulsing = false
+
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Color(uiColor: .systemBackground), Color(uiColor: .secondarySystemBackground)],
+                colors: [Color.purple.opacity(0.18), Color.indigo.opacity(0.22)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             .ignoresSafeArea()
 
-            VStack(spacing: 18) {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .scaleEffect(1.2)
+            VStack(spacing: 22) {
+                ZStack {
+                    Circle()
+                        .fill(Color.indigo.opacity(0.13))
+                        .frame(width: 100, height: 100)
+                        .scaleEffect(isPulsing ? 1.18 : 1.0)
+                        .opacity(isPulsing ? 0.5 : 1.0)
 
-                Text("MatrixMess vorbereitet")
-                    .font(.title3.weight(.semibold))
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(1.4)
+                        .tint(.indigo)
+                }
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                        isPulsing = true
+                    }
+                }
 
-                Text("Session, lokaler Snapshot und Einstellungen werden geladen.")
+                Text("MatrixMess wird geladen ...")
+                    .font(.title3.weight(.bold))
+
+                Text("Session, Snapshot und Einstellungen werden vorbereitet.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
+
+                Text(appBuildLabel)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -62,95 +84,133 @@ private struct LoginView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                Color(uiColor: .systemGroupedBackground)
-                    .ignoresSafeArea()
+                LinearGradient(
+                    colors: [Color.indigo.opacity(0.08), Color.purple.opacity(0.10), Color(uiColor: .systemGroupedBackground)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
 
-                VStack(spacing: 24) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("MatrixMess")
-                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                ScrollView {
+                    VStack(spacing: 28) {
+                        Spacer(minLength: 20)
 
-                        Text("Ein Apple-naher Messenger mit Spaces, Bridges, Calls und Kalender-Sync.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                        // Large gradient chat icon
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color.purple, Color.indigo],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 96, height: 96)
+                                .shadow(color: Color.purple.opacity(0.35), radius: 20, y: 8)
 
-                    VStack(spacing: 16) {
-                        LoginField(title: "Homeserver", text: $appState.homeserver, icon: "network")
-                            .keyboardType(.URL)
+                            Image(systemName: "bubble.left.and.bubble.right.fill")
+                                .font(.system(size: 40, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
 
-                        LoginField(title: "Benutzername", text: $appState.username, icon: "person.fill")
+                        VStack(spacing: 8) {
+                            Text("MatrixMess")
+                                .font(.system(size: 34, weight: .bold, design: .rounded))
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Passwort", systemImage: "lock.fill")
-                                .font(.caption.weight(.semibold))
+                            Text("Dein sicherer Messenger – Spaces, Bridges, Calls und Kalender in einer App.")
+                                .font(.subheadline)
                                 .foregroundColor(.secondary)
-
-                            SecureField("Passwort", text: $appState.password)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 14)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .fill(Color(uiColor: .secondarySystemGroupedBackground))
-                                )
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
                         }
 
-                        Button {
-                            Task { await appState.signIn() }
-                        } label: {
-                            HStack {
-                                Spacer()
-                                if appState.isSigningIn {
-                                    ProgressView().tint(.white)
-                                    Text("Verbinde ...")
-                                } else {
-                                    Text("Messenger starten")
-                                }
-                                Spacer()
+                        VStack(spacing: 16) {
+                            LoginField(title: "Homeserver", text: $appState.homeserver, icon: "network")
+                                .keyboardType(.URL)
+
+                            LoginField(title: "Benutzername", text: $appState.username, icon: "person.fill")
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Passwort", systemImage: "lock.fill")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.secondary)
+
+                                SecureField("Passwort", text: $appState.password)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                                    )
                             }
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .padding(.vertical, 16)
-                            .background(
-                                LinearGradient(
-                                    colors: [Color.blue, Color.cyan],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
+
+                            Button {
+                                Task { await appState.signIn() }
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if appState.isSigningIn {
+                                        ProgressView().tint(.white)
+                                        Text("Verbinde ...")
+                                    } else {
+                                        Image(systemName: "arrow.right.circle.fill")
+                                        Text("Messenger starten")
+                                    }
+                                    Spacer()
+                                }
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.vertical, 16)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color.purple, Color.indigo],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
                                 )
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        }
-                        .disabled(appState.isSigningIn)
+                                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                                .shadow(color: Color.purple.opacity(0.25), radius: 10, y: 5)
+                            }
+                            .disabled(appState.isSigningIn)
 
-                        if let errorMessage = appState.errorMessage {
-                            Text(errorMessage)
-                                .font(.footnote)
-                                .foregroundColor(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if let errorMessage = appState.errorMessage {
+                                Text(errorMessage)
+                                    .font(.footnote)
+                                    .foregroundColor(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
+                        .padding(22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .fill(Color(uiColor: .systemBackground))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                        )
+                        .shadow(color: Color.black.opacity(0.08), radius: 24, y: 12)
+
+                        VStack(spacing: 12) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "m.circle.fill")
+                                    .foregroundColor(.indigo)
+                                Text("Powered by Matrix")
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Text(appBuildLabel)
+                                .font(.caption2)
+                                .foregroundColor(.secondary.opacity(0.7))
+                        }
+
+                        Spacer(minLength: 0)
                     }
-                    .padding(22)
-                    .background(
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .fill(Color(uiColor: .systemBackground))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .stroke(Color.white.opacity(0.7), lineWidth: 1)
-                    )
-                    .shadow(color: Color.black.opacity(0.06), radius: 24, y: 12)
-
-                    Text("Nach dem Login siehst du Chats, Calls, Calendar und Settings als feste Bereiche. Medien, Reaktionen und Weiterleiten leben direkt in den Chats und tauchen erst bei Bedarf auf.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Spacer(minLength: 0)
+                    .padding(24)
                 }
-                .padding(24)
             }
             .navigationBarHidden(true)
         }
@@ -202,7 +262,7 @@ private struct MessengerShellView: View {
                 .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.systemImage) }
                 .tag(AppTab.settings)
         }
-        .accentColor(.blue)
+        .accentColor(.indigo)
         .preferredColorScheme(appState.preferredColorScheme)
     }
 }
@@ -244,6 +304,24 @@ private struct ConversationListView: View {
 
     var body: some View {
         List {
+            // Branding header
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("MatrixMess")
+                            .font(.title2.weight(.bold))
+                        Text(appBuildLabel)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.title2)
+                        .foregroundColor(.indigo)
+                }
+                .listRowBackground(Color.clear)
+            }
+
             if let activeSpace {
                 Section {
                     SpaceOverviewCard(space: activeSpace, chatCount: appState.threadCount(for: activeSpace.id))
@@ -315,7 +393,7 @@ private struct ConversationListView: View {
 
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
-                    Button("Matrix neu laden") {
+                    Button("Sync jetzt") {
                         Task { await appState.refreshMatrixData(forceFullSync: true) }
                     }
                     Button("Calendar") { appState.selectTab(.calendar) }
@@ -371,8 +449,12 @@ private struct SpaceOverviewCard: View {
         }
         .padding(20)
         .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .fill(space.accent.gradient)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
         )
         .shadow(color: space.accent.tint.opacity(0.22), radius: 18, y: 10)
         .padding(.horizontal, 2)
@@ -433,7 +515,19 @@ private struct ConversationRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            ThreadAvatarView(thread: thread, size: 54)
+            ZStack(alignment: .bottomTrailing) {
+                ThreadAvatarView(thread: thread, size: 58)
+
+                // Online indicator dot
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 14, height: 14)
+                    .overlay(
+                        Circle()
+                            .stroke(Color(uiColor: .systemBackground), lineWidth: 2.5)
+                    )
+                    .offset(x: 2, y: 2)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -453,7 +547,7 @@ private struct ConversationRow: View {
                         .foregroundColor(.secondary)
                 }
 
-                Text(draftPreview.map { "Entwurf: \($0)" } ?? thread.lastMessagePreview)
+                Text(draftPreview.map { "\u{270E} \($0)" } ?? thread.lastMessagePreview)
                     .font(.subheadline)
                     .foregroundColor(draftPreview == nil ? .secondary : .orange)
                     .lineLimit(2)
@@ -493,10 +587,19 @@ private struct ConversationRow: View {
                 Text("\(thread.unreadCount)")
                     .font(.caption.weight(.bold))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(thread.accent.tint)
-                    .clipShape(Capsule())
+                    .background(
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: [thread.accent.tint, thread.accent.tint.opacity(0.78)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                    )
+                    .shadow(color: thread.accent.tint.opacity(0.3), radius: 4, y: 2)
             }
         }
         .padding(.vertical, 6)
@@ -1080,9 +1183,30 @@ private struct MessageBubble: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(message.isOutgoing ? accent.tint : Color(uiColor: .secondarySystemGroupedBackground))
+                    Group {
+                        if message.isOutgoing {
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [accent.tint, accent.tint.opacity(0.78)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        } else {
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                        }
+                    }
                 )
+                .overlay(alignment: message.isOutgoing ? .bottomTrailing : .bottomLeading) {
+                    // Small tail triangle
+                    Triangle()
+                        .fill(message.isOutgoing ? accent.tint.opacity(0.78) : Color(uiColor: .secondarySystemGroupedBackground))
+                        .frame(width: 12, height: 8)
+                        .rotationEffect(.degrees(message.isOutgoing ? 0 : 180), anchor: .center)
+                        .offset(x: message.isOutgoing ? 6 : -6, y: 4)
+                }
                 .contextMenu {
                     ForEach(quickReactionEmoji, id: \.self) { emoji in
                         Button(emoji) { reactAction(emoji) }
@@ -1128,7 +1252,7 @@ private struct MessageBubble: View {
                     }
                 }
 
-                  Text(message.timestamp.formatted(date: .omitted, time: .shortened))
+                  Text(messageBubbleTimestamp(message.timestamp))
                       .font(.caption2)
                       .foregroundColor(.secondary)
                       .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
@@ -1282,15 +1406,14 @@ private struct ComposerBar: View {
                     Button { eventAction() } label: { Label("Termin planen", systemImage: "calendar.badge.plus") }
                 }
             } label: {
-                Image(systemName: "plus")
-                    .font(.subheadline.weight(.bold))
+                Image(systemName: "plus.circle.fill")
+                    .font(.title3.weight(.semibold))
                     .foregroundColor(accent.tint)
                     .frame(width: 36, height: 36)
-                    .background(Circle().fill(accent.softTint))
             }
 
             HStack(spacing: 10) {
-                TextField("Nachricht", text: $draft)
+                TextField("Schreibe eine Nachricht ...", text: $draft)
                     .textFieldStyle(.plain)
 
                 Button {
@@ -1300,7 +1423,13 @@ private struct ComposerBar: View {
                         .font(.subheadline.weight(.bold))
                         .foregroundColor(.white)
                         .frame(width: 34, height: 34)
-                        .background(accent.tint)
+                        .background(
+                            LinearGradient(
+                                colors: [accent.tint, accent.tint.opacity(0.72)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
                         .clipShape(Circle())
                 }
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -1778,7 +1907,37 @@ private struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Appearance") {
+            // Profile header
+            Section {
+                VStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.indigo, Color.purple],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 72, height: 72)
+
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.system(size: 34))
+                            .foregroundColor(.white)
+                    }
+
+                    Text(appState.currentUserID ?? "Nicht angemeldet")
+                        .font(.subheadline.weight(.semibold))
+
+                    Text("Session aktiv auf diesem Geraet")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+
+            Section("Darstellung") {
                 Picker("Theme", selection: Binding(
                     get: { appState.themeMode },
                     set: { appState.themeMode = $0 }
@@ -1794,7 +1953,7 @@ private struct SettingsView: View {
                 ))
             }
 
-            Section("Notifications") {
+            Section("Mitteilungen") {
                 Toggle("Mitteilungen", isOn: Binding(
                     get: { appState.notificationsEnabled },
                     set: { appState.notificationsEnabled = $0 }
@@ -1845,7 +2004,7 @@ private struct SettingsView: View {
                 ))
             }
 
-            Section("Calendar") {
+            Section("Kalender-Sync") {
                 Toggle("Neue Termine automatisch syncen", isOn: Binding(
                     get: { appState.calendarAutoSyncEnabled },
                     set: { appState.calendarAutoSyncEnabled = $0 }
@@ -1900,6 +2059,8 @@ private struct SettingsView: View {
             }
 
             Section("Diagnose") {
+                settingsValueRow(label: "App-Version", value: appBuildLabel)
+                settingsValueRow(label: "Letzte Aenderung", value: "2026-03-18")
                 settingsValueRow(label: "Status", value: appState.diagnostics.statusNote)
                 settingsValueRow(label: "User", value: appState.currentUserID ?? "Keine aktive Session")
                 settingsValueRow(label: "Threads", value: "\(appState.diagnostics.cachedThreadCount)")
@@ -1985,6 +2146,24 @@ private struct RecoveryKeySheet: View {
             }
         }
     }
+}
+
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+            p.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            p.closeSubpath()
+        }
+    }
+}
+
+private func messageBubbleTimestamp(_ date: Date) -> String {
+    if Calendar.current.isDateInToday(date) {
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+    return date.formatted(date: .abbreviated, time: .shortened)
 }
 
 private func formattedTimestamp(_ date: Date) -> String {

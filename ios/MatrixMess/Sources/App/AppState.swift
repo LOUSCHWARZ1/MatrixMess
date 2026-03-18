@@ -469,6 +469,7 @@ final class AppState: ObservableObject {
     }
 
     var isLoggedIn: Bool { currentUserID != nil }
+    var buildVersionLabel: String { "v0.2.0 – 2026-03-18" }
     var preferredColorScheme: ColorScheme? { themeMode.preferredColorScheme }
     var selectedSpace: ChatSpace? { spaces.first(where: { $0.id == selectedSpaceID }) ?? spaces.first }
 
