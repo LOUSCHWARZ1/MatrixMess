@@ -257,6 +257,38 @@ actor MatrixSDKContext {
         return components?.url
     }
 
+    func currentVerificationFlowState() -> MatrixVerificationFlowState {
+        verificationDelegate?.currentState ?? MatrixVerificationFlowState()
+    }
+
+    func startSasVerification(session: MatrixSession) async throws {
+        guard let controller = verificationController else {
+            throw MatrixServiceError.serverError("Kein aktiver Verifizierungsvorgang vorhanden.")
+        }
+        try await controller.startSasVerification()
+    }
+
+    func approveVerification(session: MatrixSession) async throws {
+        guard let controller = verificationController else {
+            throw MatrixServiceError.serverError("Kein aktiver Verifizierungsvorgang vorhanden.")
+        }
+        try await controller.approveVerification()
+    }
+
+    func declineVerification(session: MatrixSession) async throws {
+        guard let controller = verificationController else {
+            throw MatrixServiceError.serverError("Kein aktiver Verifizierungsvorgang vorhanden.")
+        }
+        try await controller.declineVerification()
+    }
+
+    func cancelVerification(session: MatrixSession) async throws {
+        guard let controller = verificationController else {
+            throw MatrixServiceError.serverError("Kein aktiver Verifizierungsvorgang vorhanden.")
+        }
+        try await controller.cancelVerification()
+    }
+
     func stop() async {
         await syncService?.stop()
         syncService = nil
@@ -445,31 +477,97 @@ actor MatrixSDKContext {
 }
 
 private final class MatrixSDKVerificationDelegate: SessionVerificationControllerDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _state = MatrixVerificationFlowState()
+
+    var currentState: MatrixVerificationFlowState {
+        lock.lock()
+        defer { lock.unlock() }
+        return _state
+    }
+
+    private func updateState(_ update: (inout MatrixVerificationFlowState) -> Void) {
+        lock.lock()
+        update(&_state)
+        lock.unlock()
+    }
+
     func didReceiveVerificationRequest(details: SessionVerificationRequestDetails) {
+        updateState { state in
+            state.senderUserID = details.senderProfile.userId
+            state.deviceID = details.deviceId
+            state.flowID = details.flowId
+            state.statusLabel = "Verifizierungsanfrage erhalten"
+            state.canStartSas = true
+            state.canDecline = true
+            state.canCancel = true
+        }
         AppLogger.info("Verifizierungsanfrage von \(details.senderProfile.userId) fuer Device \(details.deviceId) erhalten.")
     }
 
     func didAcceptVerificationRequest() {
+        updateState { state in
+            state.statusLabel = "Verifizierung akzeptiert"
+            state.canStartSas = true
+        }
         AppLogger.info("Verifizierungsanfrage akzeptiert.")
     }
 
     func didStartSasVerification() {
+        updateState { state in
+            state.statusLabel = "SAS-Verifizierung laeuft"
+            state.canStartSas = false
+        }
         AppLogger.info("SAS-Verifizierung gestartet.")
     }
 
     func didReceiveVerificationData(data: SessionVerificationData) {
+        updateState { state in
+            switch data {
+            case .emojis(let emojis):
+                state.emojis = emojis.map { MatrixVerificationEmoji(symbol: $0.symbol, description: $0.description) }
+            case .decimals(let values):
+                state.decimals = values
+            }
+            state.statusLabel = "Bitte vergleiche die Daten"
+            state.canApprove = true
+            state.canDecline = true
+            state.canCancel = true
+        }
         AppLogger.info("Verifizierungsdaten empfangen: \(String(describing: data))")
     }
 
     func didFail() {
+        updateState { state in
+            state.statusLabel = "Verifizierung fehlgeschlagen"
+            state.canApprove = false
+            state.canDecline = false
+            state.canStartSas = false
+            state.canCancel = false
+        }
         AppLogger.error("Geraeteverifizierung fehlgeschlagen.")
     }
 
     func didCancel() {
+        updateState { state in
+            state.statusLabel = "Verifizierung abgebrochen"
+            state.canApprove = false
+            state.canDecline = false
+            state.canStartSas = false
+            state.canCancel = false
+        }
         AppLogger.info("Geraeteverifizierung abgebrochen.")
     }
 
     func didFinish() {
+        updateState { state in
+            state.statusLabel = "Verifizierung abgeschlossen"
+            state.isVerified = true
+            state.canApprove = false
+            state.canDecline = false
+            state.canStartSas = false
+            state.canCancel = false
+        }
         AppLogger.info("Geraeteverifizierung abgeschlossen.")
     }
 }

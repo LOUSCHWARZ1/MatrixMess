@@ -105,6 +105,26 @@ final class MatrixService {
         try await sdkContext.requestDeviceVerification(session: session)
     }
 
+    func currentVerificationFlowState() async -> MatrixVerificationFlowState {
+        await sdkContext.currentVerificationFlowState()
+    }
+
+    func startSasVerification(session: MatrixSession) async throws {
+        try await sdkContext.startSasVerification(session: session)
+    }
+
+    func approveVerification(session: MatrixSession) async throws {
+        try await sdkContext.approveVerification(session: session)
+    }
+
+    func declineVerification(session: MatrixSession) async throws {
+        try await sdkContext.declineVerification(session: session)
+    }
+
+    func cancelVerification(session: MatrixSession) async throws {
+        try await sdkContext.cancelVerification(session: session)
+    }
+
     func sendEncryptedMedia(
         data: Data,
         mimeType: String,
