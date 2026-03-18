@@ -743,6 +743,10 @@ private struct ParsedRoomSnapshot {
         return roomID
     }
 
+    /// Known bridge user ID prefixes used by mautrix and other Matrix bridges.
+    private static let bridgePrefixes = ["signal_", "whatsapp_", "instagram_", "telegram_", "messenger_",
+                                         "discord_", "slack_", "imessage_", "meta_", "gmessages_", "sms_"]
+
     /// Extracts a human-readable name from a bridge user ID.
     /// For example ``@signal_491754011214:server`` → ``+491754011214``,
     /// ``@whatsapp_491754011214:server`` → ``+491754011214``.
@@ -752,18 +756,15 @@ private struct ParsedRoomSnapshot {
         if local.hasPrefix("@") { local = String(local.dropFirst()) }
         if let colonIdx = local.firstIndex(of: ":") { local = String(local[local.startIndex..<colonIdx]) }
 
-        // Known bridge prefixes used by mautrix and other bridges
-        let bridgePrefixes = ["signal_", "whatsapp_", "instagram_", "telegram_", "messenger_",
-                              "discord_", "slack_", "imessage_", "meta_", "gmessages_", "sms_"]
         for prefix in bridgePrefixes {
             if local.lowercased().hasPrefix(prefix) {
-                let remainder = String(local.dropFirst(prefix.count))
-                if !remainder.isEmpty {
-                    // If the remainder looks like a phone number, format it
-                    if remainder.allSatisfy({ $0.isNumber }) {
-                        return "+\(remainder)"
+                let contactIdentifier = String(local.dropFirst(prefix.count))
+                if !contactIdentifier.isEmpty {
+                    // If the identifier looks like a phone number, format it
+                    if contactIdentifier.allSatisfy({ $0.isNumber }) {
+                        return "+\(contactIdentifier)"
                     }
-                    return remainder
+                    return contactIdentifier
                 }
             }
         }
