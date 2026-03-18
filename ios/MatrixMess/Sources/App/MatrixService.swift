@@ -384,7 +384,7 @@ final class MatrixService {
     ) async throws -> MatrixSyncResponse {
         var queryItems = [
             URLQueryItem(name: "timeout", value: fullState ? "0" : "30000"),
-            URLQueryItem(name: "set_presence", value: "offline")
+            URLQueryItem(name: "set_presence", value: "online")
         ]
 
         if fullState {
@@ -563,7 +563,6 @@ final class MatrixService {
         let filteredPins = existingMainPins.filter { availableThreadIDs.contains($0) }
         let defaultPins = threadsByID.values
             .sorted { $0.lastActivity > $1.lastActivity }
-            .prefix(4)
             .map(\.id)
         let mainPins = filteredPins.isEmpty ? defaultPins : filteredPins
 
