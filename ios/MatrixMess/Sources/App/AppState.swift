@@ -703,6 +703,8 @@ final class AppState: ObservableObject {
         verificationFlowState = await cryptoService.currentVerificationState()
     }
 
+    private static let verificationPollingIntervalNs: UInt64 = 1_500_000_000
+
     private func startVerificationPolling() {
         verificationPollingTask?.cancel()
         verificationPollingTask = Task { [weak self] in
@@ -710,10 +712,10 @@ final class AppState: ObservableObject {
                 guard let self else { break }
                 await self.refreshVerificationState()
                 let state = self.verificationFlowState
-                if state.isVerified || !state.isActive {
+                if state.isVerified || state.isFailed || state.isCancelled || !state.isActive {
                     break
                 }
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(nanoseconds: Self.verificationPollingIntervalNs)
             }
         }
     }

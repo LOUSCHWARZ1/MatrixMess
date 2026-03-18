@@ -1,6 +1,8 @@
 import Foundation
 import MatrixRustSDK
 
+private let encryptedMessagePlaceholderBody = "Verschluesselte Nachricht"
+
 struct MatrixSession: Codable, Hashable {
     let userID: String
     let homeserver: String
@@ -837,7 +839,7 @@ private struct ParsedRoomSnapshot {
             return ChatMessage(
                 matrixEventID: event.eventID,
                 senderDisplayName: senderDisplayName,
-                body: "Verschluesselte Nachricht",
+                body: encryptedMessagePlaceholderBody,
                 timestamp: timestamp,
                 isOutgoing: isOutgoing
             )
@@ -995,9 +997,9 @@ private struct ParsedRoomSnapshot {
             guard message.matrixEventID == nil else { return false }
             guard message.isOutgoing == incoming.isOutgoing else { return false }
             guard message.kind == incoming.kind else { return false }
-            // For encrypted messages the server-side body becomes "Verschluesselte Nachricht".
+            // For encrypted messages the server-side body is a placeholder.
             // In that case skip the body comparison and rely on sender + timestamp proximity.
-            if incoming.body != "Verschluesselte Nachricht" {
+            if incoming.body != encryptedMessagePlaceholderBody {
                 guard message.body == incoming.body else { return false }
             }
             let delta = abs(message.timestamp.timeIntervalSince(incoming.timestamp))
