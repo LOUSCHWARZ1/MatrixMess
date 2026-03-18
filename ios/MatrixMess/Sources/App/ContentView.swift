@@ -337,44 +337,22 @@ private struct SpaceOverviewCard: View {
     let chatCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(space.title, systemImage: space.icon)
-                        .font(.headline.weight(.semibold))
+        HStack {
+            Label(space.title, systemImage: space.icon)
+                .font(.subheadline.weight(.semibold))
 
-                    Text(space.subtitle)
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.92))
-                }
+            Spacer()
 
-                Spacer()
-
-                Text("\(chatCount)")
-                    .font(.headline.weight(.bold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.16))
-                    .clipShape(Capsule())
-            }
-
-            HStack(spacing: 12) {
-                Label("\(chatCount) Chats", systemImage: "bubble.left.and.bubble.right.fill")
-                if space.isMain {
-                    Label("Kuratiert", systemImage: "star.fill")
-                } else {
-                    Label("Nur dieser Space", systemImage: "square.grid.2x2.fill")
-                }
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundColor(.white.opacity(0.95))
+            Text("\(chatCount) Chats")
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.white.opacity(0.9))
         }
-        .padding(20)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
         .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(space.accent.gradient)
         )
-        .shadow(color: space.accent.tint.opacity(0.22), radius: 18, y: 10)
         .padding(.horizontal, 2)
     }
 }
@@ -384,25 +362,20 @@ private struct SpaceTabStrip: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ForEach(appState.spaces) { space in
                     Button {
                         appState.selectSpace(space.id)
                     } label: {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             Image(systemName: space.icon)
+                                .font(.caption)
                             Text(space.title)
-                            Text("\(appState.threadCount(for: space.id))")
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 4)
-                                .background(Color.white.opacity(space.id == appState.selectedSpaceID ? 0.18 : 1))
-                                .clipShape(Capsule())
                         }
-                        .font(.subheadline.weight(.semibold))
+                        .font(.subheadline.weight(.medium))
                         .foregroundColor(space.id == appState.selectedSpaceID ? .white : space.accent.tint)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                         .background(
                             Capsule(style: .continuous)
                                 .fill(space.accent.softTint)
@@ -416,7 +389,7 @@ private struct SpaceTabStrip: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
         }
     }
 }
@@ -433,73 +406,57 @@ private struct ConversationRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            ThreadAvatarView(thread: thread, size: 54)
+            ThreadAvatarView(thread: thread, size: 52)
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(thread.title)
                         .font(.body.weight(.semibold))
                         .foregroundColor(.primary)
                         .lineLimit(1)
 
-                    if appState.selectedSpaceID == ChatSpace.mainID, let sourceSpace {
-                        SourceBadge(space: sourceSpace)
+                    if thread.isMuted {
+                        Image(systemName: "bell.slash.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
                     }
 
-                    Spacer(minLength: 8)
+                    Spacer(minLength: 4)
 
                     Text(formattedTimestamp(thread.lastActivity))
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(thread.unreadCount > 0 ? thread.accent.tint : .secondary)
                 }
 
-                Text(draftPreview.map { "Entwurf: \($0)" } ?? thread.lastMessagePreview)
-                    .font(.subheadline)
-                    .foregroundColor(draftPreview == nil ? .secondary : .orange)
-                    .lineLimit(2)
-
-                HStack(spacing: 10) {
-                    Text(thread.subtitle)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    if thread.isEncrypted {
-                        Label("E2EE", systemImage: "lock.fill")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(.secondary)
-                    }
-
+                HStack(spacing: 0) {
                     if draftPreview != nil {
-                        Label("Entwurf", systemImage: "square.and.pencil")
-                            .font(.caption2.weight(.semibold))
+                        Text("Entwurf: ")
+                            .font(.subheadline)
                             .foregroundColor(.orange)
                     }
+                    Text(draftPreview ?? thread.lastMessagePreview)
+                        .font(.subheadline)
+                        .foregroundColor(draftPreview == nil ? .secondary : .orange)
+                        .lineLimit(2)
+                }
 
-                    if thread.isMuted {
-                        Label("Stumm", systemImage: "bell.slash.fill")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(.secondary)
-                    }
-
-                    if appState.isPinnedInMain(thread.id) && appState.selectedSpaceID != ChatSpace.mainID {
-                        Label("Im Main", systemImage: "star.fill")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(.orange)
-                    }
+                if appState.selectedSpaceID == ChatSpace.mainID, let sourceSpace {
+                    SourceBadge(space: sourceSpace)
                 }
             }
 
             if thread.unreadCount > 0 {
                 Text("\(thread.unreadCount)")
-                    .font(.caption.weight(.bold))
+                    .font(.caption2.weight(.bold))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
+                    .frame(minWidth: 20)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
                     .background(thread.accent.tint)
                     .clipShape(Capsule())
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
     }
 }
 
@@ -914,40 +871,26 @@ private struct ConversationHero: View {
     let eventCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                ThreadAvatarView(thread: thread, size: 52)
+        VStack(spacing: 14) {
+            ThreadAvatarView(thread: thread, size: 64)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(thread.title)
-                        .font(.headline)
+            Text(thread.title)
+                .font(.headline)
+                .multilineTextAlignment(.center)
 
-                    Text(thread.subtitle)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+            if thread.isEncrypted {
+                Label("Verschluesselt", systemImage: "lock.fill")
+                    .font(.caption)
                     .foregroundColor(.secondary)
             }
 
-            HStack(spacing: 10) {
-                SourceBadge(space: space)
-                Label("\(mediaCount) Medien", systemImage: "photo.on.rectangle")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(.secondary)
-                Label("\(eventCount) Termine", systemImage: "calendar")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(.secondary)
-            }
+            SourceBadge(space: space)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .padding(.horizontal, 18)
         .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemGroupedBackground))
         )
     }
