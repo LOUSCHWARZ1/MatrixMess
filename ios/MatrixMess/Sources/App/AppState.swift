@@ -434,6 +434,8 @@ final class AppState: ObservableObject {
     @Published private(set) var calendarProviders: [CalendarProviderConnection] = []
     @Published private(set) var scheduledEvents: [ScheduledChatEvent] = []
     @Published private(set) var draftsByThreadID: [String: String] = [:]
+    /// Maps room IDs to the list of user IDs currently typing in that room.
+    @Published private(set) var typingUsersByThreadID: [String: [String]] = [:]
 
     private let matrixService: MatrixService
     private let mediaService: MatrixMediaService
@@ -452,6 +454,7 @@ final class AppState: ObservableObject {
     private var hasBootstrapped = false
     private var isHydratingState = false
     private var verificationPollingTask: Task<Void, Never>?
+    private var typingDebounceTask: Task<Void, Never>?
 
     init(
         matrixService: MatrixService = MatrixService(),
@@ -558,6 +561,8 @@ final class AppState: ObservableObject {
         syncEngineState = .init()
         verificationFlowState = MatrixVerificationFlowState()
         stopVerificationPolling()
+        typingDebounceTask?.cancel()
+        typingDebounceTask = nil
         clearWorkspaceData()
 
         do {
@@ -1173,6 +1178,25 @@ final class AppState: ObservableObject {
             draftsByThreadID[threadID] = value
         }
         persistSnapshotIfPossible()
+        if typingIndicatorsEnabled {
+            scheduleTypingNotification(isTyping: !trimmed.isEmpty, roomID: threadID)
+        }
+    }
+
+    private func scheduleTypingNotification(isTyping: Bool, roomID: String) {
+        typingDebounceTask?.cancel()
+        // Capture the session synchronously on the main actor before dispatching.
+        let session = currentSession
+        typingDebounceTask = Task {
+            // Debounce: wait 400 ms before actually sending so we don't spam on every keystroke.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let session else { return }
+            try? await matrixService.sendTypingNotification(
+                isTyping: isTyping,
+                roomID: roomID,
+                session: session
+            )
+        }
     }
 
     func clearDraft(for threadID: String) {
@@ -1251,7 +1275,8 @@ final class AppState: ObservableObject {
                 senderDisplayName: "Du",
                 body: trimmed,
                 timestamp: .now,
-                isOutgoing: true
+                isOutgoing: true,
+                isPending: sentEventID == nil
             ),
             to: threadID,
             preview: trimmed
@@ -1861,6 +1886,19 @@ final class AppState: ObservableObject {
             messagesByThreadID = workspace.messagesByThreadID
             mainPinnedThreadIDs = workspace.mainPinnedThreadIDs
 
+            // Merge incoming typing users; clear rooms that are no longer typing.
+            var updatedTyping = typingUsersByThreadID
+            for (roomID, users) in workspace.typingUsersByThreadID {
+                updatedTyping[roomID] = users
+            }
+            // Remove rooms where the sync payload had no typing users (meaning everyone stopped).
+            for roomID in workspace.threadsByID.keys {
+                if workspace.typingUsersByThreadID[roomID] == nil {
+                    updatedTyping.removeValue(forKey: roomID)
+                }
+            }
+            typingUsersByThreadID = updatedTyping
+
             if !spaces.contains(where: { $0.id == selectedSpaceID }) {
                 selectedSpaceID = ChatSpace.mainID
             }
@@ -2041,6 +2079,7 @@ final class AppState: ObservableObject {
             calls = []
             scheduledEvents = []
             draftsByThreadID = [:]
+            typingUsersByThreadID = [:]
         }
 
         refreshDiagnosticsStatus()
