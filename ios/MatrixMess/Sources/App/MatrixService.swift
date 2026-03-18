@@ -172,27 +172,22 @@ final class MatrixService {
     }
 
     func sendMessage(_ text: String, roomID: String, session storedSession: MatrixSession, isEncrypted: Bool) async throws -> String? {
-        if isEncrypted {
-            return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
-        }
+        // Route all messages through the SDK timeline (handles both plain and encrypted).
+        return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
+    }
 
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw MatrixServiceError.serverError("Leere Nachrichten werden nicht gesendet.")
-        }
-
+    func sendTypingNotification(isTyping: Bool, roomID: String, session storedSession: MatrixSession) async throws {
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-        let txnID = UUID().uuidString.lowercased()
         let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        let encodedUserID = storedSession.userID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? storedSession.userID
 
-        let response: MatrixSendEventResponse = try await performRequest(
+        let _: EmptyMatrixResponse = try await performRequest(
             homeserver: homeserver,
-            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/send/m.room.message/\(txnID)",
+            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/typing/\(encodedUserID)",
             method: "PUT",
-            body: MatrixSendMessageRequest(body: trimmed),
+            body: MatrixTypingRequest(typing: isTyping, timeout: isTyping ? 30_000 : 0),
             accessToken: storedSession.accessToken
         )
-        return response.eventID
     }
 
     func sendReaction(
@@ -989,6 +984,8 @@ private struct ParsedRoomSnapshot {
         merged.forwardedFrom = incoming.forwardedFrom
         merged.linkedEventID = incoming.linkedEventID
         merged.matrixEventID = incoming.matrixEventID ?? existing.matrixEventID
+        // Once a server event is received for this message, it is no longer pending.
+        merged.isPending = false
         return merged
     }
 
