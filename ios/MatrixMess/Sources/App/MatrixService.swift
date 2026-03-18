@@ -512,10 +512,12 @@ final class MatrixService {
                 ?? previousThread?.lastMessagePreview
                 ?? (snapshot.isEncrypted ? "Verschluesselter Chat" : "Noch keine Nachrichten")
 
+            let resolvedName = snapshot.resolvedDisplayName(excluding: storedSession.userID)
+
             threadsByID[snapshot.roomID] = ChatThread(
                 id: snapshot.roomID,
                 homeSpaceID: assignedSpaceID,
-                title: snapshot.displayName,
+                title: resolvedName,
                 subtitle: snapshot.subtitle(for: descriptor(for: snapshot.classification)),
                 avatarSymbol: descriptor(for: snapshot.classification).avatarSymbol,
                 accent: assignedSpace.accent,
@@ -525,7 +527,7 @@ final class MatrixService {
                 isMuted: previousThread?.isMuted ?? false,
                 isEncrypted: snapshot.isEncrypted,
                 avatarContentURI: snapshot.avatarContentURI(excluding: storedSession.userID),
-                officialTitle: snapshot.displayName,
+                officialTitle: resolvedName,
                 bridgeLabel: descriptor(for: snapshot.classification).title,
                 memberCount: snapshot.memberCount,
                 topic: snapshot.topic.isEmpty ? nil : snapshot.topic,
@@ -701,6 +703,112 @@ private struct ParsedRoomSnapshot {
         combinedStateEvents.last(where: { $0.type == "m.room.name" })?.content?["name"]?.stringValue
             ?? combinedStateEvents.last(where: { $0.type == "m.room.canonical_alias" })?.content?["alias"]?.stringValue
             ?? roomID
+    }
+
+    /// Resolves a human-friendly display name for the room, using member
+    /// profiles and the room topic as fallbacks before resorting to the raw
+    /// room ID. This is especially important for bridged DM rooms (Signal,
+    /// WhatsApp, Instagram, etc.) where the Matrix room often has no explicit
+    /// ``m.room.name`` state event.
+    func resolvedDisplayName(excluding currentUserID: String) -> String {
+        // 1. Explicit room name
+        if let name = combinedStateEvents.last(where: { $0.type == "m.room.name" })?.content?["name"]?.stringValue,
+           !name.isEmpty {
+            return name
+        }
+
+        // 2. Canonical alias
+        if let alias = combinedStateEvents.last(where: { $0.type == "m.room.canonical_alias" })?.content?["alias"]?.stringValue,
+           !alias.isEmpty {
+            return alias
+        }
+
+        // 3. For DM rooms, try the other member's display name
+        if isDirect {
+            let otherMembers = memberProfiles.filter { $0.userID != currentUserID }
+            // Prefer a member whose display name differs from their user ID (i.e. has a real name set)
+            if let named = otherMembers.first(where: { $0.displayName != $0.userID && !$0.displayName.isEmpty }) {
+                return named.displayName
+            }
+            // Fall back to any other member – try to extract a readable name from the user ID
+            if let member = otherMembers.first {
+                return Self.friendlyName(from: member.userID) ?? member.displayName
+            }
+        }
+
+        // 4. For group rooms without a name, build from member names
+        if !isSpace {
+            let others = memberProfiles.filter { $0.userID != currentUserID }
+            let names: [String] = others.prefix(3).map { profile in
+                if profile.displayName != profile.userID && !profile.displayName.isEmpty {
+                    return profile.displayName
+                }
+                return Self.friendlyName(from: profile.userID) ?? profile.displayName
+            }
+            if !names.isEmpty {
+                let joined = names.joined(separator: ", ")
+                if others.count > 3 {
+                    return "\(joined) +\(others.count - 3)"
+                }
+                return joined
+            }
+        }
+
+        // 5. Try to extract a name from the room topic
+        if let extracted = Self.extractNameFromTopic(topic) {
+            return extracted
+        }
+
+        // 6. Last resort
+        return roomID
+    }
+
+    /// Known bridge user ID prefixes used by mautrix and other Matrix bridges.
+    private static let bridgePrefixes = ["signal_", "whatsapp_", "instagram_", "telegram_", "messenger_",
+                                         "discord_", "slack_", "imessage_", "meta_", "gmessages_", "sms_"]
+
+    /// Extracts a human-readable name from a bridge user ID.
+    /// For example ``@signal_491754011214:server`` → ``+491754011214``,
+    /// ``@whatsapp_491754011214:server`` → ``+491754011214``.
+    private static func friendlyName(from userID: String) -> String? {
+        // Strip leading '@' and trailing ':server'
+        var local = userID
+        if local.hasPrefix("@") { local = String(local.dropFirst()) }
+        if let colonIdx = local.firstIndex(of: ":") { local = String(local[local.startIndex..<colonIdx]) }
+
+        for prefix in bridgePrefixes {
+            if local.lowercased().hasPrefix(prefix) {
+                let contactIdentifier = String(local.dropFirst(prefix.count))
+                if !contactIdentifier.isEmpty {
+                    // If the identifier looks like a phone number, format it
+                    if contactIdentifier.allSatisfy({ $0.isNumber }) {
+                        return "+\(contactIdentifier)"
+                    }
+                    return contactIdentifier
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Attempts to extract a contact name from a bridge room topic.
+    /// Bridge topics often look like "Signal private chat with +491754011214".
+    private static func extractNameFromTopic(_ topic: String) -> String? {
+        guard !topic.isEmpty else { return nil }
+        let patterns = [
+            "private chat with ",
+            "chat with ",
+            "DM with ",
+            "Direktnachricht mit "
+        ]
+        let lower = topic.lowercased()
+        for pattern in patterns {
+            if let range = lower.range(of: pattern) {
+                let name = String(topic[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty { return name }
+            }
+        }
+        return nil
     }
 
     var topic: String {
