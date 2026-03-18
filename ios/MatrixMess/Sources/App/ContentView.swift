@@ -713,10 +713,10 @@ private struct ConversationDetailView: View {
                         .padding(.bottom, 28)
                     }
                     .background(Color(uiColor: .systemGroupedBackground))
-                    .onAppear {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            proxy.scrollTo(scrollAnchorID, anchor: .bottom)
-                        }
+                    .task(id: threadID) {
+                        // Give the layout one runloop pass to settle before scrolling.
+                        await Task.yield()
+                        proxy.scrollTo(scrollAnchorID, anchor: .bottom)
                     }
                     .onChange(of: appState.messages(for: thread.id).count) { _ in
                         withAnimation(.easeOut(duration: 0.25)) {
@@ -1183,6 +1183,8 @@ private struct MessageBubble: View {
     }
 }
 
+private let sharedLinkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
 private struct MessageBody: View {
     @EnvironmentObject private var appState: AppState
     let message: ChatMessage
@@ -1191,10 +1193,9 @@ private struct MessageBody: View {
     let attachmentAction: () -> Void
 
     private var firstURL: URL? {
-        guard message.kind == .text else { return nil }
-        let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        guard message.kind == .text, !message.body.isEmpty else { return nil }
         let range = NSRange(message.body.startIndex..., in: message.body)
-        return detector?.firstMatch(in: message.body, range: range).flatMap {
+        return sharedLinkDetector?.firstMatch(in: message.body, range: range).flatMap {
             $0.url
         }
     }
@@ -1313,6 +1314,7 @@ private struct InlineImageAttachment: View {
 
 private struct InlineVideoAttachment: View {
     @EnvironmentObject private var appState: AppState
+    @State private var localThumbnail: UIImage?
 
     let attachment: MessageAttachment
     let action: () -> Void
@@ -1320,8 +1322,7 @@ private struct InlineVideoAttachment: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                if let localCachePath = attachment.localCachePath,
-                   let thumbnail = videoThumbnail(from: localCachePath) {
+                if let thumbnail = localThumbnail {
                     Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFill()
@@ -1350,16 +1351,22 @@ private struct InlineVideoAttachment: View {
         .frame(maxWidth: .infinity)
         .frame(height: 188)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .task(id: attachment.localCachePath) {
+            guard let path = attachment.localCachePath else { return }
+            localThumbnail = await generateVideoThumbnail(from: path)
+        }
     }
 
-    private func videoThumbnail(from path: String) -> UIImage? {
-        let url = URL(fileURLWithPath: path)
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        let time = CMTime(seconds: 0, preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
-        return UIImage(cgImage: cgImage)
+    private func generateVideoThumbnail(from path: String) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            let url = URL(fileURLWithPath: path)
+            let asset = AVURLAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            let time = CMTime(seconds: 0, preferredTimescale: 600)
+            guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+            return UIImage(cgImage: cgImage)
+        }.value
     }
 }
 
@@ -2321,14 +2328,14 @@ private struct E2EEVerifySheet: View {
 
     private var statusColor: Color {
         if state.isVerified { return .green }
-        if state.statusLabel.contains("fehlgeschlagen") || state.statusLabel.contains("abgebrochen") { return .red }
+        if state.isFailed || state.isCancelled { return .red }
         return .blue
     }
 
     private var statusIcon: String {
         if state.isVerified { return "checkmark.shield.fill" }
-        if state.statusLabel.contains("fehlgeschlagen") { return "xmark.shield.fill" }
-        if state.statusLabel.contains("abgebrochen") { return "minus.shield.fill" }
+        if state.isFailed { return "xmark.shield.fill" }
+        if state.isCancelled { return "minus.shield.fill" }
         if !state.emojis.isEmpty || !state.decimals.isEmpty { return "lock.open.fill" }
         return "shield.lefthalf.filled"
     }
