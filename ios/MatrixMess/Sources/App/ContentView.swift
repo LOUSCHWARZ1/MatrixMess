@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import AVFoundation
+import WebKit
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
@@ -1222,7 +1223,11 @@ private struct MessageBody: View {
                 Text(message.body)
                     .fixedSize(horizontal: false, vertical: true)
                 if let url = firstURL {
-                    LinkPreviewCard(url: url, isOutgoing: isOutgoing, accent: accent)
+                    if let socialVideo = SocialVideoLink.detect(in: url) {
+                        SocialVideoCard(link: socialVideo, originalURL: url, isOutgoing: isOutgoing, accent: accent)
+                    } else {
+                        LinkPreviewCard(url: url, isOutgoing: isOutgoing, accent: accent)
+                    }
                 }
             }
         case .image:
@@ -1437,6 +1442,191 @@ private struct WaveformView: View {
     }
 }
 
+// MARK: - Social video detection & embed
+
+/// Parsed representation of a social-media video URL that can be embedded in-app.
+private enum SocialVideoLink {
+    case youtube(videoID: String)
+    case tiktok(videoID: String)
+    case instagram(shortCode: String)
+
+    var platformName: String {
+        switch self {
+        case .youtube: return "YouTube"
+        case .tiktok: return "TikTok"
+        case .instagram: return "Instagram"
+        }
+    }
+
+    var platformIcon: String {
+        switch self {
+        case .youtube: return "play.rectangle.fill"
+        case .tiktok: return "music.note.tv.fill"
+        case .instagram: return "camera.fill"
+        }
+    }
+
+    /// The aspect ratio (width / height) best suited for displaying this embed.
+    var aspectRatio: CGFloat {
+        switch self {
+        case .youtube: return 16.0 / 9.0
+        case .tiktok: return 9.0 / 16.0
+        case .instagram: return 4.0 / 5.0
+        }
+    }
+
+    var embedURL: URL? {
+        switch self {
+        case .youtube(let id):
+            return URL(string: "https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=0")
+        case .tiktok(let id):
+            return URL(string: "https://www.tiktok.com/embed/v2/\(id)")
+        case .instagram(let code):
+            return URL(string: "https://www.instagram.com/p/\(code)/embed/captioned/")
+        }
+    }
+
+    // MARK: Detection
+
+    static func detect(in url: URL) -> SocialVideoLink? {
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path
+
+        if host.contains("youtube.com") || host == "youtu.be" || host == "www.youtu.be" {
+            if let id = youtubeVideoID(from: url) { return .youtube(videoID: id) }
+        }
+        if host.contains("tiktok.com") {
+            if let id = tiktokVideoID(from: url) { return .tiktok(videoID: id) }
+        }
+        if host.contains("instagram.com") {
+            let parts = path.split(separator: "/").map(String.init)
+            if let first = parts.first, (first == "reel" || first == "p"), parts.count >= 2 {
+                return .instagram(shortCode: parts[1])
+            }
+        }
+        return nil
+    }
+
+    private static func youtubeVideoID(from url: URL) -> String? {
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path
+        // youtu.be/VIDEO_ID
+        if host == "youtu.be" || host == "www.youtu.be" {
+            let id = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            return id.isEmpty ? nil : id
+        }
+        // youtube.com/shorts/VIDEO_ID
+        if path.lowercased().hasPrefix("/shorts/") {
+            let id = String(path.dropFirst("/shorts/".count))
+            let clean = id.prefix(while: { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+            return clean.isEmpty ? nil : String(clean)
+        }
+        // youtube.com/watch?v=VIDEO_ID
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "v" })?.value
+    }
+
+    private static func tiktokVideoID(from url: URL) -> String? {
+        let parts = url.path.split(separator: "/").map(String.init)
+        if let idx = parts.firstIndex(of: "video"), idx + 1 < parts.count {
+            return parts[idx + 1]
+        }
+        return nil
+    }
+}
+
+/// Thin wrapper around WKWebView for social media embeds.
+private struct WebEmbedView: UIViewRepresentable {
+    let embedURL: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        let wv = WKWebView(frame: .zero, configuration: config)
+        wv.scrollView.isScrollEnabled = false
+        wv.backgroundColor = .black
+        wv.isOpaque = false
+        return wv
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        guard uiView.url != embedURL else { return }
+        uiView.load(URLRequest(url: embedURL))
+    }
+}
+
+/// A tappable card that expands in-place to an embedded video player.
+private struct SocialVideoCard: View {
+    let link: SocialVideoLink
+    let originalURL: URL
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if isExpanded, let embedURL = link.embedURL {
+                WebEmbedView(embedURL: embedURL)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(link.aspectRatio, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        isExpanded = false
+                    }
+                } label: {
+                    Label("Schließen", systemImage: "xmark.circle")
+                        .font(.caption)
+                        .foregroundColor(isOutgoing ? .white.opacity(0.72) : .secondary)
+                }
+            } else {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        isExpanded = true
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: link.platformIcon)
+                            .font(.title3)
+                            .foregroundColor(isOutgoing ? .white : accent.tint)
+                            .frame(width: 42, height: 42)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(isOutgoing ? Color.white.opacity(0.18) : accent.softTint)
+                            )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(link.platformName)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(isOutgoing ? .white.opacity(0.92) : accent.tint)
+                            Text(originalURL.host ?? originalURL.absoluteString)
+                                .font(.caption2)
+                                .foregroundColor(isOutgoing ? .white.opacity(0.68) : .secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "play.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(isOutgoing ? .white.opacity(0.88) : accent.tint)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(isOutgoing ? Color.white.opacity(0.12) : accent.softTint)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 private struct LinkPreviewCard: View {
     let url: URL
     let isOutgoing: Bool
@@ -1518,28 +1708,36 @@ private struct AttachmentCard: View {
 private struct TypingIndicatorBanner: View {
     let userIDs: [String]
 
-    @State private var dotPhase = 0
+    @State private var isAnimating = false
+
+    /// Extracts a friendly name from a Matrix user ID like "@alice:server.com" → "alice".
+    private func displayName(for userID: String) -> String {
+        guard userID.hasPrefix("@"), let colon = userID.firstIndex(of: ":") else { return userID }
+        let localpart = String(userID[userID.index(after: userID.startIndex)..<colon])
+        return localpart.isEmpty ? userID : localpart
+    }
 
     private var label: String {
-        switch userIDs.count {
-        case 1: return "\(userIDs[0]) tippt…"
-        case 2: return "\(userIDs[0]) und \(userIDs[1]) tippen…"
-        default: return "\(userIDs.count) Personen tippen…"
+        let names = userIDs.map { displayName(for: $0) }
+        switch names.count {
+        case 1: return "\(names[0]) tippt…"
+        case 2: return "\(names[0]) und \(names[1]) tippen…"
+        default: return "\(names.count) Personen tippen…"
         }
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            HStack(spacing: 3) {
+            HStack(spacing: 4) {
                 ForEach(0..<3, id: \.self) { index in
                     Circle()
                         .frame(width: 6, height: 6)
-                        .scaleEffect(dotPhase == index ? 1.4 : 1.0)
+                        .scaleEffect(isAnimating ? 1.0 : 1.5)
                         .animation(
-                            .easeInOut(duration: 0.4)
-                                .repeatForever()
-                                .delay(Double(index) * 0.15),
-                            value: dotPhase
+                            .easeInOut(duration: 0.5)
+                                .repeatForever(autoreverses: true)
+                                .delay(Double(index) * 0.18),
+                            value: isAnimating
                         )
                 }
             }
@@ -1553,11 +1751,8 @@ private struct TypingIndicatorBanner: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .background(Color(uiColor: .systemBackground).opacity(0.92))
-        .onAppear {
-            withAnimation(.linear(duration: 0.4).repeatForever()) {
-                dotPhase = (dotPhase + 1) % 3
-            }
-        }
+        .onAppear { isAnimating = true }
+        .onDisappear { isAnimating = false }
     }
 }
 
