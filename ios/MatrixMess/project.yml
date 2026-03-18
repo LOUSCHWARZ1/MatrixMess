@@ -27,6 +27,7 @@ targets:
       base:
         PRODUCT_NAME: MatrixMess
         PRODUCT_BUNDLE_IDENTIFIER: dev.matrixmess.app
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_ENTITLEMENTS: Sources/App/MatrixMess.entitlements
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: MatrixMess
