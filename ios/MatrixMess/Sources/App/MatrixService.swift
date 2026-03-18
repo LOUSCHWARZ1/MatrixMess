@@ -367,7 +367,7 @@ final class MatrixService {
     ) async throws -> MatrixSyncResponse {
         var queryItems = [
             URLQueryItem(name: "timeout", value: fullState ? "0" : "30000"),
-            URLQueryItem(name: "set_presence", value: "offline")
+            URLQueryItem(name: "set_presence", value: "online")
         ]
 
         if fullState {
