@@ -547,6 +547,7 @@ private struct ConversationRow: View {
                         .foregroundColor(.secondary)
                 }
 
+                // U+270E = ✎ pencil (draft indicator)
                 Text(draftPreview.map { "\u{270E} \($0)" } ?? thread.lastMessagePreview)
                     .font(.subheadline)
                     .foregroundColor(draftPreview == nil ? .secondary : .orange)
