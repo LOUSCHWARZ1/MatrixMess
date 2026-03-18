@@ -1537,7 +1537,7 @@ private struct CallsView: View {
             }
 
             Section("Letzte Calls") {
-                ForEach(appState.calls.sorted(by: { $0.startedAt > $1.startedAt })) { call in
+                ForEach(appState.calls) { call in
                     let thread = appState.thread(withID: call.threadID)
 
                     Button {

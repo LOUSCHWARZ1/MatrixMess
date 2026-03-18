@@ -860,10 +860,16 @@ final class AppState: ObservableObject {
             }
 
             var mergedEvents = scheduledEvents
+            var providerEventIDToIndex: [String: Int] = [:]
+            for (index, event) in mergedEvents.enumerated() {
+                if let pid = event.providerEventIDs[providerKind.rawValue] {
+                    providerEventIDToIndex[pid] = index
+                }
+            }
             for fetchedEvent in events {
                 let providerEventID = fetchedEvent.providerEventIDs[providerKind.rawValue]
                 if let providerEventID,
-                   let existingIndex = mergedEvents.firstIndex(where: { $0.providerEventIDs[providerKind.rawValue] == providerEventID }) {
+                   let existingIndex = providerEventIDToIndex[providerEventID] {
                     var updatedEvent = mergedEvents[existingIndex]
                     updatedEvent = ScheduledChatEvent(
                         id: updatedEvent.id,
@@ -1004,7 +1010,7 @@ final class AppState: ObservableObject {
             return mainPinnedThreadIDs.count
         }
 
-        return threadsByID.values.filter { $0.homeSpaceID == spaceID }.count
+        return threadsByID.values.lazy.filter { $0.homeSpaceID == spaceID }.count
     }
 
     func visibleThreads(in spaceID: String? = nil) -> [ChatThread] {
@@ -1033,7 +1039,7 @@ final class AppState: ObservableObject {
     }
 
     func messages(for threadID: String) -> [ChatMessage] {
-        messagesByThreadID[threadID, default: []].sorted { $0.timestamp < $1.timestamp }
+        messagesByThreadID[threadID, default: []]
     }
 
     func sharedMedia(for threadID: String) -> [ChatMessage] {
@@ -1041,9 +1047,7 @@ final class AppState: ObservableObject {
     }
 
     func events(for threadID: String) -> [ScheduledChatEvent] {
-        scheduledEvents
-            .filter { $0.threadID == threadID }
-            .sorted { $0.startDate < $1.startDate }
+        scheduledEvents.filter { $0.threadID == threadID }
     }
 
     func forwardTargets(excluding threadID: String) -> [ChatThread] {
@@ -1068,9 +1072,7 @@ final class AppState: ObservableObject {
     }
 
     func upcomingEvents() -> [ScheduledChatEvent] {
-        scheduledEvents
-            .filter { $0.endDate >= .now.addingTimeInterval(-3600) }
-            .sorted { $0.startDate < $1.startDate }
+        scheduledEvents.filter { $0.endDate >= .now.addingTimeInterval(-3600) }
     }
 
     func draft(for threadID: String) -> String {
@@ -1364,7 +1366,6 @@ final class AppState: ObservableObject {
     private func markThreadReadRemotely(_ threadID: String) async {
         guard let currentSession,
               let latestEventID = messagesByThreadID[threadID]?
-                .sorted(by: { $0.timestamp < $1.timestamp })
                 .last?
                 .matrixEventID else {
             return
@@ -1861,9 +1862,9 @@ final class AppState: ObservableObject {
             if includeWorkspace {
                 spaces = snapshot.spaces
                 threadsByID = snapshot.threadsByID
-                messagesByThreadID = snapshot.messagesByThreadID
+                messagesByThreadID = snapshot.messagesByThreadID.mapValues { $0.sorted { $0.timestamp < $1.timestamp } }
                 mainPinnedThreadIDs = snapshot.mainPinnedThreadIDs
-                calls = snapshot.calls
+                calls = snapshot.calls.sorted { $0.startedAt > $1.startedAt }
                 calendarProviders = snapshot.calendarProviders
                 scheduledEvents = snapshot.scheduledEvents
                 draftsByThreadID = snapshot.draftsByThreadID
@@ -1979,7 +1980,7 @@ final class AppState: ObservableObject {
     }
 
     private func recalculateThreadPreview(for threadID: String) {
-        guard let latest = messagesByThreadID[threadID]?.sorted(by: { $0.timestamp < $1.timestamp }).last else {
+        guard let latest = messagesByThreadID[threadID]?.last else {
             return
         }
 
