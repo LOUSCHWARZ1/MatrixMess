@@ -1200,7 +1200,9 @@ final class AppState: ObservableObject {
 
         if var messages = messagesByThreadID[threadID],
            let index = messages.firstIndex(where: { $0.id == messageID }) {
-            messages[index].matrixEventID = sentEventID
+            if let sentEventID {
+                messages[index].matrixEventID = sentEventID
+            }
             messages[index].sendStatus = sendFailed ? .failed : .sent
             messagesByThreadID[threadID] = messages
         }
