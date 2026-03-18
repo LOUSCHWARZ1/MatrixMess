@@ -176,6 +176,10 @@ struct ChatMessage: Identifiable, Hashable, Codable {
     var linkedEventID: UUID?
     var reactions: [MessageReaction]
     var isEdited: Bool
+    var isPending: Bool
+
+    /// True when the server has not yet confirmed this outgoing message.
+    var isDelivered: Bool { !isPending }
 
     init(
         id: UUID = UUID(),
@@ -189,7 +193,8 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         forwardedFrom: String? = nil,
         linkedEventID: UUID? = nil,
         reactions: [MessageReaction] = [],
-        isEdited: Bool = false
+        isEdited: Bool = false,
+        isPending: Bool = false
     ) {
         self.id = id
         self.matrixEventID = matrixEventID
@@ -203,6 +208,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         self.linkedEventID = linkedEventID
         self.reactions = reactions
         self.isEdited = isEdited
+        self.isPending = isPending
     }
 }
 
