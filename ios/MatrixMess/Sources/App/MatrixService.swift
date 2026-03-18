@@ -101,6 +101,26 @@ final class MatrixService {
         try await sdkContext.recover(session: session, recoveryKey: recoveryKey)
     }
 
+    func currentVerificationFlowState() async -> MatrixVerificationFlowState {
+        await sdkContext.currentVerificationFlowState()
+    }
+
+    func startSasVerification(session: MatrixSession) async throws {
+        try await sdkContext.startSasVerification(session: session)
+    }
+
+    func approveVerification(session: MatrixSession) async throws {
+        try await sdkContext.approveVerification(session: session)
+    }
+
+    func declineVerification(session: MatrixSession) async throws {
+        try await sdkContext.declineVerification(session: session)
+    }
+
+    func cancelVerification(session: MatrixSession) async throws {
+        try await sdkContext.cancelVerification(session: session)
+    }
+
     func requestOwnDeviceVerification(session: MatrixSession) async throws {
         try await sdkContext.requestDeviceVerification(session: session)
     }
@@ -975,8 +995,11 @@ private struct ParsedRoomSnapshot {
             guard message.matrixEventID == nil else { return false }
             guard message.isOutgoing == incoming.isOutgoing else { return false }
             guard message.kind == incoming.kind else { return false }
-            guard message.body == incoming.body else { return false }
-
+            // For encrypted messages the server-side body becomes "Verschluesselte Nachricht".
+            // In that case skip the body comparison and rely on sender + timestamp proximity.
+            if incoming.body != "Verschluesselte Nachricht" {
+                guard message.body == incoming.body else { return false }
+            }
             let delta = abs(message.timestamp.timeIntervalSince(incoming.timestamp))
             return delta < 180
         }

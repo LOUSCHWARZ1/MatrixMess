@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import AVFoundation
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
@@ -459,9 +460,19 @@ private struct ConversationRow: View {
                     .lineLimit(2)
 
                 HStack(spacing: 10) {
-                    Text(thread.subtitle)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    if let bridgeLabel = thread.bridgeLabel, appState.selectedSpaceID != ChatSpace.mainID {
+                        Text(bridgeLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(thread.accent.tint)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(thread.accent.softTint)
+                            .clipShape(Capsule())
+                    } else {
+                        Text(thread.subtitle)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
 
                     if thread.isEncrypted {
                         Label("E2EE", systemImage: "lock.fill")
@@ -625,8 +636,11 @@ private struct ConversationDetailView: View {
     @State private var pendingImportKind: ChatMessageKind?
     @State private var showingProfileSheet = false
     @State private var showingMediaLibraryPicker = false
+    @State private var isSending = false
 
     let threadID: String
+
+    private let scrollAnchorID = "conversationBottom"
 
     private var thread: ChatThread? { appState.thread(withID: threadID) }
     private var sourceSpace: ChatSpace? {
@@ -643,59 +657,74 @@ private struct ConversationDetailView: View {
     var body: some View {
         Group {
             if let thread {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        if let sourceSpace {
-                            Button {
-                                showingProfileSheet = true
-                            } label: {
-                                ConversationHero(
-                                    space: sourceSpace,
-                                    thread: thread,
-                                    mediaCount: appState.sharedMedia(for: thread.id).count,
-                                    eventCount: appState.events(for: thread.id).count
-                                )
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            if let sourceSpace {
+                                Button {
+                                    showingProfileSheet = true
+                                } label: {
+                                    ConversationHero(
+                                        space: sourceSpace,
+                                        thread: thread,
+                                        mediaCount: appState.sharedMedia(for: thread.id).count,
+                                        eventCount: appState.events(for: thread.id).count
+                                    )
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
-                        }
 
-                          ForEach(appState.messages(for: thread.id)) { message in
-                              MessageBubble(
-                                  message: message,
-                                  accent: thread.accent,
-                                  attachmentAction: {
-                                      Task {
-                                          await appState.downloadAttachment(messageID: message.id, in: thread.id)
+                              ForEach(appState.messages(for: thread.id)) { message in
+                                  MessageBubble(
+                                      message: message,
+                                      accent: thread.accent,
+                                      attachmentAction: {
+                                          Task {
+                                              await appState.downloadAttachment(messageID: message.id, in: thread.id)
+                                          }
+                                      },
+                                      reactAction: { emoji in
+                                          Task {
+                                              await appState.toggleReaction(emoji, on: message.id, in: thread.id)
+                                          }
+                                      },
+                                      forwardAction: {
+                                          forwardingMessageID = message.id
+                                          showingForwardDialog = true
+                                      },
+                                      editAction: {
+                                          editingMessageID = message.id
+                                          editingText = message.body
+                                      },
+                                      deleteAction: {
+                                          Task {
+                                              await appState.redactMessage(message.id, in: thread.id)
+                                          }
                                       }
-                                  },
-                                  reactAction: { emoji in
-                                      Task {
-                                          await appState.toggleReaction(emoji, on: message.id, in: thread.id)
-                                      }
-                                  },
-                                  forwardAction: {
-                                      forwardingMessageID = message.id
-                                      showingForwardDialog = true
-                                  },
-                                  editAction: {
-                                      editingMessageID = message.id
-                                      editingText = message.body
-                                  },
-                                  deleteAction: {
-                                      Task {
-                                          await appState.redactMessage(message.id, in: thread.id)
-                                      }
-                                  }
-                              )
-                          }
+                                  )
+                              }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(scrollAnchorID)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 28)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 28)
-                }
-                .background(Color(uiColor: .systemGroupedBackground))
-                .navigationTitle(thread.title)
-                .navigationBarTitleDisplayMode(.inline)
+                    .background(Color(uiColor: .systemGroupedBackground))
+                    .onAppear {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                        }
+                    }
+                    .onChange(of: appState.messages(for: thread.id).count) { _ in
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                        }
+                    }
+                    .navigationTitle(thread.title)
+                    .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItemGroup(placement: .navigationBarTrailing) {
                         Button {
@@ -746,9 +775,12 @@ private struct ConversationDetailView: View {
                       ComposerBar(
                           draft: draftBinding,
                           accent: thread.accent,
+                          isSending: isSending,
                           sendAction: {
                               Task {
+                                  isSending = true
                                   await appState.sendMessage(appState.draft(for: thread.id), to: thread.id)
+                                  isSending = false
                               }
                           },
                           attachmentAction: { kind in
@@ -849,6 +881,7 @@ private struct ConversationDetailView: View {
                   ) { result in
                       handleImportedFile(result, for: thread.id)
                   }
+                }  // ScrollViewReader
             } else {
                 Text("Chat nicht gefunden")
                     .foregroundColor(.secondary)
@@ -1157,17 +1190,61 @@ private struct MessageBody: View {
     let accent: SpaceAccent
     let attachmentAction: () -> Void
 
+    private var firstURL: URL? {
+        guard message.kind == .text else { return nil }
+        let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        let range = NSRange(message.body.startIndex..., in: message.body)
+        return detector?.firstMatch(in: message.body, range: range).flatMap {
+            $0.url
+        }
+    }
+
     var body: some View {
         switch message.kind {
         case .text:
-            Text(message.body)
-                .fixedSize(horizontal: false, vertical: true)
-        case .voice, .image, .video, .file, .event:
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message.body)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let url = firstURL {
+                    LinkPreviewCard(url: url, isOutgoing: isOutgoing, accent: accent)
+                }
+            }
+        case .image:
             VStack(alignment: .leading, spacing: 10) {
                 if let attachment = message.attachment {
-                    if message.kind == .image {
-                        InlineImageAttachment(attachment: attachment)
+                    InlineImageAttachment(attachment: attachment)
+                    if !message.body.isEmpty {
+                        Text(message.body)
+                            .font(.subheadline)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+            }
+        case .video:
+            VStack(alignment: .leading, spacing: 10) {
+                if let attachment = message.attachment {
+                    InlineVideoAttachment(attachment: attachment, action: attachmentAction)
+                    if !message.body.isEmpty {
+                        Text(message.body)
+                            .font(.subheadline)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .voice:
+            VStack(alignment: .leading, spacing: 10) {
+                if let attachment = message.attachment {
+                    InlineVoiceAttachment(
+                        attachment: attachment,
+                        isOutgoing: isOutgoing,
+                        accent: accent,
+                        action: attachmentAction
+                    )
+                }
+            }
+        case .file, .event:
+            VStack(alignment: .leading, spacing: 10) {
+                if let attachment = message.attachment {
                     AttachmentCard(
                         attachment: attachment,
                         isOutgoing: isOutgoing,
@@ -1175,7 +1252,6 @@ private struct MessageBody: View {
                         action: attachmentAction
                     )
                 }
-
                 if !message.body.isEmpty {
                     Text(message.body)
                         .font(.subheadline)
@@ -1205,21 +1281,177 @@ private struct InlineImageAttachment: View {
                         image
                             .resizable()
                             .scaledToFill()
+                    case .failure:
+                        imagePlaceholder(icon: "photo.slash")
                     default:
-                        Rectangle()
-                            .fill(Color(uiColor: .tertiarySystemGroupedBackground))
-                            .overlay(
-                                Image(systemName: "photo")
-                                    .font(.title2.weight(.semibold))
-                                    .foregroundColor(.secondary)
-                            )
+                        ZStack {
+                            imagePlaceholder(icon: "photo")
+                            ProgressView()
+                        }
                     }
                 }
+            } else {
+                imagePlaceholder(icon: "photo")
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 188)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func imagePlaceholder(icon: String) -> some View {
+        Rectangle()
+            .fill(Color(uiColor: .tertiarySystemGroupedBackground))
+            .overlay(
+                Image(systemName: icon)
+                    .font(.title2.weight(.semibold))
+                    .foregroundColor(.secondary)
+            )
+    }
+}
+
+private struct InlineVideoAttachment: View {
+    @EnvironmentObject private var appState: AppState
+
+    let attachment: MessageAttachment
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if let localCachePath = attachment.localCachePath,
+                   let thumbnail = videoThumbnail(from: localCachePath) {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                } else if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
+                    AsyncImage(url: remoteURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        default:
+                            Rectangle().fill(Color(uiColor: .tertiarySystemGroupedBackground))
+                        }
+                    }
+                } else {
+                    Rectangle().fill(Color.black.opacity(0.7))
+                }
+
+                Circle()
+                    .fill(Color.black.opacity(0.52))
+                    .frame(width: 54, height: 54)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .frame(height: 188)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func videoThumbnail(from path: String) -> UIImage? {
+        let url = URL(fileURLWithPath: path)
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        let time = CMTime(seconds: 0, preferredTimescale: 600)
+        guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+}
+
+private struct InlineVoiceAttachment: View {
+    let attachment: MessageAttachment
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(isOutgoing ? Color.white.opacity(0.22) : accent.softTint)
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(isOutgoing ? .white : accent.tint)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    WaveformView(isOutgoing: isOutgoing, accent: accent)
+                        .frame(height: 28)
+                    Text(attachment.subtitle)
+                        .font(.caption2)
+                        .foregroundColor(isOutgoing ? .white.opacity(0.72) : .secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct WaveformView: View {
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+    private let barCount = 24
+    private let seed: [CGFloat] = [0.4, 0.7, 0.5, 1.0, 0.8, 0.6, 0.9, 0.4,
+                                    0.7, 0.5, 0.8, 1.0, 0.6, 0.9, 0.5, 0.7,
+                                    0.4, 0.8, 1.0, 0.6, 0.5, 0.9, 0.7, 0.4]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { index in
+                Capsule()
+                    .fill(isOutgoing ? Color.white.opacity(0.82) : accent.tint.opacity(0.72))
+                    .frame(width: 2, height: max(4, seed[index % seed.count] * 28))
+            }
+        }
+    }
+}
+
+private struct LinkPreviewCard: View {
+    let url: URL
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+
+    var body: some View {
+        Link(destination: url) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(isOutgoing ? Color.white.opacity(0.72) : accent.tint)
+                    .frame(width: 3)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(url.host ?? url.absoluteString)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(isOutgoing ? .white.opacity(0.92) : accent.tint)
+                        .lineLimit(1)
+                    Text(url.absoluteString)
+                        .font(.caption2)
+                        .foregroundColor(isOutgoing ? .white.opacity(0.68) : .secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "arrow.up.right.square")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(isOutgoing ? .white.opacity(0.72) : accent.tint)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isOutgoing ? Color.white.opacity(0.12) : accent.softTint)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1264,6 +1496,7 @@ private struct AttachmentCard: View {
 private struct ComposerBar: View {
     @Binding var draft: String
     let accent: SpaceAccent
+    var isSending: Bool = false
     let sendAction: () -> Void
     let attachmentAction: (ChatMessageKind) -> Void
     let eventAction: () -> Void
@@ -1296,14 +1529,23 @@ private struct ComposerBar: View {
                 Button {
                     sendAction()
                 } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundColor(.white)
-                        .frame(width: 34, height: 34)
-                        .background(accent.tint)
-                        .clipShape(Circle())
+                    ZStack {
+                        Circle()
+                            .fill(accent.tint)
+                            .frame(width: 34, height: 34)
+                        if isSending {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .tint(.white)
+                                .scaleEffect(0.72)
+                        } else {
+                            Image(systemName: "paperplane.fill")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundColor(.white)
+                        }
+                    }
                 }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
@@ -1775,6 +2017,7 @@ private struct MediaLibraryPicker: UIViewControllerRepresentable {
 private struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @State private var showingRecoverySheet = false
+    @State private var showingVerifySheet = false
 
     var body: some View {
         Form {
@@ -1886,6 +2129,13 @@ private struct SettingsView: View {
                 settingsValueRow(label: "APNs erlaubt", value: appState.pushNotificationsAuthorized ? "Ja" : "Nein")
                 settingsValueRow(label: "APNs-Token", value: appState.remoteNotificationTokenAvailable ? "Vorhanden" : "Fehlt")
 
+                if appState.verificationFlowState.isActive || appState.verificationFlowState.isVerified {
+                    Button("Verifizierung anzeigen") {
+                        showingVerifySheet = true
+                    }
+                    .foregroundColor(appState.verificationFlowState.isVerified ? .green : .blue)
+                }
+
                 Button("Crypto vorbereiten") {
                     Task { await appState.prepareCryptoStack() }
                 }
@@ -1895,7 +2145,10 @@ private struct SettingsView: View {
                 }
 
                 Button("Dieses Geraet verifizieren") {
-                    Task { await appState.requestCurrentDeviceVerification() }
+                    Task {
+                        await appState.requestCurrentDeviceVerification()
+                        showingVerifySheet = true
+                    }
                 }
             }
 
@@ -1931,6 +2184,15 @@ private struct SettingsView: View {
         .sheet(isPresented: $showingRecoverySheet) {
             RecoveryKeySheet {
                 await appState.recoverEncryption(with: $0)
+            }
+        }
+        .sheet(isPresented: $showingVerifySheet) {
+            E2EEVerifySheet()
+                .environmentObject(appState)
+        }
+        .onChange(of: appState.verificationFlowState.isActive) { isActive in
+            if isActive {
+                showingVerifySheet = true
             }
         }
     }
@@ -1982,6 +2244,234 @@ private struct RecoveryKeySheet: View {
                     }
                     .disabled(recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+            }
+        }
+    }
+}
+
+private struct E2EEVerifySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    private var state: MatrixVerificationFlowState { appState.verificationFlowState }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 24) {
+                    verificationStatusHeader
+
+                    if state.isVerified {
+                        verifiedView
+                    } else if !state.emojis.isEmpty {
+                        emojiGrid
+                        verificationActions
+                    } else if !state.decimals.isEmpty {
+                        decimalsView
+                        verificationActions
+                    } else {
+                        pendingView
+                    }
+                }
+                .padding(24)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("Geraet verifizieren")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var verificationStatusHeader: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(statusColor.opacity(0.14))
+                    .frame(width: 76, height: 76)
+                Image(systemName: statusIcon)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(statusColor)
+            }
+            Text(state.statusLabel)
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            if let detail = state.detailLabel {
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            if let senderUserID = state.senderUserID {
+                Label(senderUserID, systemImage: "person.crop.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+        )
+    }
+
+    private var statusColor: Color {
+        if state.isVerified { return .green }
+        if state.statusLabel.contains("fehlgeschlagen") || state.statusLabel.contains("abgebrochen") { return .red }
+        return .blue
+    }
+
+    private var statusIcon: String {
+        if state.isVerified { return "checkmark.shield.fill" }
+        if state.statusLabel.contains("fehlgeschlagen") { return "xmark.shield.fill" }
+        if state.statusLabel.contains("abgebrochen") { return "minus.shield.fill" }
+        if !state.emojis.isEmpty || !state.decimals.isEmpty { return "lock.open.fill" }
+        return "shield.lefthalf.filled"
+    }
+
+    private var verifiedView: some View {
+        VStack(spacing: 16) {
+            Text("Dein Geraet ist jetzt mit diesem Geraet verifiziert. Verschluesselte Nachrichten werden korrekt entschluesselt.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 8)
+            Button("Fertig") { dismiss() }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var pendingView: some View {
+        VStack(spacing: 16) {
+            if state.canStartSas {
+                Text("Die andere Seite hat die Anfrage akzeptiert. Starte jetzt die SAS-Verifizierung.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("SAS-Verifizierung starten") {
+                    Task { await appState.startSasVerification() }
+                }
+                .buttonStyle(.borderedProminent)
+            } else if state.canApprove {
+                Text("Warte auf Verifizierungsdaten ...")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                ProgressView()
+            } else {
+                ProgressView()
+                Text("Warte auf die andere Seite ...")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+
+            if state.canCancel {
+                Button("Abbrechen", role: .cancel) {
+                    Task { await appState.cancelVerification() }
+                }
+                .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private var emojiGrid: some View {
+        VStack(spacing: 16) {
+            Text("Vergleiche diese Emoji auf beiden Geraeten. Sie muessen identisch sein.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(state.emojis.indices, id: \.self) { index in
+                    let emoji = state.emojis[index]
+                    VStack(spacing: 6) {
+                        Text(emoji.symbol)
+                            .font(.system(size: 34))
+                        Text(emoji.description)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                    )
+                }
+            }
+        }
+    }
+
+    private var decimalsView: some View {
+        VStack(spacing: 16) {
+            Text("Vergleiche diese Zahlen auf beiden Geraeten. Sie muessen identisch sein.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 20) {
+                ForEach(state.decimals, id: \.self) { value in
+                    Text("\(value)")
+                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                        )
+                }
+            }
+        }
+    }
+
+    private var verificationActions: some View {
+        VStack(spacing: 12) {
+            if state.canApprove {
+                Button {
+                    Task { await appState.approveVerification() }
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Sie stimmen ueberein", systemImage: "checkmark.circle.fill")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Spacer()
+                    }
+                    .padding(.vertical, 14)
+                    .background(Color.green)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if state.canDecline {
+                Button {
+                    Task { await appState.declineVerification() }
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Sie stimmen NICHT ueberein", systemImage: "xmark.circle.fill")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Spacer()
+                    }
+                    .padding(.vertical, 14)
+                    .background(Color.red)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if state.canCancel {
+                Button("Abbrechen", role: .cancel) {
+                    Task { await appState.cancelVerification() }
+                }
+                .foregroundColor(.secondary)
             }
         }
     }

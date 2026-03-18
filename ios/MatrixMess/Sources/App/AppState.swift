@@ -355,6 +355,7 @@ final class AppState: ObservableObject {
         keyBackupConfigured: false,
         deviceVerificationAvailable: false
     )
+    @Published private(set) var verificationFlowState = MatrixVerificationFlowState()
     @Published private(set) var pushNotificationsAuthorized = false
     @Published private(set) var remoteNotificationTokenAvailable = false
     @Published private(set) var activeCallRoomID: String?
@@ -444,6 +445,7 @@ final class AppState: ObservableObject {
 
     private var hasBootstrapped = false
     private var isHydratingState = false
+    private var verificationPollingTask: Task<Void, Never>?
 
     init(
         matrixService: MatrixService = MatrixService(),
@@ -548,6 +550,8 @@ final class AppState: ObservableObject {
         errorMessage = nil
         isSyncing = false
         syncEngineState = .init()
+        verificationFlowState = MatrixVerificationFlowState()
+        stopVerificationPolling()
         clearWorkspaceData()
 
         do {
@@ -641,10 +645,82 @@ final class AppState: ObservableObject {
         do {
             try await cryptoService.requestDeviceVerification(session: currentSession)
             cryptoStatus = await cryptoService.currentStatus(session: currentSession)
+            await refreshVerificationState()
+            startVerificationPolling()
         } catch {
             errorMessage = error.localizedDescription
             AppLogger.error("Geraeteverifizierung konnte nicht gestartet werden: \(error.localizedDescription)")
         }
+    }
+
+    func startSasVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.startSasVerification(session: currentSession)
+            await refreshVerificationState()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("SAS-Verifizierung konnte nicht gestartet werden: \(error.localizedDescription)")
+        }
+    }
+
+    func approveVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.approveVerification(session: currentSession)
+            await refreshVerificationState()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Verifizierung konnte nicht bestaetigt werden: \(error.localizedDescription)")
+        }
+    }
+
+    func declineVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.declineVerification(session: currentSession)
+            await refreshVerificationState()
+            stopVerificationPolling()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Verifizierung konnte nicht abgelehnt werden: \(error.localizedDescription)")
+        }
+    }
+
+    func cancelVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.cancelVerification(session: currentSession)
+            await refreshVerificationState()
+            stopVerificationPolling()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Verifizierung konnte nicht abgebrochen werden: \(error.localizedDescription)")
+        }
+    }
+
+    func refreshVerificationState() async {
+        verificationFlowState = await cryptoService.currentVerificationState()
+    }
+
+    private func startVerificationPolling() {
+        verificationPollingTask?.cancel()
+        verificationPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                await self.refreshVerificationState()
+                let state = self.verificationFlowState
+                if state.isVerified || !state.isActive {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+    }
+
+    private func stopVerificationPolling() {
+        verificationPollingTask?.cancel()
+        verificationPollingTask = nil
     }
 
     func requestPushNotifications() async {
@@ -1139,27 +1215,26 @@ final class AppState: ObservableObject {
     func sendMessage(_ text: String, to threadID: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard let currentSession, let thread = thread(withID: threadID) else { return }
 
         var sentEventID: String?
         var requiresFollowupRefresh = false
-        if let currentSession, let thread = thread(withID: threadID) {
-            do {
-                sentEventID = try await matrixService.sendMessage(
-                    trimmed,
-                    roomID: threadID,
-                    session: currentSession,
-                    isEncrypted: thread.isEncrypted
-                )
-                requiresFollowupRefresh = thread.isEncrypted || sentEventID == nil
-            } catch {
-                errorMessage = error.localizedDescription
+        do {
+            sentEventID = try await matrixService.sendMessage(
+                trimmed,
+                roomID: threadID,
+                session: currentSession,
+                isEncrypted: thread.isEncrypted
+            )
+            requiresFollowupRefresh = thread.isEncrypted || sentEventID == nil
+        } catch {
+            errorMessage = error.localizedDescription
 
-                var updatedDiagnostics = diagnostics
-                updatedDiagnostics.lastErrorDescription = error.localizedDescription
-                updatedDiagnostics.statusNote = "Nachricht konnte nicht an den Homeserver gesendet werden."
-                diagnostics = updatedDiagnostics
-                return
-            }
+            var updatedDiagnostics = diagnostics
+            updatedDiagnostics.lastErrorDescription = error.localizedDescription
+            updatedDiagnostics.statusNote = "Nachricht konnte nicht an den Homeserver gesendet werden."
+            diagnostics = updatedDiagnostics
+            return
         }
 
         appendMessage(
