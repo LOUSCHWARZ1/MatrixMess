@@ -303,8 +303,8 @@ actor MatrixSDKContext {
         return try await ClientBuilder()
             .homeserverUrl(url: homeserver)
             .sessionPaths(
-                dataPath: sessionPaths.data.path(percentEncoded: false),
-                cachePath: sessionPaths.cache.path(percentEncoded: false)
+                dataPath: sessionPaths.data.path,
+                cachePath: sessionPaths.cache.path
             )
             .autoEnableCrossSigning(autoEnableCrossSigning: true)
             .autoEnableBackups(autoEnableBackups: true)

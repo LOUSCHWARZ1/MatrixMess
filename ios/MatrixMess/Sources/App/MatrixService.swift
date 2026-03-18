@@ -149,7 +149,7 @@ final class MatrixService {
         )
     }
 
-    func sendMessage(_ text: String, roomID: String, session storedSession: MatrixSession, isEncrypted: Bool) async throws -> String {
+    func sendMessage(_ text: String, roomID: String, session storedSession: MatrixSession, isEncrypted: Bool) async throws -> String? {
         if isEncrypted {
             return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
         }
