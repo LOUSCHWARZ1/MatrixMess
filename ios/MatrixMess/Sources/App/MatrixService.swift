@@ -428,6 +428,18 @@ final class MatrixService {
             )
         }
 
+        // Parse m.typing ephemeral events for each room.
+        var typingUsersByThreadID: [String: [String]] = [:]
+        for (roomID, room) in joinedRooms {
+            guard let ephemeralEvents = room.ephemeral?.events else { continue }
+            for event in ephemeralEvents where event.type == "m.typing" {
+                let userIDs = event.content?["user_ids"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+                if !userIDs.isEmpty {
+                    typingUsersByThreadID[roomID] = userIDs
+                }
+            }
+        }
+
         let existingActualSpacesByID = Dictionary(
             uniqueKeysWithValues: existingSpaces
                 .filter { !$0.isMain && !$0.id.hasPrefix("space.synthetic.") }
@@ -570,7 +582,8 @@ final class MatrixService {
             spaces: orderedSpaces,
             threadsByID: threadsByID,
             messagesByThreadID: messagesByThreadID,
-            mainPinnedThreadIDs: Array(mainPins)
+            mainPinnedThreadIDs: Array(mainPins),
+            typingUsersByThreadID: typingUsersByThreadID
         )
     }
 
