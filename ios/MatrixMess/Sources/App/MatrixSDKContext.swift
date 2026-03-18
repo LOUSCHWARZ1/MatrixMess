@@ -121,7 +121,7 @@ actor MatrixSDKContext {
         let client = try await ensureClient(for: session)
         let controller = try await client.getSessionVerificationController()
         let delegate = MatrixSDKVerificationDelegate { [weak self] newState in
-            Task { [weak self] in
+            Task {
                 await self?.updateVerificationFlowState(newState)
             }
         }
@@ -160,7 +160,11 @@ actor MatrixSDKContext {
         if let controller = verificationController {
             try await controller.cancelVerification()
         }
-        verificationFlowState = MatrixVerificationFlowState()
+        // The delegate's didCancel() callback will update the state with isCancelled = true.
+        // If no controller exists, reset the state directly.
+        if verificationController == nil {
+            verificationFlowState = MatrixVerificationFlowState()
+        }
     }
 
     func sendMessage(
@@ -547,6 +551,7 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
         AppLogger.error("Geraeteverifizierung fehlgeschlagen.")
         var state = MatrixVerificationFlowState()
         state.statusLabel = "Verifizierung fehlgeschlagen"
+        state.isFailed = true
         onStateChange(state)
     }
 
@@ -554,6 +559,7 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
         AppLogger.info("Geraeteverifizierung abgebrochen.")
         var state = MatrixVerificationFlowState()
         state.statusLabel = "Verifizierung abgebrochen"
+        state.isCancelled = true
         onStateChange(state)
     }
 
