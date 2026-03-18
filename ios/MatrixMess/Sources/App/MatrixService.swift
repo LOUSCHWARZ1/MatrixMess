@@ -8,6 +8,9 @@ struct MatrixSession: Codable, Hashable {
     let deviceID: String
     let signedInAt: Date
     let syncToken: String?
+    let refreshToken: String?
+    let oidcData: String?
+    let sdkStoreID: String?
 }
 
 enum MatrixServiceError: LocalizedError {
@@ -31,7 +34,7 @@ enum MatrixServiceError: LocalizedError {
         case .serverError(let message):
             return message
         case .unsupportedEncryptedRoom:
-            return "Verschluesselte Raeume koennen in dieser REST-Integration noch nicht gesendet werden."
+            return "Verschluesselte Raeume brauchen die SDK-Crypto-Schicht."
         }
     }
 }
@@ -40,9 +43,11 @@ final class MatrixService {
     private let session: URLSession
     private let jsonDecoder = JSONDecoder()
     private let jsonEncoder = JSONEncoder()
+    private let sdkContext: MatrixSDKContext
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = .shared, sdkContext: MatrixSDKContext = MatrixSDKContext()) {
         self.session = session
+        self.sdkContext = sdkContext
     }
 
     func signIn(
@@ -56,54 +61,73 @@ final class MatrixService {
         guard !sanitizedUsername.isEmpty, !password.isEmpty else {
             throw MatrixServiceError.missingCredentials
         }
-
-        let payload = MatrixLoginRequest(
-            identifier: .init(user: sanitizedUsername),
-            password: password,
-            initialDeviceDisplayName: "MatrixMess iPhone"
-        )
-
-        let response: MatrixLoginResponse = try await performRequest(
-            homeserver: normalizedHomeserver,
-            path: "/_matrix/client/v3/login",
-            method: "POST",
-            body: payload,
-            accessToken: nil
-        )
-
-        return MatrixSession(
-            userID: response.userID,
+        return try await sdkContext.signIn(
             homeserver: normalizedHomeserver.absoluteString,
-            accessToken: response.accessToken,
-            deviceID: response.deviceID ?? "IOS-\(String(UUID().uuidString.prefix(8)).uppercased())",
-            signedInAt: .now,
-            syncToken: nil
+            username: sanitizedUsername,
+            password: password
         )
     }
 
     func restoreSession(_ storedSession: MatrixSession) async throws -> MatrixSession {
-        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-
         guard !storedSession.userID.isEmpty, !storedSession.accessToken.isEmpty else {
             throw MatrixServiceError.invalidStoredSession
         }
-
-        let response: MatrixWhoAmIResponse = try await performRequest(
-            homeserver: homeserver,
-            path: "/_matrix/client/v3/account/whoami",
-            method: "GET",
-            body: Optional<String>.none,
-            accessToken: storedSession.accessToken
-        )
-
+        let restored = try await sdkContext.restoreSession(storedSession)
         return MatrixSession(
-            userID: response.userID,
-            homeserver: homeserver.absoluteString,
-            accessToken: storedSession.accessToken,
-            deviceID: storedSession.deviceID,
+            userID: restored.userID,
+            homeserver: restored.homeserver,
+            accessToken: restored.accessToken,
+            deviceID: restored.deviceID,
             signedInAt: storedSession.signedInAt,
-            syncToken: storedSession.syncToken
+            syncToken: storedSession.syncToken,
+            refreshToken: restored.refreshToken,
+            oidcData: restored.oidcData,
+            sdkStoreID: restored.sdkStoreID
         )
+    }
+
+    func currentCryptoStatus(session: MatrixSession?) async -> MatrixCryptoStatus {
+        await sdkContext.currentCryptoStatus(session: session)
+    }
+
+    func prepareEncryptedSession(for session: MatrixSession) async throws {
+        try await sdkContext.prepareEncryptedSession(for: session)
+    }
+
+    func recoverEncryption(
+        using recoveryKey: String,
+        session: MatrixSession
+    ) async throws -> MatrixCryptoStatus {
+        try await sdkContext.recover(session: session, recoveryKey: recoveryKey)
+    }
+
+    func requestOwnDeviceVerification(session: MatrixSession) async throws {
+        try await sdkContext.requestDeviceVerification(session: session)
+    }
+
+    func sendEncryptedMedia(
+        data: Data,
+        mimeType: String,
+        fileName: String,
+        kind: ChatMessageKind,
+        roomID: String,
+        session storedSession: MatrixSession
+    ) async throws -> MatrixSDKMediaSendResult {
+        try await sdkContext.sendMedia(
+            data: data,
+            mimeType: mimeType,
+            fileName: fileName,
+            kind: kind,
+            roomID: roomID,
+            session: storedSession
+        )
+    }
+
+    func mediaDownloadURL(
+        for contentURI: String,
+        session storedSession: MatrixSession
+    ) -> URL? {
+        sdkContext.mediaDownloadURL(contentURI: contentURI, session: storedSession)
     }
 
     func loadWorkspace(
@@ -126,8 +150,8 @@ final class MatrixService {
     }
 
     func sendMessage(_ text: String, roomID: String, session storedSession: MatrixSession, isEncrypted: Bool) async throws -> String {
-        guard !isEncrypted else {
-            throw MatrixServiceError.unsupportedEncryptedRoom
+        if isEncrypted {
+            return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
         }
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -156,8 +180,14 @@ final class MatrixService {
         session storedSession: MatrixSession,
         isEncrypted: Bool
     ) async throws -> String {
-        guard !isEncrypted else {
-            throw MatrixServiceError.unsupportedEncryptedRoom
+        if isEncrypted {
+            _ = try await sdkContext.toggleReaction(
+                emoji,
+                roomID: roomID,
+                targetEventID: targetEventID,
+                session: storedSession
+            )
+            return targetEventID
         }
 
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
@@ -181,8 +211,14 @@ final class MatrixService {
         session storedSession: MatrixSession,
         isEncrypted: Bool
     ) async throws -> String {
-        guard !isEncrypted else {
-            throw MatrixServiceError.unsupportedEncryptedRoom
+        if isEncrypted {
+            try await sdkContext.editMessage(
+                text,
+                roomID: roomID,
+                targetEventID: targetEventID,
+                session: storedSession
+            )
+            return targetEventID
         }
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -215,8 +251,14 @@ final class MatrixService {
         session storedSession: MatrixSession,
         isEncrypted: Bool
     ) async throws -> String {
-        guard !isEncrypted else {
-            throw MatrixServiceError.unsupportedEncryptedRoom
+        if isEncrypted {
+            try await sdkContext.redactMessage(
+                roomID: roomID,
+                targetEventID: targetEventID,
+                reason: reason,
+                session: storedSession
+            )
+            return targetEventID
         }
 
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
@@ -300,6 +342,7 @@ final class MatrixService {
     }
 
     func logout(session storedSession: MatrixSession) async {
+        await sdkContext.stop()
         guard let homeserver = try? normalizedHomeserver(from: storedSession.homeserver) else {
             return
         }
@@ -453,14 +496,20 @@ final class MatrixService {
                 id: snapshot.roomID,
                 homeSpaceID: assignedSpaceID,
                 title: snapshot.displayName,
-                subtitle: snapshot.isEncrypted ? "Verschluesselter Matrix-Raum" : "Matrix Raum",
+                subtitle: snapshot.subtitle(for: descriptor(for: snapshot.classification)),
                 avatarSymbol: descriptor(for: snapshot.classification).avatarSymbol,
                 accent: assignedSpace.accent,
                 lastMessagePreview: preview,
                 lastActivity: lastActivity,
                 unreadCount: snapshot.unreadCount,
                 isMuted: previousThread?.isMuted ?? false,
-                isEncrypted: snapshot.isEncrypted
+                isEncrypted: snapshot.isEncrypted,
+                avatarContentURI: snapshot.avatarContentURI(excluding: storedSession.userID),
+                officialTitle: snapshot.displayName,
+                bridgeLabel: descriptor(for: snapshot.classification).title,
+                memberCount: snapshot.memberCount,
+                topic: snapshot.topic.isEmpty ? nil : snapshot.topic,
+                isDirect: snapshot.isDirect
             )
             messagesByThreadID[snapshot.roomID] = messages
         }
@@ -496,7 +545,10 @@ final class MatrixService {
                 accessToken: storedSession.accessToken,
                 deviceID: storedSession.deviceID,
                 signedInAt: storedSession.signedInAt,
-                syncToken: response.nextBatch
+                syncToken: response.nextBatch,
+                refreshToken: storedSession.refreshToken,
+                oidcData: storedSession.oidcData,
+                sdkStoreID: storedSession.sdkStoreID
             ),
             spaces: orderedSpaces,
             threadsByID: threadsByID,
@@ -601,6 +653,12 @@ private struct SpaceDescriptor {
 }
 
 private struct ParsedRoomSnapshot {
+    struct MemberProfile {
+        let userID: String
+        let displayName: String
+        let avatarContentURI: String?
+    }
+
     let roomID: String
     let unreadCount: Int
     let timelineEvents: [MatrixTimelineEvent]
@@ -629,6 +687,26 @@ private struct ParsedRoomSnapshot {
         combinedStateEvents.last(where: { $0.type == "m.room.topic" })?.content?["topic"]?.stringValue ?? ""
     }
 
+    func avatarContentURI(excluding currentUserID: String) -> String? {
+        combinedStateEvents.last(where: { $0.type == "m.room.avatar" })?.content?["url"]?.stringValue
+            ?? memberProfiles.first(where: { $0.userID != currentUserID })?.avatarContentURI
+            ?? memberProfiles.first?.avatarContentURI
+    }
+
+    var memberProfiles: [MemberProfile] {
+        combinedStateEvents
+            .filter { $0.type == "m.room.member" }
+            .compactMap { event in
+                guard let userID = event.stateKey else { return nil }
+                let displayName = event.content?["displayname"]?.stringValue ?? userID
+                let avatarContentURI = event.content?["avatar_url"]?.stringValue
+                return MemberProfile(userID: userID, displayName: displayName, avatarContentURI: avatarContentURI)
+            }
+    }
+
+    var memberCount: Int { memberProfiles.count }
+    var isDirect: Bool { !isSpace && memberProfiles.count <= 2 }
+
     var parentSpaceIDs: [String] {
         combinedStateEvents
             .filter { $0.type == "m.space.parent" }
@@ -636,8 +714,22 @@ private struct ParsedRoomSnapshot {
     }
 
     var classification: MatrixRoomClassification {
-        let haystack = [displayName, topic, roomID].joined(separator: " ").lowercased()
+        let memberIDs = memberProfiles.map(\.userID).joined(separator: " ")
+        let memberNames = memberProfiles.map(\.displayName).joined(separator: " ")
+        let haystack = [displayName, topic, roomID, memberIDs, memberNames]
+            .joined(separator: " ")
+            .lowercased()
         return MatrixRoomClassification.classify(haystack: haystack, isSpace: isSpace)
+    }
+
+    func subtitle(for descriptor: SpaceDescriptor) -> String {
+        if !topic.isEmpty {
+            return topic
+        }
+        if descriptor.kind == .matrix {
+            return isEncrypted ? "Verschluesselter Matrix-Raum" : (isDirect ? "Direktnachricht" : "Matrix Raum")
+        }
+        return descriptor.subtitle
     }
 
     func mergedTimelineMessages(existingMessages: [ChatMessage], currentUserID: String) -> [ChatMessage] {
@@ -696,6 +788,9 @@ private struct ParsedRoomSnapshot {
             if let eventID = event.eventID {
                 if let existingIndex = messageIndexByEventID[eventID] {
                     messages[existingIndex] = mergeMessage(messages[existingIndex], with: message)
+                } else if let localEchoIndex = findMatchingLocalEcho(for: message, in: messages) {
+                    messages[localEchoIndex] = mergeMessage(messages[localEchoIndex], with: message)
+                    messageIndexByEventID[eventID] = localEchoIndex
                 } else {
                     messages.append(message)
                     messageIndexByEventID[eventID] = messages.count - 1
@@ -874,6 +969,18 @@ private struct ParsedRoomSnapshot {
         merged.matrixEventID = incoming.matrixEventID ?? existing.matrixEventID
         return merged
     }
+
+    private func findMatchingLocalEcho(for incoming: ChatMessage, in messages: [ChatMessage]) -> Int? {
+        messages.firstIndex { message in
+            guard message.matrixEventID == nil else { return false }
+            guard message.isOutgoing == incoming.isOutgoing else { return false }
+            guard message.kind == incoming.kind else { return false }
+            guard message.body == incoming.body else { return false }
+
+            let delta = abs(message.timestamp.timeIntervalSince(incoming.timestamp))
+            return delta < 180
+        }
+    }
 }
 
 private enum MatrixRoomClassification {
@@ -889,16 +996,16 @@ private enum MatrixRoomClassification {
     case genericBridge
 
     static func classify(haystack: String, isSpace: Bool) -> MatrixRoomClassification {
-        if haystack.contains("signal") {
+        if haystack.contains("signal") || haystack.contains("mautrix-signal") {
             return .signal
         }
-        if haystack.contains("instagram") || haystack.contains("insta") {
+        if haystack.contains("instagram") || haystack.contains("insta") || haystack.contains("mautrix-instagram") {
             return .instagram
         }
-        if haystack.contains("whatsapp") || haystack.contains("wa ") {
+        if haystack.contains("whatsapp") || haystack.contains("mautrix-whatsapp") || haystack.contains("whatsappbridge") {
             return .whatsapp
         }
-        if haystack.contains("telegram") {
+        if haystack.contains("telegram") || haystack.contains("mautrix-telegram") {
             return .telegram
         }
         if haystack.contains("slack") {
@@ -907,10 +1014,10 @@ private enum MatrixRoomClassification {
         if haystack.contains("discord") {
             return .discord
         }
-        if haystack.contains("sms") {
+        if haystack.contains("sms") || haystack.contains("imessage") {
             return .sms
         }
-        if haystack.contains("messenger") || haystack.contains("facebook") {
+        if haystack.contains("messenger") || haystack.contains("facebook") || haystack.contains("mautrix-meta") {
             return .messenger
         }
         return isSpace ? .matrix : .genericBridge

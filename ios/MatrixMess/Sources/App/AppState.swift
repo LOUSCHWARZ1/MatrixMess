@@ -102,15 +102,21 @@ struct ChatSpace: Identifiable, Hashable, Codable {
 struct ChatThread: Identifiable, Hashable, Codable {
     let id: String
     let homeSpaceID: String
-    let title: String
-    let subtitle: String
-    let avatarSymbol: String
-    let accent: SpaceAccent
+    var title: String
+    var subtitle: String
+    var avatarSymbol: String
+    var accent: SpaceAccent
     var lastMessagePreview: String
     var lastActivity: Date
     var unreadCount: Int
     var isMuted: Bool
     var isEncrypted: Bool = false
+    var avatarContentURI: String? = nil
+    var officialTitle: String? = nil
+    var bridgeLabel: String? = nil
+    var memberCount: Int? = nil
+    var topic: String? = nil
+    var isDirect: Bool = false
 }
 
 enum ChatMessageKind: String, Hashable, Codable {
@@ -444,17 +450,18 @@ final class AppState: ObservableObject {
         mediaService: MatrixMediaService = MatrixMediaService(),
         notificationService: MatrixNotificationService = MatrixNotificationService(),
         callService: MatrixCallService? = nil,
-        cryptoService: MatrixCryptoService = MatrixCryptoService(),
+        cryptoService: MatrixCryptoService? = nil,
         oauthService: CalendarOAuthService? = nil,
         syncEngine: MatrixSyncEngine = MatrixSyncEngine(),
         sessionStore: MatrixSessionStore = MatrixSessionStore(),
         snapshotStore: AppSnapshotStore = AppSnapshotStore()
     ) {
-        self.matrixService = matrixService
+        let resolvedMatrixService = matrixService
+        self.matrixService = resolvedMatrixService
         self.mediaService = mediaService
         self.notificationService = notificationService
         self.callService = callService ?? MatrixCallService()
-        self.cryptoService = cryptoService
+        self.cryptoService = cryptoService ?? MatrixCryptoService(matrixService: resolvedMatrixService)
         self.oauthService = oauthService ?? CalendarOAuthService()
         self.syncEngine = syncEngine
         self.sessionStore = sessionStore
@@ -596,7 +603,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshCryptoStatus() async {
-        cryptoStatus = await cryptoService.currentStatus()
+        cryptoStatus = await cryptoService.currentStatus(session: currentSession)
     }
 
     func prepareCryptoStack() async {
@@ -604,10 +611,39 @@ final class AppState: ObservableObject {
 
         do {
             try await cryptoService.prepareEncryptedSession(for: currentSession)
-            cryptoStatus = await cryptoService.currentStatus()
+            cryptoStatus = await cryptoService.currentStatus(session: currentSession)
         } catch {
             errorMessage = error.localizedDescription
             AppLogger.error("Crypto-Schicht konnte nicht vorbereitet werden: \(error.localizedDescription)")
+        }
+    }
+
+    func recoverEncryption(with recoveryKey: String) async {
+        guard let currentSession else { return }
+        let trimmed = recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "Bitte gib zuerst einen Wiederherstellungsschluessel ein."
+            return
+        }
+
+        do {
+            cryptoStatus = try await cryptoService.recover(using: trimmed, session: currentSession)
+            await refreshMatrixData(forceFullSync: true)
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Recovery Key konnte nicht verarbeitet werden: \(error.localizedDescription)")
+        }
+    }
+
+    func requestCurrentDeviceVerification() async {
+        guard let currentSession else { return }
+
+        do {
+            try await cryptoService.requestDeviceVerification(session: currentSession)
+            cryptoStatus = await cryptoService.currentStatus(session: currentSession)
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Geraeteverifizierung konnte nicht gestartet werden: \(error.localizedDescription)")
         }
     }
 
@@ -705,6 +741,35 @@ final class AppState: ObservableObject {
         guard let currentSession, let thread = thread(withID: threadID) else { return }
 
         do {
+            if thread.isEncrypted {
+                let sent = try await matrixService.sendEncryptedMedia(
+                    data: data,
+                    mimeType: mimeType,
+                    fileName: fileName,
+                    kind: kind,
+                    roomID: threadID,
+                    session: currentSession
+                )
+
+                let body = attachmentBody(for: kind, fallback: fileName)
+                appendMessage(
+                    ChatMessage(
+                        matrixEventID: sent.matrixEventID,
+                        senderDisplayName: "Du",
+                        body: body,
+                        timestamp: .now,
+                        isOutgoing: true,
+                        kind: kind,
+                        attachment: sent.attachment
+                    ),
+                    to: threadID,
+                    preview: sent.attachment.title
+                )
+                persistSnapshotIfPossible()
+                scheduleDeferredMatrixRefresh()
+                return
+            }
+
             let upload = try await mediaService.uploadMedia(
                 data: data,
                 mimeType: mimeType,
@@ -725,25 +790,11 @@ final class AppState: ObservableObject {
                 isEncrypted: thread.isEncrypted
             )
 
-            let body: String
-            switch kind {
-            case .image:
-                body = "Bild geteilt"
-            case .video:
-                body = "Video geteilt"
-            case .file:
-                body = "Datei geteilt"
-            case .voice:
-                body = "Sprachnachricht gesendet"
-            case .text, .event:
-                body = fileName
-            }
-
             appendMessage(
                 ChatMessage(
                     matrixEventID: eventID,
                     senderDisplayName: "Du",
-                    body: body,
+                    body: attachmentBody(for: kind, fallback: fileName),
                     timestamp: .now,
                     isOutgoing: true,
                     kind: kind,
@@ -914,6 +965,28 @@ final class AppState: ObservableObject {
         space(withID: thread.homeSpaceID)
     }
 
+    func bridgeLabel(for thread: ChatThread) -> String {
+        thread.bridgeLabel ?? sourceSpace(for: thread)?.title ?? "Matrix"
+    }
+
+    func renameThreadLocally(_ threadID: String, to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, var thread = threadsByID[threadID] else { return }
+        thread.title = trimmed
+        threadsByID[threadID] = thread
+        persistSnapshotIfPossible()
+    }
+
+    func mediaDownloadURL(for contentURI: String?) -> URL? {
+        guard let currentSession,
+              let contentURI,
+              !contentURI.isEmpty else {
+            return nil
+        }
+
+        return matrixService.mediaDownloadURL(for: contentURI, session: currentSession)
+    }
+
     func event(withID eventID: UUID) -> ScheduledChatEvent? {
         scheduledEvents.first { $0.id == eventID }
     }
@@ -1068,6 +1141,7 @@ final class AppState: ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         var sentEventID: String?
+        var requiresFollowupRefresh = false
         if let currentSession, let thread = thread(withID: threadID) {
             do {
                 sentEventID = try await matrixService.sendMessage(
@@ -1076,6 +1150,7 @@ final class AppState: ObservableObject {
                     session: currentSession,
                     isEncrypted: thread.isEncrypted
                 )
+                requiresFollowupRefresh = thread.isEncrypted || sentEventID == nil
             } catch {
                 errorMessage = error.localizedDescription
 
@@ -1100,6 +1175,10 @@ final class AppState: ObservableObject {
         )
         draftsByThreadID.removeValue(forKey: threadID)
         persistSnapshotIfPossible()
+
+        if requiresFollowupRefresh {
+            scheduleDeferredMatrixRefresh()
+        }
     }
 
     func sendAttachment(_ kind: ChatMessageKind, to threadID: String) {
@@ -1295,6 +1374,28 @@ final class AppState: ObservableObject {
             try await matrixService.markRead(roomID: threadID, eventID: latestEventID, session: currentSession)
         } catch {
             AppLogger.error("Read marker konnte nicht gesetzt werden: \(error.localizedDescription)")
+        }
+    }
+
+    private func attachmentBody(for kind: ChatMessageKind, fallback: String) -> String {
+        switch kind {
+        case .image:
+            return "Bild geteilt"
+        case .video:
+            return "Video geteilt"
+        case .file:
+            return "Datei geteilt"
+        case .voice:
+            return "Sprachnachricht gesendet"
+        case .text, .event:
+            return fallback
+        }
+    }
+
+    private func scheduleDeferredMatrixRefresh() {
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await refreshMatrixData(forceFullSync: false)
         }
     }
 
@@ -1593,7 +1694,10 @@ final class AppState: ObservableObject {
                 accessToken: session.accessToken,
                 deviceID: session.deviceID,
                 signedInAt: session.signedInAt,
-                syncToken: nil
+                syncToken: nil,
+                refreshToken: session.refreshToken,
+                oidcData: session.oidcData,
+                sdkStoreID: session.sdkStoreID
             )
             : session
 

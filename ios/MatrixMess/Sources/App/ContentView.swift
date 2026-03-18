@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 import UniformTypeIdentifiers
 
 private let quickReactionEmoji = [
@@ -432,15 +433,7 @@ private struct ConversationRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(thread.accent.gradient)
-                    .frame(width: 54, height: 54)
-
-                Image(systemName: thread.avatarSymbol)
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(.white)
-            }
+            ThreadAvatarView(thread: thread, size: 54)
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -527,6 +520,44 @@ private struct SourceBadge: View {
     }
 }
 
+private struct ThreadAvatarView: View {
+    @EnvironmentObject private var appState: AppState
+
+    let thread: ChatThread
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(thread.accent.gradient)
+                .frame(width: size, height: size)
+
+            if let avatarURL = appState.mediaDownloadURL(for: thread.avatarContentURI) {
+                AsyncImage(url: avatarURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        fallback
+                    }
+                }
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+            } else {
+                fallback
+            }
+        }
+    }
+
+    private var fallback: some View {
+        Image(systemName: thread.avatarSymbol)
+            .font(.system(size: size * 0.38, weight: .semibold))
+            .foregroundColor(.white)
+    }
+}
+
 private struct EmptyThreadState: View {
     let space: ChatSpace
 
@@ -592,6 +623,8 @@ private struct ConversationDetailView: View {
     @State private var editingMessageID: UUID?
     @State private var editingText = ""
     @State private var pendingImportKind: ChatMessageKind?
+    @State private var showingProfileSheet = false
+    @State private var showingMediaLibraryPicker = false
 
     let threadID: String
 
@@ -613,12 +646,17 @@ private struct ConversationDetailView: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         if let sourceSpace {
-                            ConversationHero(
-                                space: sourceSpace,
-                                thread: thread,
-                                mediaCount: appState.sharedMedia(for: thread.id).count,
-                                eventCount: appState.events(for: thread.id).count
-                            )
+                            Button {
+                                showingProfileSheet = true
+                            } label: {
+                                ConversationHero(
+                                    space: sourceSpace,
+                                    thread: thread,
+                                    mediaCount: appState.sharedMedia(for: thread.id).count,
+                                    eventCount: appState.events(for: thread.id).count
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
 
                           ForEach(appState.messages(for: thread.id)) { message in
@@ -686,6 +724,12 @@ private struct ConversationDetailView: View {
                             }
 
                             Button {
+                                showingProfileSheet = true
+                            } label: {
+                                Label("Profil anzeigen", systemImage: "person.crop.circle")
+                            }
+
+                            Button {
                                 appState.toggleMainPin(for: thread.id)
                             } label: {
                                 Label(
@@ -711,7 +755,10 @@ private struct ConversationDetailView: View {
                               switch kind {
                               case .voice:
                                   appState.sendAttachment(kind, to: thread.id)
-                              case .image, .video, .file:
+                              case .image, .video:
+                                  pendingImportKind = kind
+                                  showingMediaLibraryPicker = true
+                              case .file:
                                   pendingImportKind = kind
                                   showingFileImporter = true
                               case .text, .event:
@@ -727,6 +774,25 @@ private struct ConversationDetailView: View {
                     SharedMediaSheet(thread: thread)
                         .environmentObject(appState)
                 }
+                  .sheet(isPresented: $showingProfileSheet) {
+                      ThreadProfileSheet(threadID: thread.id)
+                          .environmentObject(appState)
+                  }
+                  .sheet(isPresented: $showingMediaLibraryPicker) {
+                      MediaLibraryPicker(kind: pendingImportKind ?? .image) { data, mimeType, fileName in
+                          let selectedKind = pendingImportKind ?? .image
+                          pendingImportKind = nil
+                          Task {
+                              await appState.uploadMedia(
+                                  data: data,
+                                  mimeType: mimeType,
+                                  fileName: fileName,
+                                  kind: selectedKind,
+                                  to: thread.id
+                              )
+                          }
+                      }
+                  }
                   .sheet(isPresented: $showingEventSheet) {
                       EventPlannerSheet(
                           thread: thread,
@@ -850,14 +916,7 @@ private struct ConversationHero: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(thread.accent.gradient)
-                        .frame(width: 52, height: 52)
-
-                    Image(systemName: thread.avatarSymbol)
-                        .foregroundColor(.white)
-                }
+                ThreadAvatarView(thread: thread, size: 52)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(thread.title)
@@ -867,6 +926,12 @@ private struct ConversationHero: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
             }
 
             HStack(spacing: 10) {
@@ -885,6 +950,93 @@ private struct ConversationHero: View {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemGroupedBackground))
         )
+    }
+}
+
+private struct ThreadProfileSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    let threadID: String
+    @State private var localTitle = ""
+
+    private var thread: ChatThread? { appState.thread(withID: threadID) }
+    private var sourceSpace: ChatSpace? {
+        guard let thread else { return nil }
+        return appState.sourceSpace(for: thread)
+    }
+
+    var body: some View {
+        NavigationView {
+            Group {
+                if let thread {
+                    Form {
+                        Section {
+                            VStack(spacing: 14) {
+                                ThreadAvatarView(thread: thread, size: 80)
+                                Text(thread.title)
+                                    .font(.title3.weight(.semibold))
+                                Text(thread.subtitle)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                        }
+
+                        Section("Chatdetails") {
+                            settingsValueRow(label: "Bridge", value: appState.bridgeLabel(for: thread))
+                            if let sourceSpace {
+                                settingsValueRow(label: "Space", value: sourceSpace.title)
+                            }
+                            settingsValueRow(label: "Verschluesselt", value: thread.isEncrypted ? "Ja" : "Nein")
+                            if let memberCount = thread.memberCount {
+                                settingsValueRow(label: "Mitglieder", value: "\(memberCount)")
+                            }
+                            if let officialTitle = thread.officialTitle, officialTitle != thread.title {
+                                settingsValueRow(label: "Originalname", value: officialTitle)
+                            }
+                            if let topic = thread.topic, !topic.isEmpty {
+                                Text(topic)
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        Section("Lokaler Anzeigename") {
+                            TextField("Nur in MatrixMess sichtbar", text: $localTitle)
+                            Button("Anzeigename speichern") {
+                                appState.renameThreadLocally(thread.id, to: localTitle)
+                            }
+                            .disabled(localTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                    .onAppear {
+                        localTitle = thread.title
+                    }
+                } else {
+                    Text("Profil konnte nicht geladen werden.")
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Profil")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func settingsValueRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+            Spacer(minLength: 16)
+            Text(value)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
     }
 }
 
@@ -999,6 +1151,7 @@ private struct MessageBubble: View {
 }
 
 private struct MessageBody: View {
+    @EnvironmentObject private var appState: AppState
     let message: ChatMessage
     let isOutgoing: Bool
     let accent: SpaceAccent
@@ -1012,6 +1165,9 @@ private struct MessageBody: View {
         case .voice, .image, .video, .file, .event:
             VStack(alignment: .leading, spacing: 10) {
                 if let attachment = message.attachment {
+                    if message.kind == .image {
+                        InlineImageAttachment(attachment: attachment)
+                    }
                     AttachmentCard(
                         attachment: attachment,
                         isOutgoing: isOutgoing,
@@ -1027,6 +1183,43 @@ private struct MessageBody: View {
                 }
             }
         }
+    }
+}
+
+private struct InlineImageAttachment: View {
+    @EnvironmentObject private var appState: AppState
+
+    let attachment: MessageAttachment
+
+    var body: some View {
+        Group {
+            if let localCachePath = attachment.localCachePath,
+               let uiImage = UIImage(contentsOfFile: localCachePath) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+            } else if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
+                AsyncImage(url: remoteURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        Rectangle()
+                            .fill(Color(uiColor: .tertiarySystemGroupedBackground))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(.title2.weight(.semibold))
+                                    .foregroundColor(.secondary)
+                            )
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 188)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -1090,36 +1283,39 @@ private struct ComposerBar: View {
                 }
             } label: {
                 Image(systemName: "plus")
-                    .font(.headline)
+                    .font(.subheadline.weight(.bold))
                     .foregroundColor(accent.tint)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 36, height: 36)
                     .background(Circle().fill(accent.softTint))
             }
 
-            TextField("Nachricht", text: $draft)
-                .textFieldStyle(.plain)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemGroupedBackground))
-                )
+            HStack(spacing: 10) {
+                TextField("Nachricht", text: $draft)
+                    .textFieldStyle(.plain)
 
-            Button {
-                sendAction()
-            } label: {
-                Image(systemName: "paperplane.fill")
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .frame(width: 48, height: 48)
-                    .background(accent.tint)
-                    .clipShape(Circle())
+                Button {
+                    sendAction()
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundColor(.white)
+                        .frame(width: 34, height: 34)
+                        .background(accent.tint)
+                        .clipShape(Circle())
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            )
+
         }
         .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 10)
         .background(.ultraThinMaterial)
     }
 }
@@ -1348,13 +1544,17 @@ private struct CallsView: View {
                         appState.openThread(call.threadID)
                     } label: {
                         HStack(spacing: 12) {
-                            Circle()
-                                .fill((thread?.accent.softTint ?? Color.blue.opacity(0.14)))
-                                .frame(width: 44, height: 44)
-                                .overlay(
-                                    Image(systemName: thread?.avatarSymbol ?? "phone.fill")
-                                        .foregroundColor(thread?.accent.tint ?? .blue)
-                                )
+                            if let thread {
+                                ThreadAvatarView(thread: thread, size: 44)
+                            } else {
+                                Circle()
+                                    .fill(Color.blue.opacity(0.14))
+                                    .frame(width: 44, height: 44)
+                                    .overlay(
+                                        Image(systemName: "phone.fill")
+                                            .foregroundColor(.blue)
+                                    )
+                            }
 
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(thread?.title ?? "Call")
@@ -1515,8 +1715,66 @@ private struct CalendarEventRow: View {
     }
 }
 
+private struct MediaLibraryPicker: UIViewControllerRepresentable {
+    let kind: ChatMessageKind
+    let onImport: (Data, String, String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(kind: kind, onImport: onImport)
+    }
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        configuration.selectionLimit = 1
+        configuration.filter = kind == .video ? .videos : .images
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let kind: ChatMessageKind
+        private let onImport: (Data, String, String) -> Void
+
+        init(kind: ChatMessageKind, onImport: @escaping (Data, String, String) -> Void) {
+            self.kind = kind
+            self.onImport = onImport
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            guard let result = results.first else { return }
+
+            let provider = result.itemProvider
+            if kind == .video {
+                let typeIdentifier = UTType.movie.identifier
+                provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, _ in
+                    guard let url,
+                          let data = try? Data(contentsOf: url) else { return }
+                    let fileName = url.lastPathComponent.isEmpty ? "video.mov" : url.lastPathComponent
+                    let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "video/quicktime"
+                    DispatchQueue.main.async {
+                        self.onImport(data, mimeType, fileName)
+                    }
+                }
+            } else {
+                let typeIdentifier = UTType.image.identifier
+                provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+                    guard let data else { return }
+                    DispatchQueue.main.async {
+                        self.onImport(data, "image/jpeg", "photo.jpg")
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var showingRecoverySheet = false
 
     var body: some View {
         Form {
@@ -1619,8 +1877,9 @@ private struct SettingsView: View {
 
             Section("Crypto und Sync") {
                 settingsValueRow(label: "E2EE verfuegbar", value: appState.cryptoStatus.encryptionAvailable ? "Ja" : "Noch nicht aktiv")
-                settingsValueRow(label: "Key Backup", value: appState.cryptoStatus.keyBackupConfigured ? "Konfiguriert" : "Offen")
-                settingsValueRow(label: "Device Verify", value: appState.cryptoStatus.deviceVerificationAvailable ? "Verfuegbar" : "Offen")
+                settingsValueRow(label: "Recovery", value: appState.cryptoStatus.recoveryStateLabel)
+                settingsValueRow(label: "Key Backup", value: appState.cryptoStatus.backupStateLabel)
+                settingsValueRow(label: "Device Verify", value: appState.cryptoStatus.verificationStateLabel)
                 settingsValueRow(label: "Sync-Loop", value: appState.syncEngineState.isRunning ? "Laeuft" : "Gestoppt")
                 settingsValueRow(label: "Sync-Fehler", value: "\(appState.syncEngineState.consecutiveFailures)")
                 settingsValueRow(label: "Letzter Sync", value: diagnosticsText(appState.diagnostics.lastSuccessfulSyncAt))
@@ -1629,6 +1888,14 @@ private struct SettingsView: View {
 
                 Button("Crypto vorbereiten") {
                     Task { await appState.prepareCryptoStack() }
+                }
+
+                Button("Recovery Key eingeben") {
+                    showingRecoverySheet = true
+                }
+
+                Button("Dieses Geraet verifizieren") {
+                    Task { await appState.requestCurrentDeviceVerification() }
                 }
             }
 
@@ -1661,6 +1928,11 @@ private struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $showingRecoverySheet) {
+            RecoveryKeySheet {
+                await appState.recoverEncryption(with: $0)
+            }
+        }
     }
 
     private func diagnosticsText(_ date: Date?) -> String {
@@ -1676,6 +1948,41 @@ private struct SettingsView: View {
             Text(value)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct RecoveryKeySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var recoveryKey = ""
+    let submit: (String) async -> Void
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Wiederherstellungsschluessel") {
+                    TextEditor(text: $recoveryKey)
+                        .frame(minHeight: 140)
+                    Text("Nutze hier denselben Recovery Key, den andere Matrix-Clients beim Geraete- oder Session-Restore abfragen.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Recovery Key")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Wiederherstellen") {
+                        Task {
+                            await submit(recoveryKey)
+                            dismiss()
+                        }
+                    }
+                    .disabled(recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
         }
     }
 }
