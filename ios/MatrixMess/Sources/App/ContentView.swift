@@ -504,12 +504,12 @@ private struct ConversationListView: View {
                 await appState.refreshMatrixData()
             }
 
-            // Floating compose button (inspired by Element X)
+            // Floating action button – syncs rooms (new chat creation not yet supported)
             Button {
                 Task { await appState.refreshMatrixData(forceFullSync: true) }
             } label: {
-                Image(systemName: "plus")
-                    .font(.title2.weight(.semibold))
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.title3.weight(.semibold))
                     .foregroundColor(.white)
                     .frame(width: 56, height: 56)
                     .background(
@@ -562,7 +562,7 @@ private struct SpaceOverviewCard: View {
                 if space.isMain {
                     Label("Kuratiert", systemImage: "star.fill")
                 } else {
-                    Label("Space", systemImage: "square.grid.2x2.fill")
+                    Label("Nur dieser Space", systemImage: "square.grid.2x2.fill")
                 }
             }
             .font(.caption.weight(.semibold))
