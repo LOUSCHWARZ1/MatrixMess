@@ -1,6 +1,8 @@
 import Foundation
 import MatrixRustSDK
 
+private let encryptedMessagePlaceholderBody = "Verschluesselte Nachricht"
+
 struct MatrixSession: Codable, Hashable {
     let userID: String
     let homeserver: String
@@ -101,6 +103,26 @@ final class MatrixService {
         try await sdkContext.recover(session: session, recoveryKey: recoveryKey)
     }
 
+    func currentVerificationFlowState() async -> MatrixVerificationFlowState {
+        await sdkContext.currentVerificationFlowState()
+    }
+
+    func startSasVerification(session: MatrixSession) async throws {
+        try await sdkContext.startSasVerification(session: session)
+    }
+
+    func approveVerification(session: MatrixSession) async throws {
+        try await sdkContext.approveVerification(session: session)
+    }
+
+    func declineVerification(session: MatrixSession) async throws {
+        try await sdkContext.declineVerification(session: session)
+    }
+
+    func cancelVerification(session: MatrixSession) async throws {
+        try await sdkContext.cancelVerification(session: session)
+    }
+
     func requestOwnDeviceVerification(session: MatrixSession) async throws {
         try await sdkContext.requestDeviceVerification(session: session)
     }
@@ -170,27 +192,22 @@ final class MatrixService {
     }
 
     func sendMessage(_ text: String, roomID: String, session storedSession: MatrixSession, isEncrypted: Bool) async throws -> String? {
-        if isEncrypted {
-            return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
-        }
+        // Route all messages through the SDK timeline (handles both plain and encrypted).
+        return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
+    }
 
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw MatrixServiceError.serverError("Leere Nachrichten werden nicht gesendet.")
-        }
-
+    func sendTypingNotification(isTyping: Bool, roomID: String, session storedSession: MatrixSession) async throws {
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-        let txnID = UUID().uuidString.lowercased()
         let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        let encodedUserID = storedSession.userID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? storedSession.userID
 
-        let response: MatrixSendEventResponse = try await performRequest(
+        let _: EmptyMatrixResponse = try await performRequest(
             homeserver: homeserver,
-            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/send/m.room.message/\(txnID)",
+            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/typing/\(encodedUserID)",
             method: "PUT",
-            body: MatrixSendMessageRequest(body: trimmed),
+            body: MatrixTypingRequest(typing: isTyping, timeout: isTyping ? 30_000 : 0),
             accessToken: storedSession.accessToken
         )
-        return response.eventID
     }
 
     func sendReaction(
@@ -431,6 +448,18 @@ final class MatrixService {
             )
         }
 
+        // Parse m.typing ephemeral events for each room.
+        var typingUsersByThreadID: [String: [String]] = [:]
+        for (roomID, room) in joinedRooms {
+            guard let ephemeralEvents = room.ephemeral?.events else { continue }
+            for event in ephemeralEvents where event.type == "m.typing" {
+                let userIDs = event.content?["user_ids"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+                if !userIDs.isEmpty {
+                    typingUsersByThreadID[roomID] = userIDs
+                }
+            }
+        }
+
         let existingActualSpacesByID = Dictionary(
             uniqueKeysWithValues: existingSpaces
                 .filter { !$0.isMain && !$0.id.hasPrefix("space.synthetic.") }
@@ -556,7 +585,6 @@ final class MatrixService {
         let filteredPins = existingMainPins.filter { availableThreadIDs.contains($0) }
         let defaultPins = threadsByID.values
             .sorted { $0.lastActivity > $1.lastActivity }
-            .prefix(4)
             .map(\.id)
         let mainPins = filteredPins.isEmpty ? defaultPins : filteredPins
 
@@ -575,7 +603,8 @@ final class MatrixService {
             spaces: orderedSpaces,
             threadsByID: threadsByID,
             messagesByThreadID: messagesByThreadID,
-            mainPinnedThreadIDs: Array(mainPins)
+            mainPinnedThreadIDs: Array(mainPins),
+            typingUsersByThreadID: typingUsersByThreadID
         )
     }
 
@@ -945,7 +974,7 @@ private struct ParsedRoomSnapshot {
             return ChatMessage(
                 matrixEventID: event.eventID,
                 senderDisplayName: senderDisplayName,
-                body: "Verschluesselte Nachricht",
+                body: encryptedMessagePlaceholderBody,
                 timestamp: timestamp,
                 isOutgoing: isOutgoing
             )
@@ -1095,6 +1124,8 @@ private struct ParsedRoomSnapshot {
         merged.forwardedFrom = incoming.forwardedFrom
         merged.linkedEventID = incoming.linkedEventID
         merged.matrixEventID = incoming.matrixEventID ?? existing.matrixEventID
+        // Once a server event is received for this message, it is no longer pending.
+        merged.isPending = false
         return merged
     }
 
@@ -1103,8 +1134,11 @@ private struct ParsedRoomSnapshot {
             guard message.matrixEventID == nil else { return false }
             guard message.isOutgoing == incoming.isOutgoing else { return false }
             guard message.kind == incoming.kind else { return false }
-            guard message.body == incoming.body else { return false }
-
+            // For encrypted messages the server-side body is a placeholder.
+            // In that case skip the body comparison and rely on sender + timestamp proximity.
+            if incoming.body != encryptedMessagePlaceholderBody {
+                guard message.body == incoming.body else { return false }
+            }
             let delta = abs(message.timestamp.timeIntervalSince(incoming.timestamp))
             return delta < 180
         }

@@ -43,6 +43,8 @@ struct MatrixVerificationFlowState: Hashable {
     var canDecline = false
     var canCancel = false
     var isVerified = false
+    var isFailed = false
+    var isCancelled = false
 
     var isActive: Bool {
         senderUserID != nil || !emojis.isEmpty || !decimals.isEmpty || canStartSas || canApprove || canDecline || canCancel || isVerified

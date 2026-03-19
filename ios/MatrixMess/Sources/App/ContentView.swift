@@ -1,6 +1,8 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import AVFoundation
+import WebKit
 
 private let appBuildLabel = "v0.3.0 – 2026-03-18"
 
@@ -324,6 +326,9 @@ private struct LoginField: View {
 
 private struct MessengerShellView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var showingPostLoginSetup = false
+    @State private var postLoginShowRecovery = false
+    @State private var postLoginShowVerify = false
 
     var body: some View {
         TabView(selection: $appState.selectedTab) {
@@ -345,6 +350,40 @@ private struct MessengerShellView: View {
         }
         .accentColor(Color(red: 0.55, green: 0.30, blue: 0.95))
         .preferredColorScheme(appState.preferredColorScheme)
+        .sheet(isPresented: $showingPostLoginSetup) {
+            PostLoginSetupSheet(
+                onRecovery: { postLoginShowRecovery = true },
+                onVerify: {
+                    Task {
+                        await appState.requestCurrentDeviceVerification()
+                        postLoginShowVerify = true
+                    }
+                },
+                onDismiss: {
+                    appState.needsPostLoginSetup = false
+                    showingPostLoginSetup = false
+                }
+            )
+            .environmentObject(appState)
+        }
+        .sheet(isPresented: $postLoginShowRecovery) {
+            RecoveryKeySheet { key in
+                await appState.recoverEncryption(with: key)
+                appState.needsPostLoginSetup = false
+            }
+        }
+        .sheet(isPresented: $postLoginShowVerify) {
+            E2EEVerifySheet()
+                .environmentObject(appState)
+                .onDisappear {
+                    if appState.verificationFlowState.isVerified {
+                        appState.needsPostLoginSetup = false
+                    }
+                }
+        }
+        .onChange(of: appState.needsPostLoginSetup) { needs in
+            if needs { showingPostLoginSetup = true }
+        }
     }
 }
 
@@ -673,9 +712,19 @@ private struct ConversationRow: View {
                     .lineLimit(2)
 
                 HStack(spacing: 10) {
-                    Text(thread.subtitle)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    if let bridgeLabel = thread.bridgeLabel, appState.selectedSpaceID != ChatSpace.mainID {
+                        Text(bridgeLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(thread.accent.tint)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(thread.accent.softTint)
+                            .clipShape(Capsule())
+                    } else {
+                        Text(thread.subtitle)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
 
                     if thread.isEncrypted {
                         Label("E2EE", systemImage: "lock.fill")
@@ -847,8 +896,11 @@ private struct ConversationDetailView: View {
     @State private var pendingImportKind: ChatMessageKind?
     @State private var showingProfileSheet = false
     @State private var showingMediaLibraryPicker = false
+    @State private var isSending = false
 
     let threadID: String
+
+    private let scrollAnchorID = "conversationBottom"
 
     private var thread: ChatThread? { appState.thread(withID: threadID) }
     private var sourceSpace: ChatSpace? {
@@ -865,59 +917,74 @@ private struct ConversationDetailView: View {
     var body: some View {
         Group {
             if let thread {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        if let sourceSpace {
-                            Button {
-                                showingProfileSheet = true
-                            } label: {
-                                ConversationHero(
-                                    space: sourceSpace,
-                                    thread: thread,
-                                    mediaCount: appState.sharedMedia(for: thread.id).count,
-                                    eventCount: appState.events(for: thread.id).count
-                                )
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            if let sourceSpace {
+                                Button {
+                                    showingProfileSheet = true
+                                } label: {
+                                    ConversationHero(
+                                        space: sourceSpace,
+                                        thread: thread,
+                                        mediaCount: appState.sharedMedia(for: thread.id).count,
+                                        eventCount: appState.events(for: thread.id).count
+                                    )
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
-                        }
 
-                          ForEach(appState.messages(for: thread.id)) { message in
-                              MessageBubble(
-                                  message: message,
-                                  accent: thread.accent,
-                                  attachmentAction: {
-                                      Task {
-                                          await appState.downloadAttachment(messageID: message.id, in: thread.id)
+                              ForEach(appState.messages(for: thread.id)) { message in
+                                  MessageBubble(
+                                      message: message,
+                                      accent: thread.accent,
+                                      attachmentAction: {
+                                          Task {
+                                              await appState.downloadAttachment(messageID: message.id, in: thread.id)
+                                          }
+                                      },
+                                      reactAction: { emoji in
+                                          Task {
+                                              await appState.toggleReaction(emoji, on: message.id, in: thread.id)
+                                          }
+                                      },
+                                      forwardAction: {
+                                          forwardingMessageID = message.id
+                                          showingForwardDialog = true
+                                      },
+                                      editAction: {
+                                          editingMessageID = message.id
+                                          editingText = message.body
+                                      },
+                                      deleteAction: {
+                                          Task {
+                                              await appState.redactMessage(message.id, in: thread.id)
+                                          }
                                       }
-                                  },
-                                  reactAction: { emoji in
-                                      Task {
-                                          await appState.toggleReaction(emoji, on: message.id, in: thread.id)
-                                      }
-                                  },
-                                  forwardAction: {
-                                      forwardingMessageID = message.id
-                                      showingForwardDialog = true
-                                  },
-                                  editAction: {
-                                      editingMessageID = message.id
-                                      editingText = message.body
-                                  },
-                                  deleteAction: {
-                                      Task {
-                                          await appState.redactMessage(message.id, in: thread.id)
-                                      }
-                                  }
-                              )
-                          }
+                                  )
+                              }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(scrollAnchorID)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 28)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 28)
-                }
-                .background(Color(uiColor: .systemGroupedBackground))
-                .navigationTitle(thread.title)
-                .navigationBarTitleDisplayMode(.inline)
+                    .background(Color(uiColor: .systemGroupedBackground))
+                    .task(id: threadID) {
+                        // Give the layout one runloop pass to settle before scrolling.
+                        await Task.yield()
+                        proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                    }
+                    .onChange(of: appState.messages(for: thread.id).count) { _ in
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                        }
+                    }
+                    .navigationTitle(thread.title)
+                    .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItemGroup(placement: .navigationBarTrailing) {
                         Button {
@@ -965,33 +1032,42 @@ private struct ConversationDetailView: View {
                     }
                 }
                   .safeAreaInset(edge: .bottom) {
-                      ComposerBar(
-                          draft: draftBinding,
-                          accent: thread.accent,
-                          sendAction: {
-                              Task {
-                                  await appState.sendMessage(appState.draft(for: thread.id), to: thread.id)
-                              }
-                          },
-                          attachmentAction: { kind in
-                              switch kind {
-                              case .voice:
-                                  appState.sendAttachment(kind, to: thread.id)
-                              case .image, .video:
-                                  pendingImportKind = kind
-                                  showingMediaLibraryPicker = true
-                              case .file:
-                                  pendingImportKind = kind
-                                  showingFileImporter = true
-                              case .text, .event:
-                                  break
-                              }
-                          },
-                        eventAction: {
-                            showingEventSheet = true
-                        }
-                    )
-                }
+                      VStack(spacing: 0) {
+                          let typingUsers = appState.typingUsersByThreadID[thread.id] ?? []
+                          if appState.typingIndicatorsEnabled, !typingUsers.isEmpty {
+                              TypingIndicatorBanner(userIDs: typingUsers)
+                          }
+                          ComposerBar(
+                              draft: draftBinding,
+                              accent: thread.accent,
+                              isSending: isSending,
+                              sendAction: {
+                                  Task {
+                                      isSending = true
+                                      await appState.sendMessage(appState.draft(for: thread.id), to: thread.id)
+                                      isSending = false
+                                  }
+                              },
+                              attachmentAction: { kind in
+                                  switch kind {
+                                  case .voice:
+                                      appState.sendAttachment(kind, to: thread.id)
+                                  case .image, .video:
+                                      pendingImportKind = kind
+                                      showingMediaLibraryPicker = true
+                                  case .file:
+                                      pendingImportKind = kind
+                                      showingFileImporter = true
+                                  case .text, .event:
+                                      break
+                                  }
+                              },
+                            eventAction: {
+                                showingEventSheet = true
+                            }
+                        )
+                      }
+                  }
                 .sheet(isPresented: $showingMediaSheet) {
                     SharedMediaSheet(thread: thread)
                         .environmentObject(appState)
@@ -1071,6 +1147,7 @@ private struct ConversationDetailView: View {
                   ) { result in
                       handleImportedFile(result, for: thread.id)
                   }
+                }  // ScrollViewReader
             } else {
                 Text("Chat nicht gefunden")
                     .foregroundColor(.secondary)
@@ -1362,6 +1439,15 @@ private struct MessageBubble: View {
                       .foregroundColor(.secondary)
                       .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
 
+                  if message.isOutgoing {
+                      HStack(spacing: 3) {
+                          Spacer()
+                          Image(systemName: message.isPending ? "clock" : "checkmark")
+                              .font(.caption2)
+                              .foregroundColor(.secondary)
+                      }
+                  }
+
                   if message.isEdited {
                       Text("Bearbeitet")
                           .font(.caption2.weight(.semibold))
@@ -1379,6 +1465,8 @@ private struct MessageBubble: View {
     }
 }
 
+private let sharedLinkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
 private struct MessageBody: View {
     @EnvironmentObject private var appState: AppState
     let message: ChatMessage
@@ -1386,17 +1474,64 @@ private struct MessageBody: View {
     let accent: SpaceAccent
     let attachmentAction: () -> Void
 
+    private var firstURL: URL? {
+        guard message.kind == .text, !message.body.isEmpty else { return nil }
+        let range = NSRange(message.body.startIndex..., in: message.body)
+        return sharedLinkDetector?.firstMatch(in: message.body, range: range).flatMap {
+            $0.url
+        }
+    }
+
     var body: some View {
         switch message.kind {
         case .text:
-            Text(message.body)
-                .fixedSize(horizontal: false, vertical: true)
-        case .voice, .image, .video, .file, .event:
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message.body)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let url = firstURL {
+                    if let socialVideo = SocialVideoLink.detect(in: url) {
+                        SocialVideoCard(link: socialVideo, originalURL: url, isOutgoing: isOutgoing, accent: accent)
+                    } else {
+                        LinkPreviewCard(url: url, isOutgoing: isOutgoing, accent: accent)
+                    }
+                }
+            }
+        case .image:
             VStack(alignment: .leading, spacing: 10) {
                 if let attachment = message.attachment {
-                    if message.kind == .image {
-                        InlineImageAttachment(attachment: attachment)
+                    InlineImageAttachment(attachment: attachment)
+                    if !message.body.isEmpty {
+                        Text(message.body)
+                            .font(.subheadline)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+            }
+        case .video:
+            VStack(alignment: .leading, spacing: 10) {
+                if let attachment = message.attachment {
+                    InlineVideoAttachment(attachment: attachment, action: attachmentAction)
+                    if !message.body.isEmpty {
+                        Text(message.body)
+                            .font(.subheadline)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .voice:
+            VStack(alignment: .leading, spacing: 10) {
+                if let attachment = message.attachment {
+                    InlineVoiceAttachment(
+                        attachment: attachment,
+                        isOutgoing: isOutgoing,
+                        accent: accent,
+                        action: attachmentAction
+                    )
+                }
+            }
+        case .file, .event:
+            VStack(alignment: .leading, spacing: 10) {
+                if let attachment = message.attachment {
                     AttachmentCard(
                         attachment: attachment,
                         isOutgoing: isOutgoing,
@@ -1404,7 +1539,6 @@ private struct MessageBody: View {
                         action: attachmentAction
                     )
                 }
-
                 if !message.body.isEmpty {
                     Text(message.body)
                         .font(.subheadline)
@@ -1434,21 +1568,368 @@ private struct InlineImageAttachment: View {
                         image
                             .resizable()
                             .scaledToFill()
+                    case .failure:
+                        imagePlaceholder(icon: "photo.slash")
                     default:
-                        Rectangle()
-                            .fill(Color(uiColor: .tertiarySystemGroupedBackground))
-                            .overlay(
-                                Image(systemName: "photo")
-                                    .font(.title2.weight(.semibold))
-                                    .foregroundColor(.secondary)
-                            )
+                        ZStack {
+                            imagePlaceholder(icon: "photo")
+                            ProgressView()
+                        }
                     }
                 }
+            } else {
+                imagePlaceholder(icon: "photo")
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 188)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func imagePlaceholder(icon: String) -> some View {
+        Rectangle()
+            .fill(Color(uiColor: .tertiarySystemGroupedBackground))
+            .overlay(
+                Image(systemName: icon)
+                    .font(.title2.weight(.semibold))
+                    .foregroundColor(.secondary)
+            )
+    }
+}
+
+private struct InlineVideoAttachment: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var localThumbnail: UIImage?
+
+    let attachment: MessageAttachment
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if let thumbnail = localThumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                } else if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
+                    AsyncImage(url: remoteURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        default:
+                            Rectangle().fill(Color(uiColor: .tertiarySystemGroupedBackground))
+                        }
+                    }
+                } else {
+                    Rectangle().fill(Color.black.opacity(0.7))
+                }
+
+                Circle()
+                    .fill(Color.black.opacity(0.52))
+                    .frame(width: 54, height: 54)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .frame(height: 188)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .task(id: attachment.localCachePath) {
+            guard let path = attachment.localCachePath else { return }
+            localThumbnail = await generateVideoThumbnail(from: path)
+        }
+    }
+
+    private func generateVideoThumbnail(from path: String) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            let url = URL(fileURLWithPath: path)
+            let asset = AVURLAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            let time = CMTime(seconds: 0, preferredTimescale: 600)
+            guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+            return UIImage(cgImage: cgImage)
+        }.value
+    }
+}
+
+private struct InlineVoiceAttachment: View {
+    let attachment: MessageAttachment
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(isOutgoing ? Color.white.opacity(0.22) : accent.softTint)
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(isOutgoing ? .white : accent.tint)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    WaveformView(isOutgoing: isOutgoing, accent: accent)
+                        .frame(height: 28)
+                    Text(attachment.subtitle)
+                        .font(.caption2)
+                        .foregroundColor(isOutgoing ? .white.opacity(0.72) : .secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct WaveformView: View {
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+    private let barCount = 24
+    private let seed: [CGFloat] = [0.4, 0.7, 0.5, 1.0, 0.8, 0.6, 0.9, 0.4,
+                                    0.7, 0.5, 0.8, 1.0, 0.6, 0.9, 0.5, 0.7,
+                                    0.4, 0.8, 1.0, 0.6, 0.5, 0.9, 0.7, 0.4]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { index in
+                Capsule()
+                    .fill(isOutgoing ? Color.white.opacity(0.82) : accent.tint.opacity(0.72))
+                    .frame(width: 2, height: max(4, seed[index % seed.count] * 28))
+            }
+        }
+    }
+}
+
+// MARK: - Social video detection & embed
+
+/// Parsed representation of a social-media video URL that can be embedded in-app.
+private enum SocialVideoLink {
+    case youtube(videoID: String)
+    case tiktok(videoID: String)
+    case instagram(shortCode: String)
+
+    var platformName: String {
+        switch self {
+        case .youtube: return "YouTube"
+        case .tiktok: return "TikTok"
+        case .instagram: return "Instagram"
+        }
+    }
+
+    var platformIcon: String {
+        switch self {
+        case .youtube: return "play.rectangle.fill"
+        case .tiktok: return "music.note.tv.fill"
+        case .instagram: return "camera.fill"
+        }
+    }
+
+    /// The aspect ratio (width / height) best suited for displaying this embed.
+    var aspectRatio: CGFloat {
+        switch self {
+        case .youtube: return 16.0 / 9.0
+        case .tiktok: return 9.0 / 16.0
+        case .instagram: return 4.0 / 5.0
+        }
+    }
+
+    var embedURL: URL? {
+        switch self {
+        case .youtube(let id):
+            return URL(string: "https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=0")
+        case .tiktok(let id):
+            return URL(string: "https://www.tiktok.com/embed/v2/\(id)")
+        case .instagram(let code):
+            return URL(string: "https://www.instagram.com/p/\(code)/embed/captioned/")
+        }
+    }
+
+    // MARK: Detection
+
+    static func detect(in url: URL) -> SocialVideoLink? {
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path
+
+        if host.contains("youtube.com") || host == "youtu.be" || host == "www.youtu.be" {
+            if let id = youtubeVideoID(from: url) { return .youtube(videoID: id) }
+        }
+        if host.contains("tiktok.com") {
+            if let id = tiktokVideoID(from: url) { return .tiktok(videoID: id) }
+        }
+        if host.contains("instagram.com") {
+            let parts = path.split(separator: "/").map(String.init)
+            if let first = parts.first, (first == "reel" || first == "p"), parts.count >= 2 {
+                return .instagram(shortCode: parts[1])
+            }
+        }
+        return nil
+    }
+
+    private static func youtubeVideoID(from url: URL) -> String? {
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path
+        // youtu.be/VIDEO_ID
+        if host == "youtu.be" || host == "www.youtu.be" {
+            let id = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            return id.isEmpty ? nil : id
+        }
+        // youtube.com/shorts/VIDEO_ID
+        if path.lowercased().hasPrefix("/shorts/") {
+            let id = String(path.dropFirst("/shorts/".count))
+            let clean = id.prefix(while: { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+            return clean.isEmpty ? nil : String(clean)
+        }
+        // youtube.com/watch?v=VIDEO_ID
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "v" })?.value
+    }
+
+    private static func tiktokVideoID(from url: URL) -> String? {
+        let parts = url.path.split(separator: "/").map(String.init)
+        if let idx = parts.firstIndex(of: "video"), idx + 1 < parts.count {
+            return parts[idx + 1]
+        }
+        return nil
+    }
+}
+
+/// Thin wrapper around WKWebView for social media embeds.
+private struct WebEmbedView: UIViewRepresentable {
+    let embedURL: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        let wv = WKWebView(frame: .zero, configuration: config)
+        wv.scrollView.isScrollEnabled = false
+        wv.backgroundColor = .black
+        wv.isOpaque = false
+        return wv
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        guard uiView.url != embedURL else { return }
+        uiView.load(URLRequest(url: embedURL))
+    }
+}
+
+/// A tappable card that expands in-place to an embedded video player.
+private struct SocialVideoCard: View {
+    let link: SocialVideoLink
+    let originalURL: URL
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if isExpanded, let embedURL = link.embedURL {
+                WebEmbedView(embedURL: embedURL)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(link.aspectRatio, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        isExpanded = false
+                    }
+                } label: {
+                    Label("Schließen", systemImage: "xmark.circle")
+                        .font(.caption)
+                        .foregroundColor(isOutgoing ? .white.opacity(0.72) : .secondary)
+                }
+            } else {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        isExpanded = true
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: link.platformIcon)
+                            .font(.title3)
+                            .foregroundColor(isOutgoing ? .white : accent.tint)
+                            .frame(width: 42, height: 42)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(isOutgoing ? Color.white.opacity(0.18) : accent.softTint)
+                            )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(link.platformName)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(isOutgoing ? .white.opacity(0.92) : accent.tint)
+                            Text(originalURL.host ?? originalURL.absoluteString)
+                                .font(.caption2)
+                                .foregroundColor(isOutgoing ? .white.opacity(0.68) : .secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "play.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(isOutgoing ? .white.opacity(0.88) : accent.tint)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(isOutgoing ? Color.white.opacity(0.12) : accent.softTint)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+private struct LinkPreviewCard: View {
+    let url: URL
+    let isOutgoing: Bool
+    let accent: SpaceAccent
+
+    var body: some View {
+        Link(destination: url) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(isOutgoing ? Color.white.opacity(0.72) : accent.tint)
+                    .frame(width: 3)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(url.host ?? url.absoluteString)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(isOutgoing ? .white.opacity(0.92) : accent.tint)
+                        .lineLimit(1)
+                    Text(url.absoluteString)
+                        .font(.caption2)
+                        .foregroundColor(isOutgoing ? .white.opacity(0.68) : .secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "arrow.up.right.square")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(isOutgoing ? .white.opacity(0.72) : accent.tint)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isOutgoing ? Color.white.opacity(0.12) : accent.softTint)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1490,9 +1971,61 @@ private struct AttachmentCard: View {
     }
 }
 
+private struct TypingIndicatorBanner: View {
+    let userIDs: [String]
+
+    @State private var isAnimating = false
+
+    /// Extracts a friendly name from a Matrix user ID like "@alice:server.com" → "alice".
+    private func displayName(for userID: String) -> String {
+        guard userID.hasPrefix("@"), let colon = userID.firstIndex(of: ":") else { return userID }
+        let localpart = String(userID[userID.index(after: userID.startIndex)..<colon])
+        return localpart.isEmpty ? userID : localpart
+    }
+
+    private var label: String {
+        let names = userIDs.map { displayName(for: $0) }
+        switch names.count {
+        case 1: return "\(names[0]) tippt…"
+        case 2: return "\(names[0]) und \(names[1]) tippen…"
+        default: return "\(names.count) Personen tippen…"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .frame(width: 6, height: 6)
+                        .scaleEffect(isAnimating ? 1.0 : 1.5)
+                        .animation(
+                            .easeInOut(duration: 0.5)
+                                .repeatForever(autoreverses: true)
+                                .delay(Double(index) * 0.18),
+                            value: isAnimating
+                        )
+                }
+            }
+            .foregroundColor(.secondary)
+
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(Color(uiColor: .systemBackground).opacity(0.92))
+        .onAppear { isAnimating = true }
+        .onDisappear { isAnimating = false }
+    }
+}
+
 private struct ComposerBar: View {
     @Binding var draft: String
     let accent: SpaceAccent
+    var isSending: Bool = false
     let sendAction: () -> Void
     let attachmentAction: (ChatMessageKind) -> Void
     let eventAction: () -> Void
@@ -1524,20 +2057,23 @@ private struct ComposerBar: View {
                 Button {
                     sendAction()
                 } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundColor(.white)
-                        .frame(width: 34, height: 34)
-                        .background(
-                            LinearGradient(
-                                colors: [accent.tint, accent.tint.opacity(0.72)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .clipShape(Circle())
+                    ZStack {
+                        Circle()
+                            .fill(accent.tint)
+                            .frame(width: 34, height: 34)
+                        if isSending {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .tint(.white)
+                                .scaleEffect(0.72)
+                        } else {
+                            Image(systemName: "paperplane.fill")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundColor(.white)
+                        }
+                    }
                 }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
@@ -2060,6 +2596,7 @@ private struct MediaLibraryPicker: UIViewControllerRepresentable {
 private struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @State private var showingRecoverySheet = false
+    @State private var showingVerifySheet = false
 
     var body: some View {
         Form {
@@ -2228,6 +2765,13 @@ private struct SettingsView: View {
                 settingsValueRow(label: "APNs erlaubt", value: appState.pushNotificationsAuthorized ? "Ja" : "Nein")
                 settingsValueRow(label: "APNs-Token", value: appState.remoteNotificationTokenAvailable ? "Vorhanden" : "Fehlt")
 
+                if appState.verificationFlowState.isActive || appState.verificationFlowState.isVerified {
+                    Button("Verifizierung anzeigen") {
+                        showingVerifySheet = true
+                    }
+                    .foregroundColor(appState.verificationFlowState.isVerified ? .green : .blue)
+                }
+
                 Button("Crypto vorbereiten") {
                     Task { await appState.prepareCryptoStack() }
                 }
@@ -2237,7 +2781,10 @@ private struct SettingsView: View {
                 }
 
                 Button("Dieses Geraet verifizieren") {
-                    Task { await appState.requestCurrentDeviceVerification() }
+                    Task {
+                        await appState.requestCurrentDeviceVerification()
+                        showingVerifySheet = true
+                    }
                 }
             }
 
@@ -2281,6 +2828,15 @@ private struct SettingsView: View {
                 await appState.recoverEncryption(with: $0)
             }
         }
+        .sheet(isPresented: $showingVerifySheet) {
+            E2EEVerifySheet()
+                .environmentObject(appState)
+        }
+        .onChange(of: appState.verificationFlowState.isActive) { isActive in
+            if isActive {
+                showingVerifySheet = true
+            }
+        }
     }
 
     private func diagnosticsText(_ date: Date?) -> String {
@@ -2296,6 +2852,114 @@ private struct SettingsView: View {
             Text(value)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct PostLoginSetupSheet: View {
+    @EnvironmentObject private var appState: AppState
+    let onRecovery: () -> Void
+    let onVerify: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 32) {
+                VStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.blue.opacity(0.12))
+                            .frame(width: 80, height: 80)
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 32, weight: .semibold))
+                            .foregroundColor(.blue)
+                    }
+
+                    Text("Ende-zu-Ende-Verschlüsselung")
+                        .font(.title2.weight(.bold))
+
+                    Text("Richte die Verschlüsselung ein, damit deine Nachrichten sicher bleiben und auf allen Geräten lesbar sind.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+                }
+                .padding(.top, 12)
+
+                VStack(spacing: 12) {
+                    Button(action: onRecovery) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "key.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.blue)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Recovery Key eingeben")
+                                    .font(.body.weight(.semibold))
+                                Text("Verschlüsselung aus bestehender Sitzung wiederherstellen")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(Color(uiColor: .tertiaryLabel))
+                        }
+                        .padding(16)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: onVerify) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.green)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Gerät verifizieren")
+                                    .font(.body.weight(.semibold))
+                                Text("Mit einem anderen angemeldeten Gerät gegenseitig bestätigen")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(Color(uiColor: .tertiaryLabel))
+                        }
+                        .padding(16)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                Button("Später einrichten", action: onDismiss)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .padding(.bottom, 8)
+            }
+            .padding(.horizontal, 24)
+            .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Überspringen", action: onDismiss)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
     }
 }
@@ -2342,6 +3006,234 @@ private struct Triangle: Shape {
             p.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
             p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
             p.closeSubpath()
+        }
+    }
+}
+
+private struct E2EEVerifySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    private var state: MatrixVerificationFlowState { appState.verificationFlowState }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 24) {
+                    verificationStatusHeader
+
+                    if state.isVerified {
+                        verifiedView
+                    } else if !state.emojis.isEmpty {
+                        emojiGrid
+                        verificationActions
+                    } else if !state.decimals.isEmpty {
+                        decimalsView
+                        verificationActions
+                    } else {
+                        pendingView
+                    }
+                }
+                .padding(24)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("Geraet verifizieren")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var verificationStatusHeader: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(statusColor.opacity(0.14))
+                    .frame(width: 76, height: 76)
+                Image(systemName: statusIcon)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(statusColor)
+            }
+            Text(state.statusLabel)
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            if let detail = state.detailLabel {
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            if let senderUserID = state.senderUserID {
+                Label(senderUserID, systemImage: "person.crop.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+        )
+    }
+
+    private var statusColor: Color {
+        if state.isVerified { return .green }
+        if state.isFailed || state.isCancelled { return .red }
+        return .blue
+    }
+
+    private var statusIcon: String {
+        if state.isVerified { return "checkmark.shield.fill" }
+        if state.isFailed { return "xmark.shield.fill" }
+        if state.isCancelled { return "minus.shield.fill" }
+        if !state.emojis.isEmpty || !state.decimals.isEmpty { return "lock.open.fill" }
+        return "shield.lefthalf.filled"
+    }
+
+    private var verifiedView: some View {
+        VStack(spacing: 16) {
+            Text("Dein Geraet ist jetzt mit diesem Geraet verifiziert. Verschluesselte Nachrichten werden korrekt entschluesselt.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 8)
+            Button("Fertig") { dismiss() }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var pendingView: some View {
+        VStack(spacing: 16) {
+            if state.canStartSas {
+                Text("Die andere Seite hat die Anfrage akzeptiert. Starte jetzt die SAS-Verifizierung.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("SAS-Verifizierung starten") {
+                    Task { await appState.startSasVerification() }
+                }
+                .buttonStyle(.borderedProminent)
+            } else if state.canApprove {
+                Text("Warte auf Verifizierungsdaten ...")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                ProgressView()
+            } else {
+                ProgressView()
+                Text("Warte auf die andere Seite ...")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+
+            if state.canCancel {
+                Button("Abbrechen", role: .cancel) {
+                    Task { await appState.cancelVerification() }
+                }
+                .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private var emojiGrid: some View {
+        VStack(spacing: 16) {
+            Text("Vergleiche diese Emoji auf beiden Geraeten. Sie muessen identisch sein.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(state.emojis.indices, id: \.self) { index in
+                    let emoji = state.emojis[index]
+                    VStack(spacing: 6) {
+                        Text(emoji.symbol)
+                            .font(.system(size: 34))
+                        Text(emoji.description)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                    )
+                }
+            }
+        }
+    }
+
+    private var decimalsView: some View {
+        VStack(spacing: 16) {
+            Text("Vergleiche diese Zahlen auf beiden Geraeten. Sie muessen identisch sein.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 20) {
+                ForEach(state.decimals, id: \.self) { value in
+                    Text("\(value)")
+                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                        )
+                }
+            }
+        }
+    }
+
+    private var verificationActions: some View {
+        VStack(spacing: 12) {
+            if state.canApprove {
+                Button {
+                    Task { await appState.approveVerification() }
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Sie stimmen ueberein", systemImage: "checkmark.circle.fill")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Spacer()
+                    }
+                    .padding(.vertical, 14)
+                    .background(Color.green)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if state.canDecline {
+                Button {
+                    Task { await appState.declineVerification() }
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Sie stimmen NICHT ueberein", systemImage: "xmark.circle.fill")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Spacer()
+                    }
+                    .padding(.vertical, 14)
+                    .background(Color.red)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if state.canCancel {
+                Button("Abbrechen", role: .cancel) {
+                    Task { await appState.cancelVerification() }
+                }
+                .foregroundColor(.secondary)
+            }
         }
     }
 }

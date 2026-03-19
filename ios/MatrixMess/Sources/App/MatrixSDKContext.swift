@@ -14,6 +14,7 @@ actor MatrixSDKContext {
     private var timelinesByRoomID: [String: Timeline] = [:]
     private var verificationController: SessionVerificationController?
     private var verificationDelegate: MatrixSDKVerificationDelegate?
+    private var verificationFlowState = MatrixVerificationFlowState()
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -108,14 +109,62 @@ actor MatrixSDKContext {
         return await currentCryptoStatus(session: session)
     }
 
+    func currentVerificationFlowState() -> MatrixVerificationFlowState {
+        verificationFlowState
+    }
+
+    func updateVerificationFlowState(_ state: MatrixVerificationFlowState) {
+        verificationFlowState = state
+    }
+
     func requestDeviceVerification(session: MatrixSession) async throws {
         let client = try await ensureClient(for: session)
         let controller = try await client.getSessionVerificationController()
-        let delegate = MatrixSDKVerificationDelegate()
+        let delegate = MatrixSDKVerificationDelegate { [weak self] newState in
+            Task {
+                await self?.updateVerificationFlowState(newState)
+            }
+        }
         controller.setDelegate(delegate: delegate)
         verificationDelegate = delegate
         verificationController = controller
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "Verifizierungsanfrage wird gesendet ..."
+        state.canCancel = true
+        verificationFlowState = state
         try await controller.requestDeviceVerification()
+    }
+
+    func startSasVerification(session: MatrixSession) async throws {
+        guard let controller = verificationController else {
+            throw MatrixServiceError.serverError("Kein aktiver Verifizierungsvorgang.")
+        }
+        try await controller.startSasVerification()
+    }
+
+    func approveVerification(session: MatrixSession) async throws {
+        guard let controller = verificationController else {
+            throw MatrixServiceError.serverError("Kein aktiver Verifizierungsvorgang.")
+        }
+        try await controller.approveVerification()
+    }
+
+    func declineVerification(session: MatrixSession) async throws {
+        guard let controller = verificationController else {
+            throw MatrixServiceError.serverError("Kein aktiver Verifizierungsvorgang.")
+        }
+        try await controller.declineVerification()
+    }
+
+    func cancelVerification(session: MatrixSession) async throws {
+        if let controller = verificationController {
+            try await controller.cancelVerification()
+        }
+        // The delegate's didCancel() callback will update the state with isCancelled = true.
+        // If no controller exists, reset the state directly.
+        if verificationController == nil {
+            verificationFlowState = MatrixVerificationFlowState()
+        }
     }
 
     func sendMessage(
@@ -297,6 +346,7 @@ actor MatrixSDKContext {
         timelinesByRoomID = [:]
         verificationController = nil
         verificationDelegate = nil
+        verificationFlowState = MatrixVerificationFlowState()
     }
 
     private func ensureClient(for session: MatrixSession) async throws -> Client {
@@ -479,6 +529,11 @@ actor MatrixSDKContext {
 private final class MatrixSDKVerificationDelegate: SessionVerificationControllerDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var _state = MatrixVerificationFlowState()
+    private let onStateChange: @Sendable (MatrixVerificationFlowState) -> Void
+
+    init(onStateChange: @escaping @Sendable (MatrixVerificationFlowState) -> Void) {
+        self.onStateChange = onStateChange
+    }
 
     var currentState: MatrixVerificationFlowState {
         lock.lock()
@@ -503,6 +558,15 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canCancel = true
         }
         AppLogger.info("Verifizierungsanfrage von \(details.senderProfile.userId) fuer Device \(details.deviceId) erhalten.")
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "Verifizierungsanfrage empfangen"
+        state.senderUserID = details.senderProfile.userId
+        state.deviceID = details.deviceId
+        state.flowID = details.flowId
+        state.canApprove = true
+        state.canDecline = true
+        state.canCancel = true
+        onStateChange(state)
     }
 
     func didAcceptVerificationRequest() {
@@ -511,6 +575,11 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canStartSas = true
         }
         AppLogger.info("Verifizierungsanfrage akzeptiert.")
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "Verifizierungsanfrage akzeptiert"
+        state.canStartSas = true
+        state.canCancel = true
+        onStateChange(state)
     }
 
     func didStartSasVerification() {
@@ -519,13 +588,17 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canStartSas = false
         }
         AppLogger.info("SAS-Verifizierung gestartet.")
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "SAS-Verifizierung laeuft – Daten werden uebermittelt ..."
+        state.canCancel = true
+        onStateChange(state)
     }
 
     func didReceiveVerificationData(data: SessionVerificationData) {
         updateState { state in
             switch data {
-            case .emojis(let emojiData):
-                state.emojis = emojiData.emojis.map { MatrixVerificationEmoji(symbol: $0.symbol(), description: $0.description()) }
+            case .emojis(let emojis, _):
+                state.emojis = emojis.map { MatrixVerificationEmoji(symbol: $0.symbol(), description: $0.description()) }
             case .decimals(let values):
                 state.decimals = values
             }
@@ -535,6 +608,18 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canCancel = true
         }
         AppLogger.info("Verifizierungsdaten empfangen: \(String(describing: data))")
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "Verifizierungsdaten empfangen – bitte vergleichen"
+        state.canApprove = true
+        state.canDecline = true
+        state.canCancel = true
+        switch data {
+        case .emojis(let emojis, _):
+            state.emojis = emojis.map { MatrixVerificationEmoji(symbol: $0.symbol(), description: $0.description()) }
+        case .decimals(let values):
+            state.decimals = values
+        }
+        onStateChange(state)
     }
 
     func didFail() {
@@ -546,6 +631,10 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canCancel = false
         }
         AppLogger.error("Geraeteverifizierung fehlgeschlagen.")
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "Verifizierung fehlgeschlagen"
+        state.isFailed = true
+        onStateChange(state)
     }
 
     func didCancel() {
@@ -557,6 +646,10 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canCancel = false
         }
         AppLogger.info("Geraeteverifizierung abgebrochen.")
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "Verifizierung abgebrochen"
+        state.isCancelled = true
+        onStateChange(state)
     }
 
     func didFinish() {
@@ -569,5 +662,9 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canCancel = false
         }
         AppLogger.info("Geraeteverifizierung abgeschlossen.")
+        var state = MatrixVerificationFlowState()
+        state.statusLabel = "Geraet erfolgreich verifiziert"
+        state.isVerified = true
+        onStateChange(state)
     }
 }
