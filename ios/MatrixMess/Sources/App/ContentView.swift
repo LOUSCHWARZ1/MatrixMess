@@ -6,7 +6,7 @@ import AVKit
 import QuickLook
 import WebKit
 
-private let appBuildLabel = "v0.3.0 – 2026-03-18"
+private let appBuildLabel = "v0.3.1 – 2026-03-19"
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
