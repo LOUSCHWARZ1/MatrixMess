@@ -604,7 +604,11 @@ actor MatrixSDKContext {
     }
 
     private func chatMessage(from item: EventTimelineItem, currentUserID: String) -> ChatMessage? {
-        let senderDisplayName = profileDisplayName(item.senderProfile) ?? item.sender
+        let senderDisplayName = MatrixDisplayNameResolver.sanitizedDisplayName(
+            profileDisplayName(item.senderProfile),
+            fallbackUserID: item.sender
+        )
+        let isOutgoing = item.sender.compare(currentUserID, options: .caseInsensitive) == .orderedSame || item.isOwn
         let timestamp = Date(timeIntervalSince1970: TimeInterval(item.timestamp) / 1000)
 
         var matrixEventID: String?
@@ -620,7 +624,7 @@ actor MatrixSDKContext {
             senderDisplayName: senderDisplayName,
             body: "",
             timestamp: timestamp,
-            isOutgoing: item.isOwn,
+            isOutgoing: isOutgoing,
             kind: .text
         )
 
@@ -637,7 +641,7 @@ actor MatrixSDKContext {
                 message.sendStatus = .sent
                 message.isPending = false
             }
-        } else if item.isOwn {
+        } else if isOutgoing {
             message.sendStatus = .sent
             message.isPending = false
         }
@@ -646,14 +650,13 @@ actor MatrixSDKContext {
         case .msgLike(content: let msgLike):
             applyMessageLikeContent(msgLike, to: &message, currentUserID: currentUserID)
         case .roomMembership(userId: _, userDisplayName: let userDisplayName, change: let change, reason: _):
-            let actor = userDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                ? userDisplayName!
-                : senderDisplayName
+            let actor = MatrixDisplayNameResolver.sanitizedDisplayName(userDisplayName, fallbackUserID: item.sender)
             message.body = membershipEventText(actor: actor, change: change)
             message.kind = .text
         case .profileChange(displayName: let displayName, prevDisplayName: _, avatarUrl: _, prevAvatarUrl: _):
             if let displayName, !displayName.isEmpty {
-                message.body = "\(senderDisplayName) nutzt jetzt den Namen \(displayName)."
+                let sanitized = MatrixDisplayNameResolver.sanitizedDisplayName(displayName, fallbackUserID: item.sender)
+                message.body = "\(senderDisplayName) nutzt jetzt den Namen \(sanitized)."
             } else {
                 message.body = "\(senderDisplayName) hat das Profil aktualisiert."
             }
@@ -827,7 +830,7 @@ actor MatrixSDKContext {
     private func profileDisplayName(_ details: ProfileDetails) -> String? {
         switch details {
         case .ready(displayName: let displayName, displayNameAmbiguous: _, avatarUrl: _):
-            return displayName
+            return MatrixDisplayNameResolver.sanitizedDisplayName(displayName)
         default:
             return nil
         }
@@ -874,7 +877,33 @@ actor MatrixSDKContext {
 
     private func buildClient(homeserver: String, storeID: String) async throws -> Client {
         let sessionPaths = try makeSessionPaths(storeID: storeID)
-        return try await ClientBuilder()
+        let builders: [SlidingSyncVersionBuilder] = [.discoverNative, .native, .none]
+        var lastError: Error?
+
+        for builder in builders {
+            do {
+                return try await buildClient(
+                    homeserver: homeserver,
+                    sessionPaths: sessionPaths,
+                    versionBuilder: builder
+                )
+            } catch {
+                lastError = error
+                AppLogger.error(
+                    "ClientBuilder mit SlidingSync \(String(describing: builder)) fehlgeschlagen: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        throw lastError ?? MatrixServiceError.serverError("Der Matrix-Client konnte nicht initialisiert werden.")
+    }
+
+    private func buildClient(
+        homeserver: String,
+        sessionPaths: (data: URL, cache: URL),
+        versionBuilder: SlidingSyncVersionBuilder
+    ) async throws -> Client {
+        try await ClientBuilder()
             .homeserverUrl(url: homeserver)
             .sessionPaths(
                 dataPath: sessionPaths.data.path,
@@ -883,7 +912,7 @@ actor MatrixSDKContext {
             .autoEnableCrossSigning(autoEnableCrossSigning: true)
             .autoEnableBackups(autoEnableBackups: true)
             .threadsEnabled(enabled: true, threadSubscriptions: true)
-            .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
+            .slidingSyncVersionBuilder(versionBuilder: versionBuilder)
             .build()
     }
 
