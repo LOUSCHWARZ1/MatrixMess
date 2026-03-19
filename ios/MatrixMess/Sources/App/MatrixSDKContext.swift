@@ -317,6 +317,7 @@ actor MatrixSDKContext {
 
         var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
         components?.path = "/_matrix/media/v3/download/\(parts[0])/\(parts[1])"
+        components?.queryItems = [URLQueryItem(name: "access_token", value: session.accessToken)]
         return components?.url
     }
 

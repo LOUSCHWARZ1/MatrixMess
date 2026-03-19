@@ -172,8 +172,23 @@ final class MatrixService {
     }
 
     func sendMessage(_ text: String, roomID: String, session storedSession: MatrixSession, isEncrypted: Bool) async throws -> String? {
-        // Route all messages through the SDK timeline (handles both plain and encrypted).
-        return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
+        if isEncrypted {
+            // Encrypted rooms go through the SDK crypto/timeline stack.
+            return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
+        }
+
+        // Plain rooms use the client REST endpoint.
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let txnID = UUID().uuidString.lowercased()
+        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        let response: MatrixSendEventResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/send/m.room.message/\(txnID)",
+            method: "PUT",
+            body: MatrixSendMessageRequest(body: text),
+            accessToken: storedSession.accessToken
+        )
+        return response.eventID
     }
 
     func sendTypingNotification(isTyping: Bool, roomID: String, session storedSession: MatrixSession) async throws {
@@ -414,6 +429,8 @@ final class MatrixService {
         existingMessagesByThreadID: [String: [ChatMessage]]
     ) -> MatrixWorkspace {
         let isIncrementalSync = storedSession.syncToken != nil
+        let matrixDescriptor = descriptor(for: .matrix)
+        let matrixSyntheticSpaceID = "space.synthetic.matrix"
         let joinedRooms = response.rooms?.join ?? [:]
         let leftRoomIDs = Set(
             response.rooms?.leave?.keys
@@ -475,6 +492,15 @@ final class MatrixService {
         var syntheticSpacesByID = isIncrementalSync ? existingSyntheticSpacesByID : [:]
         var threadsByID = isIncrementalSync ? existingThreadsByID : [:]
         var messagesByThreadID = isIncrementalSync ? existingMessagesByThreadID : [:]
+        let matrixSpace = syntheticSpacesByID[matrixSyntheticSpaceID] ?? ChatSpace(
+            id: matrixSyntheticSpaceID,
+            kind: matrixDescriptor.kind,
+            title: matrixDescriptor.title,
+            subtitle: matrixDescriptor.subtitle,
+            icon: matrixDescriptor.icon,
+            accent: matrixDescriptor.accent
+        )
+        syntheticSpacesByID[matrixSyntheticSpaceID] = matrixSpace
 
         for leftRoomID in leftRoomIDs {
             threadsByID.removeValue(forKey: leftRoomID)
@@ -490,23 +516,29 @@ final class MatrixService {
                 assignedSpaceID = parentID
                 assignedSpace = parentSpace
             } else {
-                let descriptor = descriptor(for: snapshot.classification)
-                let syntheticID = "space.synthetic.\(descriptor.key)"
-                if let existing = syntheticSpacesByID[syntheticID] {
-                    assignedSpace = existing
+                let classification = snapshot.classification
+                if classification == .matrix || classification == .genericBridge {
+                    assignedSpace = matrixSpace
+                    assignedSpaceID = matrixSyntheticSpaceID
                 } else {
-                    let space = ChatSpace(
-                        id: syntheticID,
-                        kind: descriptor.kind,
-                        title: descriptor.title,
-                        subtitle: descriptor.subtitle,
-                        icon: descriptor.icon,
-                        accent: descriptor.accent
-                    )
-                    syntheticSpacesByID[syntheticID] = space
-                    assignedSpace = space
+                    let descriptor = descriptor(for: classification)
+                    let syntheticID = "space.synthetic.\(descriptor.key)"
+                    if let existing = syntheticSpacesByID[syntheticID] {
+                        assignedSpace = existing
+                    } else {
+                        let space = ChatSpace(
+                            id: syntheticID,
+                            kind: descriptor.kind,
+                            title: descriptor.title,
+                            subtitle: descriptor.subtitle,
+                            icon: descriptor.icon,
+                            accent: descriptor.accent
+                        )
+                        syntheticSpacesByID[syntheticID] = space
+                        assignedSpace = space
+                    }
+                    assignedSpaceID = assignedSpace.id
                 }
-                assignedSpaceID = assignedSpace.id
             }
 
             let existingMessages = messagesByThreadID[snapshot.roomID, default: []]
@@ -547,8 +579,15 @@ final class MatrixService {
 
         let usedSpaceIDs = Set(threadsByID.values.map(\.homeSpaceID))
         let actualSpaceRoomIDs = Set(actualSpaceRooms.map(\.id))
-        syntheticSpacesByID = syntheticSpacesByID.filter { usedSpaceIDs.contains($0.key) }
+        syntheticSpacesByID = syntheticSpacesByID.filter {
+            usedSpaceIDs.contains($0.key) || $0.key == matrixSyntheticSpaceID
+        }
         actualSpacesByID = actualSpacesByID.filter { usedSpaceIDs.contains($0.key) || actualSpaceRoomIDs.contains($0.key) }
+        let matrixSpaceForList = syntheticSpacesByID[matrixSyntheticSpaceID]
+        let otherSyntheticSpaces = syntheticSpacesByID
+            .filter { $0.key != matrixSyntheticSpaceID }
+            .map(\.value)
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
 
         let orderedSpaces = [ChatSpace(
             id: ChatSpace.mainID,
@@ -559,14 +598,15 @@ final class MatrixService {
             accent: .sunset
         )]
         + actualSpacesByID.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        + syntheticSpacesByID.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        + (matrixSpaceForList.map { [$0] } ?? [])
+        + otherSyntheticSpaces
 
         let availableThreadIDs = Set(threadsByID.keys)
         let filteredPins = existingMainPins.filter { availableThreadIDs.contains($0) }
-        let defaultPins = threadsByID.values
-            .sorted { $0.lastActivity > $1.lastActivity }
-            .map(\.id)
-        let mainPins = filteredPins.isEmpty ? defaultPins : filteredPins
+        // Migration: older builds auto-filled Main with all chats. If we detect
+        // that exact legacy state, reset Main to curated-empty behavior.
+        let wasLegacyAutoPinState = !availableThreadIDs.isEmpty && Set(filteredPins) == availableThreadIDs
+        let mainPins = wasLegacyAutoPinState ? [] : filteredPins
 
         return MatrixWorkspace(
             session: MatrixSession(
@@ -948,7 +988,7 @@ private struct ParsedRoomSnapshot {
         let senderID = event.sender ?? "unknown"
         let senderDisplayName = members[senderID] ?? senderID
         let timestamp = Date(timeIntervalSince1970: TimeInterval((event.originServerTS ?? 0)) / 1000)
-        let isOutgoing = senderID == currentUserID
+        let isOutgoing = senderID.compare(currentUserID, options: .caseInsensitive) == .orderedSame
 
         if event.type == "m.room.encrypted" {
             return ChatMessage(
@@ -1173,7 +1213,7 @@ private enum MatrixRoomClassification {
         if haystack.contains("messenger") || haystack.contains("facebook") || haystack.contains("mautrix-meta") {
             return .messenger
         }
-        return isSpace ? .matrix : .genericBridge
+        return .matrix
     }
 }
 

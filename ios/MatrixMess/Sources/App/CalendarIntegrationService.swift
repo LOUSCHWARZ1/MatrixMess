@@ -45,6 +45,32 @@ struct AppleCalendarProvider {
         try store.save(ekEvent, span: .thisEvent)
         return ekEvent.eventIdentifier
     }
+
+    func fetchEvents(from startDate: Date, to endDate: Date) async throws -> [ScheduledChatEvent] {
+        let granted = try await requestAccess()
+        guard granted else {
+            throw MatrixServiceError.serverError("Kein Kalenderzugriff fuer Apple Calendar.")
+        }
+
+        let predicate = store.predicateForEvents(withStart: startDate, end: endDate, calendars: nil)
+        let events = store.events(matching: predicate)
+        return events.compactMap { ekEvent in
+            guard let providerEventID = ekEvent.eventIdentifier else { return nil }
+            let rawTitle = (ekEvent.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = rawTitle.isEmpty ? "Apple Event" : rawTitle
+            return ScheduledChatEvent(
+                id: UUID(),
+                threadID: "",
+                title: title,
+                note: ekEvent.notes ?? "",
+                startDate: ekEvent.startDate,
+                endDate: ekEvent.endDate,
+                createdBy: "Apple",
+                providerIDs: [CalendarProviderKind.apple.rawValue],
+                providerEventIDs: [CalendarProviderKind.apple.rawValue: providerEventID]
+            )
+        }
+    }
 }
 
 struct GoogleCalendarProvider: ExternalCalendarProvider {
