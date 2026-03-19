@@ -935,46 +935,7 @@ private struct ConversationDetailView: View {
                             }
 
                               ForEach(appState.messages(for: thread.id)) { message in
-                                  MessageBubble(
-                                      message: message,
-                                      accent: thread.accent,
-                                      attachmentAction: {
-                                          Task {
-                                              await appState.downloadAttachment(messageID: message.id, in: thread.id)
-                                          }
-                                      },
-                                      reactAction: { emoji in
-                                          Task {
-                                              await appState.toggleReaction(emoji, on: message.id, in: thread.id)
-                                          }
-                                      },
-                                      forwardAction: {
-                                          forwardingMessageID = message.id
-                                          showingForwardDialog = true
-                                      },
-                                      editAction: {
-                                          editingMessageID = message.id
-                                          editingText = message.body
-                                      },
-                                      retryAction: {
-                                          Task {
-                                              await appState.retryMessage(message.id, in: thread.id)
-                                          }
-                                      },
-                                      deleteAction: {
-                                          Task {
-                                              await appState.redactMessage(message.id, in: thread.id)
-                                          }
-                                      }
-                                  )
-                                  .task(id: message.id) {
-                                      guard appState.inlineMediaEnabled else { return }
-                                      guard message.kind == .image || message.kind == .video else { return }
-                                      guard let attachment = message.attachment,
-                                            attachment.localCachePath == nil,
-                                            attachment.contentURI != nil else { return }
-                                      await appState.downloadAttachment(messageID: message.id, in: thread.id)
-                                  }
+                                  conversationMessageRow(message, thread: thread)
                               }
 
                             Color.clear
@@ -1180,6 +1141,50 @@ private struct ConversationDetailView: View {
             return [.audio]
         case .text, .event:
             return [.data]
+        }
+    }
+
+    @ViewBuilder
+    private func conversationMessageRow(_ message: ChatMessage, thread: ChatThread) -> some View {
+        MessageBubble(
+            message: message,
+            accent: thread.accent,
+            attachmentAction: {
+                Task {
+                    await appState.downloadAttachment(messageID: message.id, in: thread.id)
+                }
+            },
+            reactAction: { emoji in
+                Task {
+                    await appState.toggleReaction(emoji, on: message.id, in: thread.id)
+                }
+            },
+            forwardAction: {
+                forwardingMessageID = message.id
+                showingForwardDialog = true
+            },
+            editAction: {
+                editingMessageID = message.id
+                editingText = message.body
+            },
+            retryAction: {
+                Task {
+                    await appState.retryMessage(message.id, in: thread.id)
+                }
+            },
+            deleteAction: {
+                Task {
+                    await appState.redactMessage(message.id, in: thread.id)
+                }
+            }
+        )
+        .task(id: message.id) {
+            guard appState.inlineMediaEnabled else { return }
+            guard message.kind == .image || message.kind == .video else { return }
+            guard let attachment = message.attachment,
+                  attachment.localCachePath == nil,
+                  attachment.contentURI != nil else { return }
+            await appState.downloadAttachment(messageID: message.id, in: thread.id)
         }
     }
 
