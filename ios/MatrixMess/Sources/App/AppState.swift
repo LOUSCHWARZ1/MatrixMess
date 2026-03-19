@@ -295,7 +295,7 @@ struct CalendarProviderConnection: Identifiable, Hashable, Codable {
 
 struct ScheduledChatEvent: Identifiable, Hashable, Codable {
     let id: UUID
-    let threadID: String
+    var threadID: String
     let title: String
     let note: String
     let startDate: Date
@@ -1396,7 +1396,7 @@ final class AppState: ObservableObject {
 
     func threadCount(for spaceID: String) -> Int {
         if spaceID == ChatSpace.mainID {
-            return mainPinnedThreadIDs.lazy.filter { threadsByID[$0] != nil }.count
+            return mainPinnedThreadIDs.lazy.filter { self.threadsByID[$0] != nil }.count
         }
 
         return threadsByID.values.lazy.filter { $0.homeSpaceID == spaceID }.count
@@ -1406,7 +1406,7 @@ final class AppState: ObservableObject {
         let activeSpaceID = spaceID ?? selectedSpaceID
         let baseThreads: [ChatThread]
         if activeSpaceID == ChatSpace.mainID {
-            baseThreads = mainPinnedThreadIDs.compactMap { threadsByID[$0] }
+            baseThreads = mainPinnedThreadIDs.compactMap { self.threadsByID[$0] }
         } else {
             baseThreads = threadsByID.values.filter { $0.homeSpaceID == activeSpaceID }
         }
