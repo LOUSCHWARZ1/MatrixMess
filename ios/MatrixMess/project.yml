@@ -12,7 +12,7 @@ settings:
   base:
     SWIFT_VERSION: 5.10
     CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 0.1.0
+    MARKETING_VERSION: 0.3.0
 
 targets:
   MatrixMess:
@@ -28,9 +28,11 @@ targets:
         PRODUCT_NAME: MatrixMess
         PRODUCT_BUNDLE_IDENTIFIER: dev.matrixmess.app
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
         CODE_SIGN_ENTITLEMENTS: Sources/App/MatrixMess.entitlements
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: MatrixMess
+        INFOPLIST_KEY_CFBundleIconName: AppIcon
         INFOPLIST_KEY_CFBundleURLTypes:
           - CFBundleTypeRole: Editor
             CFBundleURLName: dev.matrixmess.app.oauth
