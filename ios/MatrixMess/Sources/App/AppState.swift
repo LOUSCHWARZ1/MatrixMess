@@ -128,6 +128,12 @@ enum ChatMessageKind: String, Hashable, Codable {
     case event
 }
 
+enum ChatMessageSendStatus: String, Hashable, Codable {
+    case sending
+    case sent
+    case failed
+}
+
 struct MessageReaction: Identifiable, Hashable, Codable {
     var id: String { emoji }
     let emoji: String
@@ -171,6 +177,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
     var timestamp: Date
     var isOutgoing: Bool
     var kind: ChatMessageKind
+    var sendStatus: ChatMessageSendStatus?
     var attachment: MessageAttachment?
     var forwardedFrom: String?
     var linkedEventID: UUID?
@@ -189,6 +196,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         timestamp: Date,
         isOutgoing: Bool,
         kind: ChatMessageKind = .text,
+        sendStatus: ChatMessageSendStatus? = nil,
         attachment: MessageAttachment? = nil,
         forwardedFrom: String? = nil,
         linkedEventID: UUID? = nil,
@@ -203,6 +211,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         self.timestamp = timestamp
         self.isOutgoing = isOutgoing
         self.kind = kind
+        self.sendStatus = sendStatus
         self.attachment = attachment
         self.forwardedFrom = forwardedFrom
         self.linkedEventID = linkedEventID
@@ -361,6 +370,7 @@ final class AppState: ObservableObject {
         keyBackupConfigured: false,
         deviceVerificationAvailable: false
     )
+    @Published var showRecoveryPrompt = false
     @Published private(set) var verificationFlowState = MatrixVerificationFlowState()
     @Published private(set) var pushNotificationsAuthorized = false
     @Published private(set) var remoteNotificationTokenAvailable = false
@@ -481,6 +491,7 @@ final class AppState: ObservableObject {
     }
 
     var isLoggedIn: Bool { currentUserID != nil }
+    var buildVersionLabel: String { "v0.3.0 – 2026-03-18" }
     var preferredColorScheme: ColorScheme? { themeMode.preferredColorScheme }
     var selectedSpace: ChatSpace? { spaces.first(where: { $0.id == selectedSpaceID }) ?? spaces.first }
 
@@ -535,8 +546,9 @@ final class AppState: ObservableObject {
             await startSyncLoopIfPossible()
             await refreshCryptoStatus()
 
-            // Prompt the user to verify their device or enter a recovery key if encryption
-            // is active but the device is not yet verified and no recovery is set up.
+            if cryptoStatus.encryptionAvailable && !cryptoStatus.keyBackupConfigured {
+                showRecoveryPrompt = true
+            }
             if cryptoStatus.encryptionAvailable &&
                 cryptoStatus.verificationStateLabel != "Verifiziert" {
                 needsPostLoginSetup = true
@@ -565,6 +577,7 @@ final class AppState: ObservableObject {
         currentUserID = nil
         password = ""
         errorMessage = nil
+        showRecoveryPrompt = false
         isSyncing = false
         syncEngineState = .init()
         verificationFlowState = MatrixVerificationFlowState()
@@ -858,6 +871,8 @@ final class AppState: ObservableObject {
                         timestamp: .now,
                         isOutgoing: true,
                         kind: kind,
+                        sendStatus: sent.matrixEventID == nil ? .sending : .sent,
+                        isPending: sent.matrixEventID == nil,
                         attachment: sent.attachment
                     ),
                     to: threadID,
@@ -896,6 +911,8 @@ final class AppState: ObservableObject {
                     timestamp: .now,
                     isOutgoing: true,
                     kind: kind,
+                    sendStatus: .sent,
+                    isPending: false,
                     attachment: upload.attachment
                 ),
                 to: threadID,
@@ -1105,7 +1122,7 @@ final class AppState: ObservableObject {
 
     func threadCount(for spaceID: String) -> Int {
         if spaceID == ChatSpace.mainID {
-            return mainPinnedThreadIDs.count
+            return mainPinnedThreadIDs.isEmpty ? threadsByID.count : mainPinnedThreadIDs.count
         }
 
         return threadsByID.values.lazy.filter { $0.homeSpaceID == spaceID }.count
@@ -1113,9 +1130,13 @@ final class AppState: ObservableObject {
 
     func visibleThreads(in spaceID: String? = nil) -> [ChatThread] {
         let activeSpaceID = spaceID ?? selectedSpaceID
-        let baseThreads: [ChatThread] = activeSpaceID == ChatSpace.mainID
-            ? Array(threadsByID.values)
-            : threadsByID.values.filter { $0.homeSpaceID == activeSpaceID }
+        let baseThreads: [ChatThread]
+        if activeSpaceID == ChatSpace.mainID {
+            let pinned = mainPinnedThreadIDs.compactMap { threadsByID[$0] }
+            baseThreads = pinned.isEmpty ? Array(threadsByID.values) : pinned
+        } else {
+            baseThreads = threadsByID.values.filter { $0.homeSpaceID == activeSpaceID }
+        }
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = baseThreads.filter { thread in
@@ -1258,46 +1279,15 @@ final class AppState: ObservableObject {
     func sendMessage(_ text: String, to threadID: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let currentSession, let thread = thread(withID: threadID) else { return }
-
-        var sentEventID: String?
-        var requiresFollowupRefresh = false
-        do {
-            sentEventID = try await matrixService.sendMessage(
-                trimmed,
-                roomID: threadID,
-                session: currentSession,
-                isEncrypted: thread.isEncrypted
-            )
-            requiresFollowupRefresh = thread.isEncrypted || sentEventID == nil
-        } catch {
-            errorMessage = error.localizedDescription
-
-            var updatedDiagnostics = diagnostics
-            updatedDiagnostics.lastErrorDescription = error.localizedDescription
-            updatedDiagnostics.statusNote = "Nachricht konnte nicht an den Homeserver gesendet werden."
-            diagnostics = updatedDiagnostics
-            return
-        }
-
-        appendMessage(
-            ChatMessage(
-                matrixEventID: sentEventID,
-                senderDisplayName: "Du",
-                body: trimmed,
-                timestamp: .now,
-                isOutgoing: true,
-                isPending: false
-            ),
-            to: threadID,
-            preview: trimmed
-        )
         draftsByThreadID.removeValue(forKey: threadID)
-        persistSnapshotIfPossible()
+        await sendTextMessage(trimmed, to: threadID, existingMessageID: nil)
+    }
 
-        if requiresFollowupRefresh {
-            scheduleDeferredMatrixRefresh()
-        }
+    func retryMessage(_ messageID: UUID, in threadID: String) async {
+        guard let message = messagesByThreadID[threadID]?.first(where: { $0.id == messageID }) else { return }
+        let trimmed = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await sendTextMessage(trimmed, to: threadID, existingMessageID: messageID)
     }
 
     func sendAttachment(_ kind: ChatMessageKind, to threadID: String) {
@@ -1514,6 +1504,123 @@ final class AppState: ObservableObject {
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             await refreshMatrixData(forceFullSync: false)
+        }
+    }
+
+    private func sendTextMessage(_ trimmed: String, to threadID: String, existingMessageID: UUID?) async {
+        guard let currentSession, let thread = thread(withID: threadID) else { return }
+
+        let messageID = existingMessageID ?? UUID()
+        var sentEventID: String?
+        var requiresFollowupRefresh = false
+        var sendFailed = false
+
+        if existingMessageID == nil {
+            appendMessage(
+                ChatMessage(
+                    id: messageID,
+                    senderDisplayName: "Du",
+                    body: trimmed,
+                    timestamp: .now,
+                    isOutgoing: true,
+                    sendStatus: .sending,
+                    isPending: true
+                ),
+                to: threadID,
+                preview: trimmed
+            )
+        } else if var messages = messagesByThreadID[threadID],
+                  let index = messages.firstIndex(where: { $0.id == messageID }) {
+            messages[index].body = trimmed
+            messages[index].timestamp = .now
+            messages[index].sendStatus = .sending
+            messages[index].isPending = true
+            messagesByThreadID[threadID] = messages
+            recalculateThreadPreview(for: threadID)
+        }
+
+        do {
+            sentEventID = try await matrixService.sendMessage(
+                trimmed,
+                roomID: threadID,
+                session: currentSession,
+                isEncrypted: thread.isEncrypted
+            )
+            requiresFollowupRefresh = thread.isEncrypted || sentEventID == nil
+        } catch {
+            sendFailed = true
+            errorMessage = error.localizedDescription
+
+            var updatedDiagnostics = diagnostics
+            updatedDiagnostics.lastErrorDescription = error.localizedDescription
+            updatedDiagnostics.statusNote = "Nachricht konnte nicht an den Homeserver gesendet werden."
+            diagnostics = updatedDiagnostics
+        }
+
+        if var messages = messagesByThreadID[threadID],
+           let index = messages.firstIndex(where: { $0.id == messageID }) {
+            if let sentEventID {
+                messages[index].matrixEventID = sentEventID
+            }
+            if sendFailed {
+                messages[index].sendStatus = .failed
+                messages[index].isPending = false
+            } else if sentEventID == nil {
+                messages[index].sendStatus = .sending
+                messages[index].isPending = true
+            } else {
+                messages[index].sendStatus = .sent
+                messages[index].isPending = false
+            }
+            messagesByThreadID[threadID] = messages
+        }
+
+        persistSnapshotIfPossible()
+
+        if requiresFollowupRefresh {
+            scheduleDeferredMatrixRefresh()
+        }
+    }
+
+    private func prefetchInlineMedia(for session: MatrixSession) async {
+        let targets = messagesByThreadID.flatMap { threadID, messages in
+            messages.compactMap { message -> (threadID: String, messageID: UUID, contentURI: String, timestamp: Date)? in
+                guard message.kind == .image || message.kind == .video else { return nil }
+                guard let attachment = message.attachment,
+                      let contentURI = attachment.contentURI,
+                      attachment.localCachePath == nil else {
+                    return nil
+                }
+                return (threadID: threadID, messageID: message.id, contentURI: contentURI, timestamp: message.timestamp)
+            }
+        }
+        .sorted { $0.timestamp > $1.timestamp }
+        .prefix(24)
+        var didUpdate = false
+
+        for target in targets {
+            if Task.isCancelled { break }
+
+            do {
+                let localFile = try await mediaService.downloadMedia(contentURI: target.contentURI, session: session)
+                guard var messages = messagesByThreadID[target.threadID],
+                      let index = messages.firstIndex(where: { $0.id == target.messageID }),
+                      var attachment = messages[index].attachment,
+                      attachment.localCachePath == nil else {
+                    continue
+                }
+
+                attachment.localCachePath = localFile.path
+                messages[index].attachment = attachment
+                messagesByThreadID[target.threadID] = messages
+                didUpdate = true
+            } catch {
+                // Best-effort prefetch only.
+                continue
+            }
+        }
+        if didUpdate {
+            persistSnapshotIfPossible()
         }
     }
 
@@ -1832,6 +1939,11 @@ final class AppState: ObservableObject {
             currentUserID = workspace.session.userID
             try sessionStore.save(workspace.session)
             applyMatrixWorkspace(workspace)
+            if inlineMediaEnabled {
+                Task { [weak self] in
+                    await self?.prefetchInlineMedia(for: workspace.session)
+                }
+            }
             persistSnapshotIfPossible(force: true)
 
             var updatedDiagnostics = diagnostics
@@ -2147,7 +2259,7 @@ final class AppState: ObservableObject {
             ]
 
             threadsByID = Dictionary(uniqueKeysWithValues: seededThreads.map { ($0.id, $0) })
-            mainPinnedThreadIDs = ["thread.signal.lena", "thread.matrix.family", "thread.instagram.design", "thread.whatsapp.home"]
+            mainPinnedThreadIDs = seededThreads.map(\.id)
 
             let familyDinner = ScheduledChatEvent(threadID: "thread.matrix.family", title: "Familienessen", note: "Abendessen bei Mara, bitte Dessert mitbringen.", startDate: now.addingTimeInterval(86400), endDate: now.addingTimeInterval(88200), createdBy: "Du", providerIDs: ["apple", "google"])
             let creatorReview = ScheduledChatEvent(threadID: "thread.instagram.design", title: "Campaign Review", note: "Kurz die Story-Karten und Reels durchgehen.", startDate: now.addingTimeInterval(172800), endDate: now.addingTimeInterval(175500), createdBy: "Mina", providerIDs: ["apple", "outlook"])
