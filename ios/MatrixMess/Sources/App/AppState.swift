@@ -872,8 +872,8 @@ final class AppState: ObservableObject {
                         isOutgoing: true,
                         kind: kind,
                         sendStatus: sent.matrixEventID == nil ? .sending : .sent,
-                        isPending: sent.matrixEventID == nil,
-                        attachment: sent.attachment
+                        attachment: sent.attachment,
+                        isPending: sent.matrixEventID == nil
                     ),
                     to: threadID,
                     preview: sent.attachment.title
@@ -912,8 +912,8 @@ final class AppState: ObservableObject {
                     isOutgoing: true,
                     kind: kind,
                     sendStatus: .sent,
-                    isPending: false,
-                    attachment: upload.attachment
+                    attachment: upload.attachment,
+                    isPending: false
                 ),
                 to: threadID,
                 preview: upload.attachment.title
