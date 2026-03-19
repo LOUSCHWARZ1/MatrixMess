@@ -140,6 +140,14 @@ struct MatrixJoinedRoomsResponse: Decodable {
     }
 }
 
+struct MatrixJoinRoomResponse: Decodable {
+    let roomID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case roomID = "room_id"
+    }
+}
+
 struct MatrixSyncResponse: Decodable {
     struct Rooms: Decodable {
         let join: [String: JoinedRoom]?

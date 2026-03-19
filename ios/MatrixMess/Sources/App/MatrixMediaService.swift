@@ -23,6 +23,14 @@ struct MatrixMediaUploadResult: Hashable {
 }
 
 actor MatrixMediaService {
+    private struct UploadResponse: Decodable {
+        let contentURI: String
+
+        enum CodingKeys: String, CodingKey {
+            case contentURI = "content_uri"
+        }
+    }
+
     private let session: URLSession
     private let fileManager: FileManager
 
@@ -51,41 +59,14 @@ actor MatrixMediaService {
             throw MatrixServiceError.invalidHomeserver
         }
 
-        var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-        components?.path = "/_matrix/media/v3/upload"
-        components?.queryItems = [URLQueryItem(name: "filename", value: fileName)]
-        guard let url = components?.url else {
-            throw MatrixServiceError.invalidHomeserver
-        }
+        let uploadResponse = try await uploadMediaWithFallback(
+            homeserver: homeserver,
+            data: data,
+            mimeType: mimeType,
+            fileName: fileName,
+            accessToken: matrixSession.accessToken
+        )
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(matrixSession.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
-        request.httpBody = data
-
-        let (responseData, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw MatrixServiceError.invalidResponse
-        }
-
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            if let matrixError = try? JSONDecoder().decode(MatrixErrorResponse.self, from: responseData),
-               let message = matrixError.error {
-                throw MatrixServiceError.serverError(message)
-            }
-            throw MatrixServiceError.serverError("Upload fehlgeschlagen (\(httpResponse.statusCode)).")
-        }
-
-        struct UploadResponse: Decodable {
-            let contentURI: String
-
-            enum CodingKeys: String, CodingKey {
-                case contentURI = "content_uri"
-            }
-        }
-
-        let uploadResponse = try JSONDecoder().decode(UploadResponse.self, from: responseData)
         let localFile = try persistOutgoingMedia(data: data, fileName: fileName)
         let attachment = MessageAttachment(
             icon: icon(for: messageKind),
@@ -114,24 +95,11 @@ actor MatrixMediaService {
             return cacheURL
         }
 
-        var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-        components?.path = "/_matrix/media/v3/download/\(parsed.serverName)/\(parsed.mediaID)"
-        guard let url = components?.url else {
-            throw MatrixServiceError.invalidHomeserver
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(matrixSession.accessToken)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw MatrixServiceError.invalidResponse
-        }
-
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw MatrixServiceError.serverError("Download fehlgeschlagen (\(httpResponse.statusCode)).")
-        }
+        let data = try await downloadMediaWithFallback(
+            homeserver: homeserver,
+            parsed: parsed,
+            accessToken: matrixSession.accessToken
+        )
 
         try createParentDirectoryIfNeeded(for: cacheURL)
         try data.write(to: cacheURL, options: .atomic)
@@ -160,6 +128,100 @@ actor MatrixMediaService {
         }
 
         return (parts[0], parts[1])
+    }
+
+    private func uploadMediaWithFallback(
+        homeserver: URL,
+        data: Data,
+        mimeType: String,
+        fileName: String,
+        accessToken: String
+    ) async throws -> UploadResponse {
+        let versions = ["v3", "r0"]
+        var lastError: Error?
+
+        for version in versions {
+            do {
+                var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
+                components?.path = "/_matrix/media/\(version)/upload"
+                components?.queryItems = [URLQueryItem(name: "filename", value: fileName)]
+                guard let url = components?.url else {
+                    throw MatrixServiceError.invalidHomeserver
+                }
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+                request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
+                request.httpBody = data
+
+                let (responseData, response) = try await session.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw MatrixServiceError.invalidResponse
+                }
+
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    if let matrixError = try? JSONDecoder().decode(MatrixErrorResponse.self, from: responseData),
+                       let message = matrixError.error {
+                        if let errcode = matrixError.errcode, !errcode.isEmpty {
+                            throw MatrixServiceError.serverError("\(errcode): \(message)")
+                        }
+                        throw MatrixServiceError.serverError(message)
+                    }
+                    throw MatrixServiceError.serverError("Upload fehlgeschlagen (\(httpResponse.statusCode)).")
+                }
+
+                return try JSONDecoder().decode(UploadResponse.self, from: responseData)
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? MatrixServiceError.serverError("Upload fehlgeschlagen.")
+    }
+
+    private func downloadMediaWithFallback(
+        homeserver: URL,
+        parsed: (serverName: String, mediaID: String),
+        accessToken: String
+    ) async throws -> Data {
+        let versions = ["v3", "r0"]
+        var lastError: Error?
+        let encodedServerName = encodedPathSegment(parsed.serverName)
+        let encodedMediaID = encodedPathSegment(parsed.mediaID)
+
+        for version in versions {
+            do {
+                var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
+                components?.path = "/_matrix/media/\(version)/download/\(encodedServerName)/\(encodedMediaID)"
+                guard let url = components?.url else {
+                    throw MatrixServiceError.invalidHomeserver
+                }
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+                let (data, response) = try await session.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw MatrixServiceError.invalidResponse
+                }
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    throw MatrixServiceError.serverError("Download fehlgeschlagen (\(httpResponse.statusCode)).")
+                }
+                return data
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? MatrixServiceError.serverError("Download fehlgeschlagen.")
+    }
+
+    private func encodedPathSegment(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#[]@")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private func mediaCacheDirectory() throws -> URL {
