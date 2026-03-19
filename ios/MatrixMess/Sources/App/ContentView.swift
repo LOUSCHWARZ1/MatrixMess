@@ -712,14 +712,8 @@ private struct ConversationRow: View {
                     .lineLimit(2)
 
                 HStack(spacing: 10) {
-                    if let bridgeLabel = thread.bridgeLabel, appState.selectedSpaceID != ChatSpace.mainID {
-                        Text(bridgeLabel)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(thread.accent.tint)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(thread.accent.softTint)
-                            .clipShape(Capsule())
+                    if let sourceSpace {
+                        SourceBadge(space: sourceSpace)
                     } else {
                         Text(thread.subtitle)
                             .font(.caption)
@@ -733,9 +727,6 @@ private struct ConversationRow: View {
                     }
                 }
 
-                if appState.selectedSpaceID == ChatSpace.mainID, let sourceSpace {
-                    SourceBadge(space: sourceSpace)
-                }
             }
 
             if thread.unreadCount > 0 {

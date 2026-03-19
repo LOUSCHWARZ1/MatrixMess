@@ -86,12 +86,14 @@ actor MatrixMediaService {
         }
 
         let uploadResponse = try JSONDecoder().decode(UploadResponse.self, from: responseData)
+        let localFile = try persistOutgoingMedia(data: data, fileName: fileName)
         let attachment = MessageAttachment(
             icon: icon(for: messageKind),
             title: fileName,
             subtitle: "\(mimeType) / \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))",
             contentURI: uploadResponse.contentURI,
             mimeType: mimeType,
+            localCachePath: localFile.path,
             fileSize: data.count
         )
 
@@ -183,5 +185,17 @@ actor MatrixMediaService {
         }
 
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    private func persistOutgoingMedia(data: Data, fileName: String) throws -> URL {
+        let localDirectory = try mediaCacheDirectory().appendingPathComponent("local", isDirectory: true)
+        if !fileManager.fileExists(atPath: localDirectory.path) {
+            try fileManager.createDirectory(at: localDirectory, withIntermediateDirectories: true)
+        }
+
+        let sanitizedFileName = fileName.replacingOccurrences(of: "/", with: "_")
+        let fileURL = localDirectory.appendingPathComponent("\(UUID().uuidString)-\(sanitizedFileName)")
+        try data.write(to: fileURL, options: .atomic)
+        return fileURL
     }
 }
