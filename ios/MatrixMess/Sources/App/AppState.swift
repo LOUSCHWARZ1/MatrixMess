@@ -940,7 +940,7 @@ final class AppState: ObservableObject {
         guard let currentSession, let thread = thread(withID: threadID) else { return }
 
         do {
-            if thread.isEncrypted {
+            do {
                 let sent = try await matrixService.sendEncryptedMedia(
                     data: data,
                     mimeType: mimeType,
@@ -959,9 +959,9 @@ final class AppState: ObservableObject {
                         timestamp: .now,
                         isOutgoing: true,
                         kind: kind,
-                        sendStatus: .sent,
+                        sendStatus: sent.matrixEventID == nil ? .sending : .sent,
                         attachment: sent.attachment,
-                        isPending: false
+                        isPending: sent.matrixEventID == nil
                     ),
                     to: threadID,
                     preview: sent.attachment.title
@@ -969,6 +969,12 @@ final class AppState: ObservableObject {
                 persistSnapshotIfPossible()
                 scheduleDeferredMatrixRefresh()
                 return
+            } catch {
+                // SDK-first path failed. For encrypted rooms there is no REST fallback.
+                if thread.isEncrypted {
+                    throw error
+                }
+                AppLogger.error("SDK-Medienversand fehlgeschlagen, REST-Fallback wird versucht: \(error.localizedDescription)")
             }
 
             let upload = try await mediaService.uploadMedia(
@@ -1838,6 +1844,11 @@ final class AppState: ObservableObject {
             if sendFailed {
                 messages[index].sendStatus = .failed
                 messages[index].isPending = false
+            } else if sentEventID == nil {
+                // SDK-based sends may not immediately expose a remote event ID.
+                // Keep local echo pending until timeline refresh confirms delivery.
+                messages[index].sendStatus = .sending
+                messages[index].isPending = true
             } else {
                 messages[index].sendStatus = .sent
                 messages[index].isPending = false

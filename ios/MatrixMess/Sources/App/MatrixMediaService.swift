@@ -143,7 +143,10 @@ actor MatrixMediaService {
         for version in versions {
             do {
                 var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-                components?.path = "/_matrix/media/\(version)/upload"
+                components?.path = combinedPath(
+                    basePath: homeserver.path,
+                    endpointPath: "/_matrix/media/\(version)/upload"
+                )
                 components?.queryItems = [URLQueryItem(name: "filename", value: fileName)]
                 guard let url = components?.url else {
                     throw MatrixServiceError.invalidHomeserver
@@ -193,7 +196,10 @@ actor MatrixMediaService {
         for version in versions {
             do {
                 var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-                components?.path = "/_matrix/media/\(version)/download/\(encodedServerName)/\(encodedMediaID)"
+                components?.path = combinedPath(
+                    basePath: homeserver.path,
+                    endpointPath: "/_matrix/media/\(version)/download/\(encodedServerName)/\(encodedMediaID)"
+                )
                 guard let url = components?.url else {
                     throw MatrixServiceError.invalidHomeserver
                 }
@@ -222,6 +228,19 @@ actor MatrixMediaService {
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/?#[]@")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private func combinedPath(basePath: String, endpointPath: String) -> String {
+        let cleanBase = basePath == "/" ? "" : basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanEndpoint = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if cleanBase.isEmpty {
+            return "/" + cleanEndpoint
+        }
+        if cleanEndpoint.isEmpty {
+            return "/" + cleanBase
+        }
+        return "/" + cleanBase + "/" + cleanEndpoint
     }
 
     private func mediaCacheDirectory() throws -> URL {
