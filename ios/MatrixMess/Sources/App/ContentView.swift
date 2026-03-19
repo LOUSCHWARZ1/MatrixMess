@@ -2844,14 +2844,12 @@ private struct TypingIndicatorBanner: View {
     @State private var isAnimating = false
 
     /// Extracts a friendly name from a Matrix user ID like "@alice:server.com" → "alice".
-    private func displayName(for userID: String) -> String {
-        guard userID.hasPrefix("@"), let colon = userID.firstIndex(of: ":") else { return userID }
-        let localpart = String(userID[userID.index(after: userID.startIndex)..<colon])
-        return localpart.isEmpty ? userID : localpart
+    private func displayName(for value: String) -> String {
+        MatrixDisplayNameResolver.sanitizedDisplayName(value, fallbackUserID: value)
     }
 
     private var label: String {
-        let names = userIDs.map { displayName(for: $0) }
+        let names = Array(Set(userIDs.map { displayName(for: $0) })).sorted()
         switch names.count {
         case 1: return "\(names[0]) tippt…"
         case 2: return "\(names[0]) und \(names[1]) tippen…"

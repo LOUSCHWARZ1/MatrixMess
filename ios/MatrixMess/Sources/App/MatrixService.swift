@@ -563,9 +563,15 @@ final class MatrixService {
         for (roomID, room) in joinedRooms {
             guard let ephemeralEvents = room.ephemeral?.events else { continue }
             for event in ephemeralEvents where event.type == "m.typing" {
-                let userIDs = event.content?["user_ids"]?.arrayValue?.compactMap { $0.stringValue } ?? []
-                if !userIDs.isEmpty {
-                    typingUsersByThreadID[roomID] = userIDs
+                let names = event.content?["user_ids"]?.arrayValue?.compactMap { item -> String? in
+                    guard let userID = item.stringValue,
+                          userID.compare(storedSession.userID, options: .caseInsensitive) != .orderedSame else {
+                        return nil
+                    }
+                    return MatrixDisplayNameResolver.sanitizedDisplayName(nil, fallbackUserID: userID)
+                } ?? []
+                if !names.isEmpty {
+                    typingUsersByThreadID[roomID] = Array(Set(names)).sorted()
                 }
             }
         }
@@ -794,7 +800,30 @@ final class MatrixService {
 
     private func normalizedHomeserver(from value: String) throws -> URL {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed), url.scheme != nil, url.host != nil else {
+        guard !trimmed.isEmpty else { throw MatrixServiceError.invalidHomeserver }
+
+        let withScheme: String
+        if trimmed.contains("://") {
+            withScheme = trimmed
+        } else {
+            withScheme = "https://\(trimmed)"
+        }
+
+        guard let source = URLComponents(string: withScheme),
+              let scheme = source.scheme?.lowercased(),
+              ["https", "http"].contains(scheme),
+              let host = source.host,
+              !host.isEmpty else {
+            throw MatrixServiceError.invalidHomeserver
+        }
+
+        var normalized = URLComponents()
+        normalized.scheme = scheme
+        normalized.host = host
+        normalized.port = source.port
+        normalized.path = ""
+
+        guard let url = normalized.url else {
             throw MatrixServiceError.invalidHomeserver
         }
         return url
@@ -910,13 +939,13 @@ private struct ParsedRoomSnapshot {
         // 1. Explicit room name
         if let name = combinedStateEvents.last(where: { $0.type == "m.room.name" })?.content?["name"]?.stringValue,
            !name.isEmpty {
-            return name
+            return MatrixDisplayNameResolver.sanitizedDisplayName(name)
         }
 
         // 2. Canonical alias
         if let alias = combinedStateEvents.last(where: { $0.type == "m.room.canonical_alias" })?.content?["alias"]?.stringValue,
            !alias.isEmpty {
-            return alias
+            return MatrixDisplayNameResolver.sanitizedDisplayName(alias)
         }
 
         // 3. For DM rooms, try the other member's display name
@@ -924,11 +953,11 @@ private struct ParsedRoomSnapshot {
             let otherMembers = memberProfiles.filter { $0.userID != currentUserID }
             // Prefer a member whose display name differs from their user ID (i.e. has a real name set)
             if let named = otherMembers.first(where: { $0.displayName != $0.userID && !$0.displayName.isEmpty }) {
-                return named.displayName
+                return MatrixDisplayNameResolver.sanitizedDisplayName(named.displayName, fallbackUserID: named.userID)
             }
             // Fall back to any other member – try to extract a readable name from the user ID
             if let member = otherMembers.first {
-                return Self.friendlyName(from: member.userID) ?? member.displayName
+                return MatrixDisplayNameResolver.sanitizedDisplayName(member.displayName, fallbackUserID: member.userID)
             }
         }
 
@@ -936,10 +965,7 @@ private struct ParsedRoomSnapshot {
         if !isSpace {
             let others = memberProfiles.filter { $0.userID != currentUserID }
             let names: [String] = others.prefix(3).map { profile in
-                if profile.displayName != profile.userID && !profile.displayName.isEmpty {
-                    return profile.displayName
-                }
-                return Self.friendlyName(from: profile.userID) ?? profile.displayName
+                MatrixDisplayNameResolver.sanitizedDisplayName(profile.displayName, fallbackUserID: profile.userID)
             }
             if !names.isEmpty {
                 let joined = names.joined(separator: ", ")
@@ -951,60 +977,12 @@ private struct ParsedRoomSnapshot {
         }
 
         // 5. Try to extract a name from the room topic
-        if let extracted = Self.extractNameFromTopic(topic) {
+        if let extracted = MatrixDisplayNameResolver.extractNameFromTopic(topic) {
             return extracted
         }
 
         // 6. Last resort
-        return roomID
-    }
-
-    /// Known bridge user ID prefixes used by mautrix and other Matrix bridges.
-    private static let bridgePrefixes = ["signal_", "whatsapp_", "instagram_", "telegram_", "messenger_",
-                                         "discord_", "slack_", "imessage_", "meta_", "gmessages_", "sms_"]
-
-    /// Extracts a human-readable name from a bridge user ID.
-    /// For example ``@signal_491754011214:server`` → ``+491754011214``,
-    /// ``@whatsapp_491754011214:server`` → ``+491754011214``.
-    private static func friendlyName(from userID: String) -> String? {
-        // Strip leading '@' and trailing ':server'
-        var local = userID
-        if local.hasPrefix("@") { local = String(local.dropFirst()) }
-        if let colonIdx = local.firstIndex(of: ":") { local = String(local[local.startIndex..<colonIdx]) }
-
-        for prefix in bridgePrefixes {
-            if local.lowercased().hasPrefix(prefix) {
-                let contactIdentifier = String(local.dropFirst(prefix.count))
-                if !contactIdentifier.isEmpty {
-                    // If the identifier looks like a phone number, format it
-                    if contactIdentifier.allSatisfy({ $0.isNumber }) {
-                        return "+\(contactIdentifier)"
-                    }
-                    return contactIdentifier
-                }
-            }
-        }
-        return nil
-    }
-
-    /// Attempts to extract a contact name from a bridge room topic.
-    /// Bridge topics often look like "Signal private chat with +491754011214".
-    private static func extractNameFromTopic(_ topic: String) -> String? {
-        guard !topic.isEmpty else { return nil }
-        let patterns = [
-            "private chat with ",
-            "chat with ",
-            "DM with ",
-            "Direktnachricht mit "
-        ]
-        let lower = topic.lowercased()
-        for pattern in patterns {
-            if let range = lower.range(of: pattern) {
-                let name = String(topic[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !name.isEmpty { return name }
-            }
-        }
-        return nil
+        return MatrixDisplayNameResolver.sanitizedDisplayName(nil, fallbackUserID: roomID)
     }
 
     var topic: String {
@@ -1022,7 +1000,10 @@ private struct ParsedRoomSnapshot {
             .filter { $0.type == "m.room.member" }
             .compactMap { event in
                 guard let userID = event.stateKey else { return nil }
-                let displayName = event.content?["displayname"]?.stringValue ?? userID
+                let displayName = MatrixDisplayNameResolver.sanitizedDisplayName(
+                    event.content?["displayname"]?.stringValue,
+                    fallbackUserID: userID
+                )
                 let avatarContentURI = event.content?["avatar_url"]?.stringValue
                 return MemberProfile(userID: userID, displayName: displayName, avatarContentURI: avatarContentURI)
             }
@@ -1080,7 +1061,10 @@ private struct ParsedRoomSnapshot {
             .filter { $0.type == "m.room.member" }
             .reduce(into: [String: String]()) { partialResult, event in
                 guard let stateKey = event.stateKey else { return }
-                partialResult[stateKey] = event.content?["displayname"]?.stringValue ?? stateKey
+                partialResult[stateKey] = MatrixDisplayNameResolver.sanitizedDisplayName(
+                    event.content?["displayname"]?.stringValue,
+                    fallbackUserID: stateKey
+                )
             }
 
         var messages = existingMessages.sorted { $0.timestamp < $1.timestamp }
@@ -1152,7 +1136,10 @@ private struct ParsedRoomSnapshot {
         currentUserID: String
     ) -> ChatMessage? {
         let senderID = event.sender ?? "unknown"
-        let senderDisplayName = members[senderID] ?? senderID
+        let senderDisplayName = MatrixDisplayNameResolver.sanitizedDisplayName(
+            members[senderID],
+            fallbackUserID: senderID
+        )
         let timestamp = Date(timeIntervalSince1970: TimeInterval((event.originServerTS ?? 0)) / 1000)
         let isOutgoing = senderID.compare(currentUserID, options: .caseInsensitive) == .orderedSame
 
