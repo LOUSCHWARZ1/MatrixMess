@@ -432,11 +432,12 @@ final class MatrixService {
         let matrixDescriptor = descriptor(for: .matrix)
         let matrixSyntheticSpaceID = "space.synthetic.matrix"
         let joinedRooms = response.rooms?.join ?? [:]
+        let invitedRooms = response.rooms?.invite ?? [:]
         let leftRoomIDs = Set(
             response.rooms?.leave?.keys
             ?? Dictionary<String, MatrixSyncResponse.LeftRoom>().keys
         )
-        let parsedRooms = joinedRooms.map { roomID, room in
+        let joinedSnapshots = joinedRooms.map { roomID, room in
             ParsedRoomSnapshot(
                 roomID: roomID,
                 unreadCount: room.unreadNotifications?.notificationCount ?? 0,
@@ -444,6 +445,15 @@ final class MatrixService {
                 stateEvents: room.state?.events ?? []
             )
         }
+        let invitedSnapshots = invitedRooms.map { roomID, room in
+            ParsedRoomSnapshot(
+                roomID: roomID,
+                unreadCount: 0,
+                timelineEvents: [],
+                stateEvents: room.inviteState?.events ?? []
+            )
+        }
+        let parsedRooms = joinedSnapshots + invitedSnapshots
 
         // Parse m.typing ephemeral events for each room.
         var typingUsersByThreadID: [String: [String]] = [:]
@@ -1135,12 +1145,18 @@ private struct ParsedRoomSnapshot {
 
     private func mergeMessage(_ existing: ChatMessage, with incoming: ChatMessage) -> ChatMessage {
         var merged = existing
-        merged.senderDisplayName = incoming.senderDisplayName
-        merged.body = incoming.body
+        let keepExistingContent = incoming.body == encryptedMessagePlaceholderBody
+            && existing.isOutgoing
+            && existing.matrixEventID == nil
+
+        merged.senderDisplayName = keepExistingContent ? existing.senderDisplayName : incoming.senderDisplayName
+        merged.body = keepExistingContent ? existing.body : incoming.body
         merged.timestamp = incoming.timestamp
-        merged.isOutgoing = incoming.isOutgoing
-        merged.kind = incoming.kind
-        if var incomingAttachment = incoming.attachment {
+        merged.isOutgoing = keepExistingContent ? existing.isOutgoing : incoming.isOutgoing
+        merged.kind = keepExistingContent ? existing.kind : incoming.kind
+        if keepExistingContent {
+            merged.attachment = existing.attachment
+        } else if var incomingAttachment = incoming.attachment {
             if let existingAttachment = existing.attachment,
                incomingAttachment.localCachePath == nil,
                incomingAttachment.contentURI != nil,

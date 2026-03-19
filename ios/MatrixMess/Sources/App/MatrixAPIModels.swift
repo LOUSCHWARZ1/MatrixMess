@@ -135,6 +135,7 @@ struct MatrixWhoAmIResponse: Decodable {
 struct MatrixSyncResponse: Decodable {
     struct Rooms: Decodable {
         let join: [String: JoinedRoom]?
+        let invite: [String: InvitedRoom]?
         let leave: [String: LeftRoom]?
     }
 
@@ -179,6 +180,18 @@ struct MatrixSyncResponse: Decodable {
             case state
             case unreadNotifications = "unread_notifications"
             case ephemeral
+        }
+    }
+
+    struct InvitedRoom: Decodable {
+        struct InviteState: Decodable {
+            let events: [MatrixTimelineEvent]
+        }
+
+        let inviteState: InviteState?
+
+        enum CodingKeys: String, CodingKey {
+            case inviteState = "invite_state"
         }
     }
 

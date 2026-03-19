@@ -871,9 +871,9 @@ final class AppState: ObservableObject {
                         timestamp: .now,
                         isOutgoing: true,
                         kind: kind,
-                        sendStatus: sent.matrixEventID == nil ? .sending : .sent,
+                        sendStatus: .sent,
                         attachment: sent.attachment,
-                        isPending: sent.matrixEventID == nil
+                        isPending: false
                     ),
                     to: threadID,
                     preview: sent.attachment.title
@@ -1553,9 +1553,6 @@ final class AppState: ObservableObject {
             if sendFailed {
                 messages[index].sendStatus = .failed
                 messages[index].isPending = false
-            } else if sentEventID == nil {
-                messages[index].sendStatus = .sending
-                messages[index].isPending = true
             } else {
                 messages[index].sendStatus = .sent
                 messages[index].isPending = false
