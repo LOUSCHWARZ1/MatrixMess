@@ -127,26 +127,6 @@ final class MatrixService {
         try await sdkContext.requestDeviceVerification(session: session)
     }
 
-    func currentVerificationFlowState() async -> MatrixVerificationFlowState {
-        await sdkContext.currentVerificationFlowState()
-    }
-
-    func startSasVerification(session: MatrixSession) async throws {
-        try await sdkContext.startSasVerification(session: session)
-    }
-
-    func approveVerification(session: MatrixSession) async throws {
-        try await sdkContext.approveVerification(session: session)
-    }
-
-    func declineVerification(session: MatrixSession) async throws {
-        try await sdkContext.declineVerification(session: session)
-    }
-
-    func cancelVerification(session: MatrixSession) async throws {
-        try await sdkContext.cancelVerification(session: session)
-    }
-
     func sendEncryptedMedia(
         data: Data,
         mimeType: String,
@@ -1120,12 +1100,23 @@ private struct ParsedRoomSnapshot {
         merged.timestamp = incoming.timestamp
         merged.isOutgoing = incoming.isOutgoing
         merged.kind = incoming.kind
-        merged.attachment = incoming.attachment
+        if var incomingAttachment = incoming.attachment {
+            if let existingAttachment = existing.attachment,
+               incomingAttachment.localCachePath == nil,
+               incomingAttachment.contentURI != nil,
+               incomingAttachment.contentURI == existingAttachment.contentURI {
+                incomingAttachment.localCachePath = existingAttachment.localCachePath
+            }
+            merged.attachment = incomingAttachment
+        } else {
+            merged.attachment = nil
+        }
         merged.forwardedFrom = incoming.forwardedFrom
         merged.linkedEventID = incoming.linkedEventID
         merged.matrixEventID = incoming.matrixEventID ?? existing.matrixEventID
         // Once a server event is received for this message, it is no longer pending.
         merged.isPending = false
+        merged.sendStatus = .sent
         return merged
     }
 

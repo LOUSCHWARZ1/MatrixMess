@@ -956,12 +956,25 @@ private struct ConversationDetailView: View {
                                           editingMessageID = message.id
                                           editingText = message.body
                                       },
+                                      retryAction: {
+                                          Task {
+                                              await appState.retryMessage(message.id, in: thread.id)
+                                          }
+                                      },
                                       deleteAction: {
                                           Task {
                                               await appState.redactMessage(message.id, in: thread.id)
                                           }
                                       }
                                   )
+                                  .task(id: message.id) {
+                                      guard appState.inlineMediaEnabled else { return }
+                                      guard message.kind == .image || message.kind == .video else { return }
+                                      guard let attachment = message.attachment,
+                                            attachment.localCachePath == nil,
+                                            attachment.contentURI != nil else { return }
+                                      await appState.downloadAttachment(messageID: message.id, in: thread.id)
+                                  }
                               }
 
                             Color.clear
@@ -1332,6 +1345,7 @@ private struct MessageBubble: View {
     let reactAction: (String) -> Void
     let forwardAction: () -> Void
     let editAction: () -> Void
+    let retryAction: () -> Void
     let deleteAction: () -> Void
 
     var body: some View {
@@ -1403,6 +1417,14 @@ private struct MessageBubble: View {
                       }
 
                       if message.isOutgoing {
+                          if message.sendStatus == .failed {
+                              Button {
+                                  retryAction()
+                              } label: {
+                                  Label("Erneut senden", systemImage: "arrow.clockwise")
+                              }
+                          }
+
                           Button {
                               editAction()
                           } label: {
@@ -1442,9 +1464,9 @@ private struct MessageBubble: View {
                   if message.isOutgoing {
                       HStack(spacing: 3) {
                           Spacer()
-                          Image(systemName: message.isPending ? "clock" : "checkmark")
+                          Image(systemName: deliveryStatusSymbol(for: message))
                               .font(.caption2)
-                              .foregroundColor(.secondary)
+                              .foregroundColor(deliveryStatusColor(for: message))
                       }
                   }
 
@@ -1463,6 +1485,24 @@ private struct MessageBubble: View {
         }
         .frame(maxWidth: .infinity)
     }
+}
+
+private func deliveryStatusSymbol(for message: ChatMessage) -> String {
+    if let sendStatus = message.sendStatus {
+        switch sendStatus {
+        case .sending: return "clock"
+        case .sent: return "checkmark"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+    return message.isPending ? "clock" : "checkmark"
+}
+
+private func deliveryStatusColor(for message: ChatMessage) -> Color {
+    if message.sendStatus == .failed {
+        return .red
+    }
+    return .secondary
 }
 
 private let sharedLinkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
@@ -2572,20 +2612,37 @@ private struct MediaLibraryPicker: UIViewControllerRepresentable {
             if kind == .video {
                 let typeIdentifier = UTType.movie.identifier
                 provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, _ in
-                    guard let url,
-                          let data = try? Data(contentsOf: url) else { return }
-                    let fileName = url.lastPathComponent.isEmpty ? "video.mov" : url.lastPathComponent
-                    let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "video/quicktime"
-                    DispatchQueue.main.async {
-                        self.onImport(data, mimeType, fileName)
+                    if let url,
+                       let data = try? Data(contentsOf: url) {
+                        let fileName = url.lastPathComponent.isEmpty ? "video.mov" : url.lastPathComponent
+                        let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "video/quicktime"
+                        DispatchQueue.main.async {
+                            self.onImport(data, mimeType, fileName)
+                        }
+                        return
+                    }
+
+                    // Fallback for providers that don't expose a temporary file URL.
+                    provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+                        guard let data else { return }
+                        let fileName = (provider.suggestedName ?? "video") + ".mov"
+                        DispatchQueue.main.async {
+                            self.onImport(data, "video/quicktime", fileName)
+                        }
                     }
                 }
             } else {
                 let typeIdentifier = UTType.image.identifier
                 provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
                     guard let data else { return }
+                    let guessedUTI = provider.registeredTypeIdentifiers
+                        .compactMap { UTType($0) }
+                        .first(where: { $0.conforms(to: .image) })
+                    let ext = guessedUTI?.preferredFilenameExtension ?? "jpg"
+                    let mime = guessedUTI?.preferredMIMEType ?? "image/jpeg"
+                    let fileName = (provider.suggestedName ?? "photo") + ".\(ext)"
                     DispatchQueue.main.async {
-                        self.onImport(data, "image/jpeg", "photo.jpg")
+                        self.onImport(data, mime, fileName)
                     }
                 }
             }
