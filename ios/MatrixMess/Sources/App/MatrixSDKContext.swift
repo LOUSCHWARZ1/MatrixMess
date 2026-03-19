@@ -1,17 +1,37 @@
 import Foundation
 import MatrixRustSDK
+import UniformTypeIdentifiers
+
+private let sdkEncryptedMessagePlaceholder = "Verschluesselte Nachricht"
 
 struct MatrixSDKMediaSendResult {
     let matrixEventID: String?
     let attachment: MessageAttachment
 }
 
+struct MatrixSDKTimelineFetchResult {
+    let messages: [ChatMessage]
+    let hitTimelineStart: Bool
+}
+
 actor MatrixSDKContext {
+    private struct TimelineState {
+        let timeline: Timeline
+        let listener: MatrixSDKTimelineListener
+        let listenerHandle: TaskHandle
+        let paginationListener: MatrixSDKPaginationStatusListener?
+        let paginationHandle: TaskHandle?
+        var items: [TimelineItem]
+        var hasLoadedInitialItems: Bool
+        var isPaginatingBackwards: Bool
+        var hitTimelineStart: Bool
+    }
+
     private let fileManager: FileManager
     private var client: Client?
     private var syncService: SyncService?
     private var activeSessionKey: String?
-    private var timelinesByRoomID: [String: Timeline] = [:]
+    private var timelineStatesByRoomID: [String: TimelineState] = [:]
     private var verificationController: SessionVerificationController?
     private var verificationDelegate: MatrixSDKVerificationDelegate?
     private var verificationFlowState = MatrixVerificationFlowState()
@@ -167,6 +187,29 @@ actor MatrixSDKContext {
         }
     }
 
+    func timelineMessages(
+        roomID: String,
+        session: MatrixSession,
+        minimumMessageCount: Int = 0,
+        backPaginationBatchSize: UInt16 = 40
+    ) async throws -> MatrixSDKTimelineFetchResult {
+        let timeline = try await ensureTimeline(roomID: roomID, session: session)
+        await waitForInitialTimelineLoad(roomID: roomID)
+
+        if minimumMessageCount > 0 {
+            try await paginateBackwardsIfNeeded(
+                timeline: timeline,
+                roomID: roomID,
+                minimumMessageCount: minimumMessageCount,
+                batchSize: backPaginationBatchSize
+            )
+        }
+
+        let messages = timelineMessagesFromState(roomID: roomID, currentUserID: session.userID)
+        let hitTimelineStart = timelineStatesByRoomID[roomID]?.hitTimelineStart ?? false
+        return MatrixSDKTimelineFetchResult(messages: messages, hitTimelineStart: hitTimelineStart)
+    }
+
     func sendMessage(
         _ text: String,
         roomID: String,
@@ -179,7 +222,7 @@ actor MatrixSDKContext {
         } catch {
             // Timeline handles can become stale after reconnects or backgrounding.
             // Drop cached timeline once and retry with a fresh handle.
-            timelinesByRoomID.removeValue(forKey: roomID)
+            removeTimelineState(for: roomID)
             let retryTimeline = try await ensureTimeline(roomID: roomID, session: session)
             _ = try await retryTimeline.send(msg: message)
         }
@@ -234,7 +277,7 @@ actor MatrixSDKContext {
         do {
             timeline = try await ensureTimeline(roomID: roomID, session: session)
         } catch {
-            timelinesByRoomID.removeValue(forKey: roomID)
+            removeTimelineState(for: roomID)
             timeline = try await ensureTimeline(roomID: roomID, session: session)
         }
         let uploadSource = UploadSource.data(bytes: data, filename: fileName)
@@ -321,12 +364,29 @@ actor MatrixSDKContext {
         return components?.url
     }
 
+    func downloadMedia(
+        contentURI: String,
+        session: MatrixSession,
+        fileNameHint: String?,
+        mimeTypeHint: String?
+    ) async throws -> URL {
+        let client = try await ensureClient(for: session)
+        let mediaSource = try MediaSource.fromUrl(url: contentURI)
+        let data = try await client.getMediaContent(mediaSource: mediaSource)
+        return try persistDownloadedMedia(
+            data: data,
+            contentURI: contentURI,
+            fileNameHint: fileNameHint,
+            mimeTypeHint: mimeTypeHint
+        )
+    }
+
     func stop() async {
+        cancelAllTimelineStates()
         await syncService?.stop()
         syncService = nil
         client = nil
         activeSessionKey = nil
-        timelinesByRoomID = [:]
         verificationController = nil
         verificationDelegate = nil
         verificationFlowState = MatrixVerificationFlowState()
@@ -353,14 +413,463 @@ actor MatrixSDKContext {
     }
 
     private func ensureTimeline(roomID: String, session: MatrixSession) async throws -> Timeline {
-        if let timeline = timelinesByRoomID[roomID] {
-            return timeline
+        if let state = timelineStatesByRoomID[roomID] {
+            return state.timeline
         }
 
         let room = try await ensureRoom(roomID: roomID, session: session)
         let timeline = try await room.timeline()
-        timelinesByRoomID[roomID] = timeline
+        let listener = MatrixSDKTimelineListener { [weak self] diffs in
+            guard let self else { return }
+            Task {
+                await self.applyTimelineDiffs(diffs, roomID: roomID)
+            }
+        }
+        let listenerHandle = await timeline.addListener(listener: listener)
+        let paginationListener = MatrixSDKPaginationStatusListener { [weak self] status in
+            guard let self else { return }
+            Task {
+                await self.updatePaginationStatus(status, roomID: roomID)
+            }
+        }
+        let paginationHandle = try? await timeline.subscribeToBackPaginationStatus(listener: paginationListener)
+
+        timelineStatesByRoomID[roomID] = TimelineState(
+            timeline: timeline,
+            listener: listener,
+            listenerHandle: listenerHandle,
+            paginationListener: paginationHandle == nil ? nil : paginationListener,
+            paginationHandle: paginationHandle,
+            items: [],
+            hasLoadedInitialItems: false,
+            isPaginatingBackwards: false,
+            hitTimelineStart: false
+        )
         return timeline
+    }
+
+    private func waitForInitialTimelineLoad(roomID: String) async {
+        let maxAttempts = 24
+        for _ in 0..<maxAttempts {
+            if timelineStatesByRoomID[roomID]?.hasLoadedInitialItems == true {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    private func paginateBackwardsIfNeeded(
+        timeline: Timeline,
+        roomID: String,
+        minimumMessageCount: Int,
+        batchSize: UInt16
+    ) async throws {
+        guard minimumMessageCount > 0 else { return }
+        var attempts = 0
+        var previousCount = timelineEventCount(roomID: roomID)
+
+        while previousCount < minimumMessageCount {
+            if timelineStatesByRoomID[roomID]?.hitTimelineStart == true {
+                break
+            }
+            attempts += 1
+            if attempts > 30 {
+                break
+            }
+
+            let reachedTimelineStart = try await timeline.paginateBackwards(numEvents: batchSize)
+            if reachedTimelineStart, var state = timelineStatesByRoomID[roomID] {
+                state.hitTimelineStart = true
+                timelineStatesByRoomID[roomID] = state
+            }
+
+            // Give the timeline listener a short moment to apply incoming diffs.
+            try? await Task.sleep(nanoseconds: 120_000_000)
+
+            let currentCount = timelineEventCount(roomID: roomID)
+            if currentCount <= previousCount && !reachedTimelineStart {
+                break
+            }
+            previousCount = currentCount
+        }
+    }
+
+    private func timelineEventCount(roomID: String) -> Int {
+        guard let state = timelineStatesByRoomID[roomID] else { return 0 }
+        return state.items.reduce(0) { partialResult, item in
+            partialResult + (item.asEvent() == nil ? 0 : 1)
+        }
+    }
+
+    private func applyTimelineDiffs(_ diffs: [TimelineDiff], roomID: String) {
+        guard var state = timelineStatesByRoomID[roomID] else { return }
+
+        for diff in diffs {
+            switch diff {
+            case .append(let values):
+                state.items.append(contentsOf: values)
+            case .clear:
+                state.items.removeAll(keepingCapacity: true)
+            case .pushFront(let value):
+                state.items.insert(value, at: 0)
+            case .pushBack(let value):
+                state.items.append(value)
+            case .popFront:
+                if !state.items.isEmpty {
+                    state.items.removeFirst()
+                }
+            case .popBack:
+                if !state.items.isEmpty {
+                    state.items.removeLast()
+                }
+            case .insert(let index, let value):
+                let insertIndex = min(Int(index), state.items.count)
+                state.items.insert(value, at: insertIndex)
+            case .set(let index, let value):
+                let setIndex = Int(index)
+                guard setIndex >= 0 else { continue }
+                if setIndex < state.items.count {
+                    state.items[setIndex] = value
+                } else if setIndex == state.items.count {
+                    state.items.append(value)
+                }
+            case .remove(let index):
+                let removeIndex = Int(index)
+                if removeIndex >= 0, removeIndex < state.items.count {
+                    state.items.remove(at: removeIndex)
+                }
+            case .truncate(let length):
+                let targetLength = Int(length)
+                if targetLength >= 0, targetLength < state.items.count {
+                    state.items.removeSubrange(targetLength..<state.items.count)
+                }
+            case .reset(let values):
+                state.items = values
+            }
+        }
+
+        state.hasLoadedInitialItems = true
+        timelineStatesByRoomID[roomID] = state
+    }
+
+    private func updatePaginationStatus(_ status: RoomPaginationStatus, roomID: String) {
+        guard var state = timelineStatesByRoomID[roomID] else { return }
+        switch status {
+        case .idle(let hitTimelineStart):
+            state.isPaginatingBackwards = false
+            state.hitTimelineStart = hitTimelineStart
+        case .paginating:
+            state.isPaginatingBackwards = true
+        }
+        timelineStatesByRoomID[roomID] = state
+    }
+
+    private func removeTimelineState(for roomID: String) {
+        guard let state = timelineStatesByRoomID.removeValue(forKey: roomID) else { return }
+        state.listenerHandle.cancel()
+        state.paginationHandle?.cancel()
+    }
+
+    private func cancelAllTimelineStates() {
+        for state in timelineStatesByRoomID.values {
+            state.listenerHandle.cancel()
+            state.paginationHandle?.cancel()
+        }
+        timelineStatesByRoomID = [:]
+    }
+
+    private func timelineMessagesFromState(roomID: String, currentUserID: String) -> [ChatMessage] {
+        guard let state = timelineStatesByRoomID[roomID] else { return [] }
+
+        var messages: [ChatMessage] = state.items.compactMap { item in
+            guard let event = item.asEvent() else { return nil }
+            return chatMessage(from: event, currentUserID: currentUserID)
+        }
+
+        // Keep only one entry per event ID; keep latest version.
+        var latestIndexByEventID: [String: Int] = [:]
+        for (index, message) in messages.enumerated() {
+            if let eventID = message.matrixEventID {
+                latestIndexByEventID[eventID] = index
+            }
+        }
+        if !latestIndexByEventID.isEmpty {
+            messages = messages.enumerated().filter { index, message in
+                guard let eventID = message.matrixEventID else { return true }
+                return latestIndexByEventID[eventID] == index
+            }.map(\.element)
+        }
+
+        return messages.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private func chatMessage(from item: EventTimelineItem, currentUserID: String) -> ChatMessage? {
+        let senderDisplayName = profileDisplayName(item.senderProfile) ?? item.sender
+        let timestamp = Date(timeIntervalSince1970: TimeInterval(item.timestamp) / 1000)
+
+        var matrixEventID: String?
+        switch item.eventOrTransactionId {
+        case .eventId(eventId: let eventId):
+            matrixEventID = eventId
+        case .transactionId(transactionId: _):
+            matrixEventID = nil
+        }
+
+        var message = ChatMessage(
+            matrixEventID: matrixEventID,
+            senderDisplayName: senderDisplayName,
+            body: "",
+            timestamp: timestamp,
+            isOutgoing: item.isOwn,
+            kind: .text
+        )
+
+        if let localSendState = item.localSendState {
+            switch localSendState {
+            case .notSentYet(progress: _):
+                message.sendStatus = .sending
+                message.isPending = true
+            case .sendingFailed(error: _, isRecoverable: _):
+                message.sendStatus = .failed
+                message.isPending = false
+            case .sent(eventId: let eventId):
+                message.matrixEventID = eventId
+                message.sendStatus = .sent
+                message.isPending = false
+            }
+        } else if item.isOwn {
+            message.sendStatus = .sent
+            message.isPending = false
+        }
+
+        switch item.content {
+        case .msgLike(content: let msgLike):
+            applyMessageLikeContent(msgLike, to: &message, currentUserID: currentUserID)
+        case .roomMembership(userId: _, userDisplayName: let userDisplayName, change: let change, reason: _):
+            let actor = userDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? userDisplayName!
+                : senderDisplayName
+            message.body = membershipEventText(actor: actor, change: change)
+            message.kind = .text
+        case .profileChange(displayName: let displayName, prevDisplayName: _, avatarUrl: _, prevAvatarUrl: _):
+            if let displayName, !displayName.isEmpty {
+                message.body = "\(senderDisplayName) nutzt jetzt den Namen \(displayName)."
+            } else {
+                message.body = "\(senderDisplayName) hat das Profil aktualisiert."
+            }
+            message.kind = .text
+        case .state(stateKey: let stateKey, content: _):
+            message.body = "Status-Update: \(stateKey)"
+            message.kind = .text
+        case .failedToParseMessageLike(eventType: let eventType, error: _):
+            message.body = "Nicht unterstuetztes Event: \(eventType)"
+            message.kind = .text
+        case .failedToParseState(eventType: let eventType, stateKey: _, error: _):
+            message.body = "Nicht unterstuetztes State-Event: \(eventType)"
+            message.kind = .text
+        case .callInvite, .rtcNotification:
+            return nil
+        }
+
+        if message.body.isEmpty {
+            message.body = message.attachment?.title ?? ""
+        }
+        return message
+    }
+
+    private func applyMessageLikeContent(
+        _ content: MsgLikeContent,
+        to message: inout ChatMessage,
+        currentUserID: String
+    ) {
+        message.reactions = content.reactions.map { reaction in
+            MessageReaction(
+                emoji: reaction.key,
+                count: max(1, reaction.senders.count),
+                isOwnReaction: reaction.senders.contains {
+                    $0.senderId.compare(currentUserID, options: .caseInsensitive) == .orderedSame
+                }
+            )
+        }
+
+        switch content.kind {
+        case .message(content: let messageContent):
+            message.body = messageContent.body
+            message.isEdited = messageContent.isEdited
+
+            switch messageContent.msgType {
+            case .text(content: let text):
+                message.kind = .text
+                message.body = text.body
+            case .notice(content: let notice):
+                message.kind = .text
+                message.body = notice.body
+            case .emote(content: let emote):
+                message.kind = .text
+                message.body = emote.body
+            case .image(content: let image):
+                message.kind = .image
+                message.body = image.caption ?? message.body
+                message.attachment = attachment(
+                    icon: "photo",
+                    title: image.filename,
+                    mimeType: image.info?.mimetype,
+                    size: image.info?.size,
+                    contentURI: mediaSourceURL(image.source),
+                    fallbackSubtitle: "Bild"
+                )
+            case .video(content: let video):
+                message.kind = .video
+                message.body = video.caption ?? message.body
+                message.attachment = attachment(
+                    icon: "video.fill",
+                    title: video.filename,
+                    mimeType: video.info?.mimetype,
+                    size: video.info?.size,
+                    contentURI: mediaSourceURL(video.source),
+                    fallbackSubtitle: "Video"
+                )
+            case .audio(content: let audio):
+                message.kind = .voice
+                message.body = audio.caption ?? message.body
+                message.attachment = attachment(
+                    icon: "waveform",
+                    title: audio.filename.isEmpty ? "Sprachnachricht" : audio.filename,
+                    mimeType: audio.info?.mimetype,
+                    size: audio.info?.size,
+                    contentURI: mediaSourceURL(audio.source),
+                    fallbackSubtitle: "Audio"
+                )
+            case .file(content: let file):
+                message.kind = .file
+                message.body = file.caption ?? message.body
+                message.attachment = attachment(
+                    icon: "doc.fill",
+                    title: file.filename,
+                    mimeType: file.info?.mimetype,
+                    size: file.info?.size,
+                    contentURI: mediaSourceURL(file.source),
+                    fallbackSubtitle: "Datei"
+                )
+            case .other(msgtype: _, body: let body):
+                message.kind = .text
+                message.body = body
+            case .gallery(content: _), .location(content: _):
+                message.kind = .text
+            }
+        case .sticker(body: let body, info: let info, source: let source):
+            message.kind = .image
+            message.body = body
+            message.attachment = attachment(
+                icon: "photo",
+                title: body.isEmpty ? "Sticker" : body,
+                mimeType: info.mimetype,
+                size: info.size,
+                contentURI: mediaSourceURL(source),
+                fallbackSubtitle: "Sticker"
+            )
+        case .poll(question: let question, kind: _, maxSelections: _, answers: _, votes: _, endTime: _, hasBeenEdited: _):
+            message.kind = .text
+            message.body = "Umfrage: \(question)"
+        case .redacted:
+            message.kind = .text
+            message.body = "Nachricht entfernt."
+            message.attachment = nil
+        case .unableToDecrypt(msg: _):
+            message.kind = .text
+            message.body = sdkEncryptedMessagePlaceholder
+            message.attachment = nil
+        case .other(eventType: let eventType):
+            message.kind = .text
+            message.body = "Event: \(eventType)"
+        }
+    }
+
+    private func attachment(
+        icon: String,
+        title: String,
+        mimeType: String?,
+        size: UInt64?,
+        contentURI: String?,
+        fallbackSubtitle: String
+    ) -> MessageAttachment {
+        let subtitle: String
+        if let mimeType {
+            if let size, let intSize = safeInt(size) {
+                subtitle = "\(mimeType) / \(ByteCountFormatter.string(fromByteCount: Int64(intSize), countStyle: .file))"
+            } else {
+                subtitle = mimeType
+            }
+        } else {
+            subtitle = fallbackSubtitle
+        }
+
+        return MessageAttachment(
+            icon: icon,
+            title: title,
+            subtitle: subtitle,
+            contentURI: contentURI,
+            mimeType: mimeType,
+            localCachePath: nil,
+            fileSize: size.flatMap(safeInt)
+        )
+    }
+
+    private func safeInt(_ value: UInt64) -> Int? {
+        value > UInt64(Int.max) ? nil : Int(value)
+    }
+
+    private func mediaSourceURL(_ source: MediaSource) -> String? {
+        let raw = source.url().trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? nil : raw
+    }
+
+    private func profileDisplayName(_ details: ProfileDetails) -> String? {
+        switch details {
+        case .ready(displayName: let displayName, displayNameAmbiguous: _, avatarUrl: _):
+            return displayName
+        default:
+            return nil
+        }
+    }
+
+    private func membershipEventText(actor: String, change: MembershipChange?) -> String {
+        guard let change else {
+            return "\(actor) hat den Raum aktualisiert."
+        }
+
+        switch change {
+        case .joined:
+            return "\(actor) ist beigetreten."
+        case .left:
+            return "\(actor) hat den Raum verlassen."
+        case .invited:
+            return "\(actor) wurde eingeladen."
+        case .invitationAccepted:
+            return "\(actor) hat die Einladung angenommen."
+        case .invitationRejected:
+            return "\(actor) hat die Einladung abgelehnt."
+        case .invitationRevoked:
+            return "Einladung fuer \(actor) wurde widerrufen."
+        case .kicked:
+            return "\(actor) wurde entfernt."
+        case .banned:
+            return "\(actor) wurde gebannt."
+        case .unbanned:
+            return "\(actor) wurde entbannt."
+        case .kickedAndBanned:
+            return "\(actor) wurde entfernt und gebannt."
+        case .knocked:
+            return "\(actor) moechte beitreten."
+        case .knockAccepted:
+            return "Beitrittsanfrage von \(actor) wurde akzeptiert."
+        case .knockRetracted:
+            return "\(actor) hat die Beitrittsanfrage zurueckgezogen."
+        case .knockDenied:
+            return "Beitrittsanfrage von \(actor) wurde abgelehnt."
+        case .none, .error, .notImplemented:
+            return "\(actor) hat den Raum aktualisiert."
+        }
     }
 
     private func buildClient(homeserver: String, storeID: String) async throws -> Client {
@@ -379,13 +888,15 @@ actor MatrixSDKContext {
     }
 
     private func attach(client: Client, sessionKey: String) async throws {
+        if activeSessionKey != sessionKey {
+            cancelAllTimelineStates()
+        }
         if let syncService, activeSessionKey != sessionKey {
             await syncService.stop()
         }
 
         self.client = client
         self.activeSessionKey = sessionKey
-        self.timelinesByRoomID = [:]
         let syncService = try await client.syncService().finish()
         self.syncService = syncService
         await syncService.start()
@@ -432,6 +943,68 @@ actor MatrixSDKContext {
         let destination = mediaFolder.appendingPathComponent(safeName, isDirectory: false)
         try data.write(to: destination, options: .atomic)
         return destination
+    }
+
+    private func persistDownloadedMedia(
+        data: Data,
+        contentURI: String,
+        fileNameHint: String?,
+        mimeTypeHint: String?
+    ) throws -> URL {
+        let caches = try fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let mediaFolder = caches.appendingPathComponent("MatrixMessMedia/IncomingSDK", isDirectory: true)
+        try fileManager.createDirectory(at: mediaFolder, withIntermediateDirectories: true)
+
+        let parsed = try parseMXC(contentURI)
+        let roomFolder = mediaFolder.appendingPathComponent(parsed.serverName, isDirectory: true)
+        try fileManager.createDirectory(at: roomFolder, withIntermediateDirectories: true)
+
+        let ext = preferredFileExtension(fileNameHint: fileNameHint, mimeTypeHint: mimeTypeHint)
+        let safeMediaID = parsed.mediaID.replacingOccurrences(of: "/", with: "_")
+        let fileName = ext.isEmpty ? safeMediaID : "\(safeMediaID).\(ext)"
+        let destination = roomFolder.appendingPathComponent(fileName, isDirectory: false)
+        if fileManager.fileExists(atPath: destination.path) {
+            return destination
+        }
+
+        try data.write(to: destination, options: .atomic)
+        return destination
+    }
+
+    private func parseMXC(_ contentURI: String) throws -> (serverName: String, mediaID: String) {
+        guard contentURI.hasPrefix("mxc://") else {
+            throw MatrixMediaServiceError.invalidMXCURL
+        }
+
+        let raw = String(contentURI.dropFirst("mxc://".count))
+        let parts = raw.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
+            throw MatrixMediaServiceError.invalidMXCURL
+        }
+        return (parts[0], parts[1])
+    }
+
+    private func preferredFileExtension(fileNameHint: String?, mimeTypeHint: String?) -> String {
+        if let fileNameHint {
+            let ext = URL(fileURLWithPath: fileNameHint).pathExtension
+            if !ext.isEmpty {
+                return ext
+            }
+        }
+
+        if let mimeTypeHint,
+           let utType = UTType(mimeType: mimeTypeHint),
+           let preferred = utType.preferredFilenameExtension,
+           !preferred.isEmpty {
+            return preferred
+        }
+
+        return ""
     }
 
     private func sdkSession(from session: MatrixSession) -> Session {
@@ -613,5 +1186,29 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
             state.canCancel = false
         }
         AppLogger.info("Geraeteverifizierung abgeschlossen.")
+    }
+}
+
+private final class MatrixSDKTimelineListener: TimelineListener, @unchecked Sendable {
+    private let onDiff: @Sendable ([TimelineDiff]) -> Void
+
+    init(onDiff: @escaping @Sendable ([TimelineDiff]) -> Void) {
+        self.onDiff = onDiff
+    }
+
+    func onUpdate(diff: [TimelineDiff]) {
+        onDiff(diff)
+    }
+}
+
+private final class MatrixSDKPaginationStatusListener: PaginationStatusListener, @unchecked Sendable {
+    private let onStatus: @Sendable (RoomPaginationStatus) -> Void
+
+    init(onStatus: @escaping @Sendable (RoomPaginationStatus) -> Void) {
+        self.onStatus = onStatus
+    }
+
+    func onUpdate(status: RoomPaginationStatus) {
+        onStatus(status)
     }
 }

@@ -21,6 +21,9 @@ struct PersistedAppSnapshot: Codable {
     var calendarAutoSyncEnabled: Bool
     var defaultMeetingDurationMinutes: Int
     var spaces: [ChatSpace]
+    var customSpaces: [ChatSpace]
+    var threadSpaceOverrides: [String: String]
+    var originalHomeSpaceByThreadID: [String: String]
     var threadsByID: [String: ChatThread]
     var messagesByThreadID: [String: [ChatMessage]]
     var mainPinnedThreadIDs: [String]
@@ -51,6 +54,9 @@ struct PersistedAppSnapshot: Codable {
         case calendarAutoSyncEnabled
         case defaultMeetingDurationMinutes
         case spaces
+        case customSpaces
+        case threadSpaceOverrides
+        case originalHomeSpaceByThreadID
         case threadsByID
         case messagesByThreadID
         case mainPinnedThreadIDs
@@ -82,6 +88,9 @@ struct PersistedAppSnapshot: Codable {
         calendarAutoSyncEnabled: Bool,
         defaultMeetingDurationMinutes: Int,
         spaces: [ChatSpace],
+        customSpaces: [ChatSpace],
+        threadSpaceOverrides: [String: String],
+        originalHomeSpaceByThreadID: [String: String],
         threadsByID: [String: ChatThread],
         messagesByThreadID: [String: [ChatMessage]],
         mainPinnedThreadIDs: [String],
@@ -111,6 +120,9 @@ struct PersistedAppSnapshot: Codable {
         self.calendarAutoSyncEnabled = calendarAutoSyncEnabled
         self.defaultMeetingDurationMinutes = defaultMeetingDurationMinutes
         self.spaces = spaces
+        self.customSpaces = customSpaces
+        self.threadSpaceOverrides = threadSpaceOverrides
+        self.originalHomeSpaceByThreadID = originalHomeSpaceByThreadID
         self.threadsByID = threadsByID
         self.messagesByThreadID = messagesByThreadID
         self.mainPinnedThreadIDs = mainPinnedThreadIDs
@@ -143,6 +155,9 @@ struct PersistedAppSnapshot: Codable {
         calendarAutoSyncEnabled = try container.decode(Bool.self, forKey: .calendarAutoSyncEnabled)
         defaultMeetingDurationMinutes = try container.decode(Int.self, forKey: .defaultMeetingDurationMinutes)
         spaces = try container.decode([ChatSpace].self, forKey: .spaces)
+        customSpaces = try container.decodeIfPresent([ChatSpace].self, forKey: .customSpaces) ?? []
+        threadSpaceOverrides = try container.decodeIfPresent([String: String].self, forKey: .threadSpaceOverrides) ?? [:]
+        originalHomeSpaceByThreadID = try container.decodeIfPresent([String: String].self, forKey: .originalHomeSpaceByThreadID) ?? [:]
         threadsByID = try container.decode([String: ChatThread].self, forKey: .threadsByID)
         messagesByThreadID = try container.decode([String: [ChatMessage]].self, forKey: .messagesByThreadID)
         mainPinnedThreadIDs = try container.decode([String].self, forKey: .mainPinnedThreadIDs)

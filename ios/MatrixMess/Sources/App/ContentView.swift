@@ -2,6 +2,8 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import AVFoundation
+import AVKit
+import QuickLook
 import WebKit
 
 private let appBuildLabel = "v0.3.0 – 2026-03-18"
@@ -11,6 +13,17 @@ private let quickReactionEmoji = [
     "\u{2764}\u{FE0F}",
     "\u{1F602}",
     "\u{1F525}"
+]
+
+private let customSpaceIconOptions = [
+    "folder.fill",
+    "square.grid.2x2.fill",
+    "briefcase.fill",
+    "person.3.fill",
+    "star.fill",
+    "bolt.fill",
+    "book.fill",
+    "tag.fill"
 ]
 
 struct ContentView: View {
@@ -624,6 +637,7 @@ private struct SpaceOverviewCard: View {
 
 private struct SpaceTabStrip: View {
     @EnvironmentObject private var appState: AppState
+    @State private var showingManageSpaces = false
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -653,8 +667,26 @@ private struct SpaceTabStrip: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                Menu {
+                    Button {
+                        showingManageSpaces = true
+                    } label: {
+                        Label("Spaces verwalten", systemImage: "square.grid.2x2")
+                    }
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(.indigo)
+                        .padding(.leading, 2)
+                }
+                .buttonStyle(.plain)
             }
             .padding(.vertical, 2)
+        }
+        .sheet(isPresented: $showingManageSpaces) {
+            SpaceManagementSheet()
+                .environmentObject(appState)
         }
     }
 }
@@ -769,6 +801,201 @@ private struct SourceBadge: View {
     }
 }
 
+private struct SpaceManagementSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    @State private var newTitle = ""
+    @State private var newSubtitle = "Benutzerdefinierter Space"
+    @State private var newIcon = customSpaceIconOptions.first ?? "folder.fill"
+    @State private var newAccent: SpaceAccent = .indigo
+    @State private var editingSpace: ChatSpace?
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Neuen Space erstellen") {
+                    TextField("Titel", text: $newTitle)
+                    TextField("Untertitel", text: $newSubtitle)
+                    Picker("Icon", selection: $newIcon) {
+                        ForEach(customSpaceIconOptions, id: \.self) { icon in
+                            Label(iconTitle(icon), systemImage: icon).tag(icon)
+                        }
+                    }
+                    Picker("Akzent", selection: $newAccent) {
+                        ForEach(SpaceAccent.allCases, id: \.self) { accent in
+                            Text(spaceAccentLabel(accent)).tag(accent)
+                        }
+                    }
+
+                    Button {
+                        appState.createCustomSpace(
+                            title: newTitle,
+                            subtitle: newSubtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Benutzerdefinierter Space" : newSubtitle,
+                            icon: newIcon,
+                            accent: newAccent
+                        )
+                        newTitle = ""
+                        newSubtitle = "Benutzerdefinierter Space"
+                    } label: {
+                        Label("Space erstellen", systemImage: "plus.circle.fill")
+                    }
+                    .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                Section("Eigene Spaces") {
+                    if appState.customSpaces.isEmpty {
+                        Text("Noch keine eigenen Spaces erstellt.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(appState.customSpaces) { space in
+                            Button {
+                                editingSpace = space
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: space.icon)
+                                        .foregroundColor(space.accent.tint)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(space.title)
+                                            .foregroundColor(.primary)
+                                        Text(space.subtitle)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "pencil")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions {
+                                Button(role: .destructive) {
+                                    appState.deleteCustomSpace(spaceID: space.id)
+                                } label: {
+                                    Label("Loeschen", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section("Hinweis") {
+                    Text("Main bleibt standardmaessig leer. Chats erscheinen dort erst, wenn du sie explizit in Main pinnst.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Spaces")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+        }
+        .sheet(item: $editingSpace) { space in
+            CustomSpaceEditSheet(space: space)
+                .environmentObject(appState)
+        }
+    }
+
+    private func iconTitle(_ icon: String) -> String {
+        switch icon {
+        case "folder.fill": return "Ordner"
+        case "square.grid.2x2.fill": return "Grid"
+        case "briefcase.fill": return "Arbeit"
+        case "person.3.fill": return "Team"
+        case "star.fill": return "Favoriten"
+        case "bolt.fill": return "Schnell"
+        case "book.fill": return "Wissen"
+        case "tag.fill": return "Label"
+        default: return icon
+        }
+    }
+}
+
+private struct CustomSpaceEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    let space: ChatSpace
+
+    @State private var title: String
+    @State private var subtitle: String
+    @State private var icon: String
+    @State private var accent: SpaceAccent
+
+    init(space: ChatSpace) {
+        self.space = space
+        _title = State(initialValue: space.title)
+        _subtitle = State(initialValue: space.subtitle)
+        _icon = State(initialValue: space.icon)
+        _accent = State(initialValue: space.accent)
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Space bearbeiten") {
+                    TextField("Titel", text: $title)
+                    TextField("Untertitel", text: $subtitle)
+                    Picker("Icon", selection: $icon) {
+                        ForEach(customSpaceIconOptions, id: \.self) { value in
+                            Label(value, systemImage: value).tag(value)
+                        }
+                    }
+                    Picker("Akzent", selection: $accent) {
+                        ForEach(SpaceAccent.allCases, id: \.self) { item in
+                            Text(spaceAccentLabel(item)).tag(item)
+                        }
+                    }
+                }
+
+                Section {
+                    Button {
+                        appState.updateCustomSpace(
+                            spaceID: space.id,
+                            title: title,
+                            subtitle: subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Benutzerdefinierter Space" : subtitle,
+                            icon: icon,
+                            accent: accent
+                        )
+                        dismiss()
+                    } label: {
+                        Label("Speichern", systemImage: "checkmark.circle.fill")
+                    }
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button(role: .destructive) {
+                        appState.deleteCustomSpace(spaceID: space.id)
+                        dismiss()
+                    } label: {
+                        Label("Space loeschen", systemImage: "trash")
+                    }
+                }
+            }
+            .navigationTitle("Custom Space")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Schliessen") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private func spaceAccentLabel(_ accent: SpaceAccent) -> String {
+    switch accent {
+    case .ocean: return "Ocean"
+    case .emerald: return "Emerald"
+    case .sunset: return "Sunset"
+    case .orchid: return "Orchid"
+    case .teal: return "Teal"
+    case .violet: return "Violet"
+    case .indigo: return "Indigo"
+    case .slate: return "Slate"
+    }
+}
+
 private struct ThreadAvatarView: View {
     @EnvironmentObject private var appState: AppState
 
@@ -875,6 +1102,42 @@ private struct EmptyDetailState: View {
     }
 }
 
+private struct ConversationHistoryHeader: View {
+    @EnvironmentObject private var appState: AppState
+    let threadID: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if appState.reachedHistoryStart(for: threadID) {
+                Label("Beginn des Chats erreicht", systemImage: "clock.arrow.circlepath")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else if appState.isHistoryLoading(for: threadID) {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Aeltere Nachrichten werden geladen ...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text("Nach oben scrollen, um aeltere Nachrichten zu laden")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+        .task(id: appState.messages(for: threadID).first?.id) {
+            let currentCount = appState.messages(for: threadID).count
+            await appState.loadOlderMessagesIfNeeded(
+                for: threadID,
+                minimumMessageCount: max(120, currentCount + 60)
+            )
+        }
+    }
+}
+
 private struct ConversationDetailView: View {
     @EnvironmentObject private var appState: AppState
     @State private var showingMediaSheet = false
@@ -887,6 +1150,9 @@ private struct ConversationDetailView: View {
     @State private var pendingImportKind: ChatMessageKind?
     @State private var showingProfileSheet = false
     @State private var showingMediaLibraryPicker = false
+    @State private var showingVoiceRecorderSheet = false
+    @State private var mediaPlaybackItem: MediaPlaybackItem?
+    @State private var quickLookItem: QuickLookItem?
     @State private var isSending = false
 
     let threadID: String
@@ -911,6 +1177,8 @@ private struct ConversationDetailView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 12) {
+                            ConversationHistoryHeader(threadID: thread.id)
+
                             if let sourceSpace {
                                 Button {
                                     showingProfileSheet = true
@@ -943,7 +1211,7 @@ private struct ConversationDetailView: View {
                         await Task.yield()
                         proxy.scrollTo(scrollAnchorID, anchor: .bottom)
                     }
-                    .onChange(of: appState.messages(for: thread.id).count) { _ in
+                    .onChange(of: appState.messages(for: thread.id).last?.id) { _ in
                         withAnimation(.easeOut(duration: 0.25)) {
                             proxy.scrollTo(scrollAnchorID, anchor: .bottom)
                         }
@@ -1016,7 +1284,7 @@ private struct ConversationDetailView: View {
                               attachmentAction: { kind in
                                   switch kind {
                                   case .voice:
-                                      appState.sendAttachment(kind, to: thread.id)
+                                      showingVoiceRecorderSheet = true
                                   case .image, .video:
                                       pendingImportKind = kind
                                       showingMediaLibraryPicker = true
@@ -1055,6 +1323,25 @@ private struct ConversationDetailView: View {
                               )
                           }
                       }
+                  }
+                  .sheet(isPresented: $showingVoiceRecorderSheet) {
+                      VoiceRecorderSheet { data, fileName in
+                          Task {
+                              await appState.uploadMedia(
+                                  data: data,
+                                  mimeType: "audio/mp4",
+                                  fileName: fileName,
+                                  kind: .voice,
+                                  to: thread.id
+                              )
+                          }
+                      }
+                  }
+                  .sheet(item: $mediaPlaybackItem) { item in
+                      MediaPlaybackSheet(item: item)
+                  }
+                  .sheet(item: $quickLookItem) { item in
+                      FileQuickLookSheet(item: item)
                   }
                   .sheet(isPresented: $showingEventSheet) {
                       EventPlannerSheet(
@@ -1142,7 +1429,7 @@ private struct ConversationDetailView: View {
             accent: thread.accent,
             attachmentAction: {
                 Task {
-                    await appState.downloadAttachment(messageID: message.id, in: thread.id)
+                    await handleAttachmentTap(message, in: thread.id)
                 }
             },
             reactAction: { emoji in
@@ -1213,6 +1500,79 @@ private struct ConversationDetailView: View {
             appState.errorMessage = error.localizedDescription
         }
     }
+
+    @MainActor
+    private func presentAttachmentPreview(
+        _ message: ChatMessage,
+        attachment: MessageAttachment,
+        localURL: URL
+    ) {
+        switch message.kind {
+        case .video:
+            mediaPlaybackItem = MediaPlaybackItem(
+                url: localURL,
+                title: attachment.title.isEmpty ? "Video" : attachment.title,
+                kind: .video
+            )
+        case .voice:
+            mediaPlaybackItem = MediaPlaybackItem(
+                url: localURL,
+                title: attachment.title.isEmpty ? "Sprachnachricht" : attachment.title,
+                kind: .audio
+            )
+        case .file:
+            quickLookItem = QuickLookItem(
+                url: localURL,
+                title: attachment.title.isEmpty ? localURL.lastPathComponent : attachment.title
+            )
+        case .image:
+            quickLookItem = QuickLookItem(
+                url: localURL,
+                title: attachment.title.isEmpty ? "Bild" : attachment.title
+            )
+        case .text, .event:
+            break
+        }
+    }
+
+    private func handleAttachmentTap(_ message: ChatMessage, in threadID: String) async {
+        var effectiveMessage = message
+
+        if let attachment = effectiveMessage.attachment,
+           attachment.localCachePath == nil,
+           attachment.contentURI != nil {
+            await appState.downloadAttachment(messageID: effectiveMessage.id, in: threadID)
+            if let refreshed = appState.messages(for: threadID).first(where: { $0.id == effectiveMessage.id }) {
+                effectiveMessage = refreshed
+            }
+        }
+
+        guard let attachment = effectiveMessage.attachment else { return }
+
+        let localURL: URL?
+        if let localPath = attachment.localCachePath, !localPath.isEmpty {
+            localURL = URL(fileURLWithPath: localPath)
+        } else {
+            localURL = nil
+        }
+
+        if let localURL {
+            await presentAttachmentPreview(effectiveMessage, attachment: attachment, localURL: localURL)
+            return
+        }
+
+        if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
+            await MainActor.run {
+                if effectiveMessage.kind == .video || effectiveMessage.kind == .voice {
+                    mediaPlaybackItem = MediaPlaybackItem(
+                        url: remoteURL,
+                        title: attachment.title.isEmpty ? "Anhang" : attachment.title,
+                        kind: effectiveMessage.kind == .video ? .video : .audio
+                    )
+                }
+            }
+        }
+    }
 }
 
 private struct ConversationHero: View {
@@ -1253,11 +1613,17 @@ private struct ThreadProfileSheet: View {
 
     let threadID: String
     @State private var localTitle = ""
+    @State private var localSpaceSelection = ""
 
     private var thread: ChatThread? { appState.thread(withID: threadID) }
     private var sourceSpace: ChatSpace? {
         guard let thread else { return nil }
         return appState.sourceSpace(for: thread)
+    }
+    private var assignableSpaces: [ChatSpace] {
+        appState.spaces
+            .filter { !$0.isMain }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
     var body: some View {
@@ -1304,9 +1670,30 @@ private struct ThreadProfileSheet: View {
                             }
                             .disabled(localTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
+
+                        Section("Space-Zuordnung") {
+                            Picker("Chat anzeigen in", selection: $localSpaceSelection) {
+                                Text("Automatisch (Original-Space)").tag("")
+                                ForEach(assignableSpaces) { space in
+                                    Label(space.title, systemImage: space.icon).tag(space.id)
+                                }
+                            }
+                            .onChange(of: localSpaceSelection) { selectedValue in
+                                if selectedValue.isEmpty {
+                                    appState.assignThread(thread.id, to: nil)
+                                } else {
+                                    appState.assignThread(thread.id, to: selectedValue)
+                                }
+                            }
+
+                            Text("Damit kannst du Chats in eigene Spaces verschieben, ohne den Matrix-Raum selbst zu veraendern.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .onAppear {
                         localTitle = thread.title
+                        localSpaceSelection = appState.threadSpaceOverrides[thread.id] ?? ""
                     }
                 } else {
                     Text("Profil konnte nicht geladen werden.")
@@ -1487,6 +1874,293 @@ private struct MessageBubble: View {
     }
 }
 
+private struct MediaPlaybackItem: Identifiable {
+    enum Kind {
+        case video
+        case audio
+    }
+
+    let id = UUID()
+    let url: URL
+    let title: String
+    let kind: Kind
+}
+
+private struct QuickLookItem: Identifiable {
+    let id = UUID()
+    let url: URL
+    let title: String
+}
+
+private struct MediaPlaybackSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: MediaPlaybackItem
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                if let player {
+                    VideoPlayer(player: player)
+                        .frame(maxWidth: .infinity, maxHeight: item.kind == .audio ? 220 : .infinity)
+                        .background(Color.black)
+                } else {
+                    ProgressView("Lade Medien ...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .padding(item.kind == .audio ? 16 : 0)
+            .navigationTitle(item.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+        }
+        .onAppear {
+            let avPlayer = AVPlayer(url: item.url)
+            player = avPlayer
+            avPlayer.play()
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
+    }
+}
+
+private struct FileQuickLookSheet: UIViewControllerRepresentable {
+    let item: QuickLookItem
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(item: item)
+    }
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        controller.title = item.title
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: QLPreviewController, context: Context) {
+        context.coordinator.item = item
+        uiViewController.reloadData()
+    }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        var item: QuickLookItem
+
+        init(item: QuickLookItem) {
+            self.item = item
+        }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int {
+            1
+        }
+
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            item.url as NSURL
+        }
+    }
+}
+
+private final class VoiceRecorderModel: NSObject, ObservableObject, AVAudioRecorderDelegate {
+    @Published private(set) var isRecording = false
+    @Published private(set) var elapsedSeconds: TimeInterval = 0
+    @Published private(set) var outputURL: URL?
+    @Published var errorMessage: String?
+
+    private var recorder: AVAudioRecorder?
+    private var timer: Timer?
+
+    var canSend: Bool { outputURL != nil && !isRecording }
+
+    func startRecording() async {
+        errorMessage = nil
+        let permissionGranted = await requestRecordPermission()
+        guard permissionGranted else {
+            errorMessage = "Mikrofonzugriff wurde nicht erlaubt."
+            return
+        }
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+            let fileURL = try makeRecordingURL()
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 44_100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ]
+            let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
+            recorder.delegate = self
+            recorder.isMeteringEnabled = true
+            recorder.record()
+
+            self.recorder = recorder
+            outputURL = nil
+            elapsedSeconds = 0
+            isRecording = true
+            startTimer()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func stopRecording() {
+        recorder?.stop()
+        recorder = nil
+        isRecording = false
+        stopTimer()
+        if let url = outputURL, !FileManager.default.fileExists(atPath: url.path) {
+            outputURL = nil
+        }
+    }
+
+    func discardRecording() {
+        stopRecording()
+        if let url = outputURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        outputURL = nil
+        elapsedSeconds = 0
+    }
+
+    func recordedData() -> Data? {
+        guard let outputURL else { return nil }
+        return try? Data(contentsOf: outputURL)
+    }
+
+    func recorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        isRecording = false
+        stopTimer()
+        outputURL = flag ? recorder.url : nil
+        if !flag {
+            errorMessage = "Aufnahme konnte nicht abgeschlossen werden."
+        }
+    }
+
+    private func requestRecordPermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+
+    private func makeRecordingURL() throws -> URL {
+        let base = try FileManager.default.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let folder = base.appendingPathComponent("MatrixMessVoice", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        return folder.appendingPathComponent("voice-\(UUID().uuidString).m4a")
+    }
+
+    private func startTimer() {
+        stopTimer()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            guard let self, let recorder = self.recorder else { return }
+            self.elapsedSeconds = recorder.currentTime
+        }
+    }
+
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+}
+
+private struct VoiceRecorderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var model = VoiceRecorderModel()
+    let onSend: (Data, String) -> Void
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 18) {
+                ZStack {
+                    Circle()
+                        .fill(model.isRecording ? Color.red.opacity(0.18) : Color.secondary.opacity(0.14))
+                        .frame(width: 98, height: 98)
+                    Image(systemName: model.isRecording ? "waveform.circle.fill" : "mic.fill")
+                        .font(.system(size: 40, weight: .semibold))
+                        .foregroundColor(model.isRecording ? .red : .secondary)
+                }
+
+                Text(formattedDuration(model.elapsedSeconds))
+                    .font(.title2.monospacedDigit().weight(.semibold))
+
+                if let errorMessage = model.errorMessage, !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                HStack(spacing: 12) {
+                    Button(model.isRecording ? "Stopp" : "Aufnahme starten") {
+                        Task {
+                            if model.isRecording {
+                                model.stopRecording()
+                            } else {
+                                await model.startRecording()
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(model.isRecording ? .red : .accentColor)
+
+                    Button("Verwerfen", role: .destructive) {
+                        model.discardRecording()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.isRecording && model.elapsedSeconds < 0.5)
+                }
+
+                Button("Senden") {
+                    guard let data = model.recordedData(),
+                          let url = model.outputURL else { return }
+                    onSend(data, url.lastPathComponent)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.canSend)
+
+                Spacer()
+            }
+            .padding(24)
+            .navigationTitle("Sprachnachricht")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Abbrechen") {
+                        model.discardRecording()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func formattedDuration(_ value: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(value.rounded()))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
 private func deliveryStatusSymbol(for message: ChatMessage) -> String? {
     if let sendStatus = message.sendStatus {
         switch sendStatus {
@@ -1549,7 +2223,7 @@ private struct MessageBody: View {
         case .image:
             VStack(alignment: .leading, spacing: 10) {
                 if let attachment = message.attachment {
-                    InlineImageAttachment(attachment: attachment)
+                    InlineImageAttachment(attachment: attachment, action: attachmentAction)
                     if !message.body.isEmpty {
                         Text(message.body)
                             .font(.subheadline)
@@ -1603,34 +2277,38 @@ private struct InlineImageAttachment: View {
     @EnvironmentObject private var appState: AppState
 
     let attachment: MessageAttachment
+    let action: () -> Void
 
     var body: some View {
-        Group {
-            if let localCachePath = attachment.localCachePath,
-               let uiImage = UIImage(contentsOfFile: localCachePath) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFill()
-            } else if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
-                AsyncImage(url: remoteURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .failure:
-                        imagePlaceholder(icon: "photo.slash")
-                    default:
-                        ZStack {
-                            imagePlaceholder(icon: "photo")
-                            ProgressView()
+        Button(action: action) {
+            Group {
+                if let localCachePath = attachment.localCachePath,
+                   let uiImage = UIImage(contentsOfFile: localCachePath) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                } else if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
+                    AsyncImage(url: remoteURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .failure:
+                            imagePlaceholder(icon: "photo.slash")
+                        default:
+                            ZStack {
+                                imagePlaceholder(icon: "photo")
+                                ProgressView()
+                            }
                         }
                     }
+                } else {
+                    imagePlaceholder(icon: "photo")
                 }
-            } else {
-                imagePlaceholder(icon: "photo")
             }
         }
+        .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .frame(height: 188)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -1862,23 +2540,79 @@ private enum SocialVideoLink {
 }
 
 /// Thin wrapper around WKWebView for social media embeds.
+private enum WebEmbedLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
 private struct WebEmbedView: UIViewRepresentable {
     let embedURL: URL
+    let onStateChange: (WebEmbedLoadState) -> Void
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        private let onStateChange: (WebEmbedLoadState) -> Void
+        var lastRequestedURL: URL?
+
+        init(onStateChange: @escaping (WebEmbedLoadState) -> Void) {
+            self.onStateChange = onStateChange
+        }
+
+        private func emit(_ state: WebEmbedLoadState) {
+            DispatchQueue.main.async {
+                self.onStateChange(state)
+            }
+        }
+
+        func beginLoading(url: URL) {
+            lastRequestedURL = url
+            emit(.loading)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            emit(.loaded)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            emit(.failed(error.localizedDescription))
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            emit(.failed(error.localizedDescription))
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+            if !navigationResponse.canShowMIMEType {
+                emit(.failed("Der Anbieter blockiert die In-App-Einbettung fuer diesen Link."))
+                return .cancel
+            }
+            return .allow
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onStateChange: onStateChange)
+    }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
-        let wv = WKWebView(frame: .zero, configuration: config)
-        wv.scrollView.isScrollEnabled = false
-        wv.backgroundColor = .black
-        wv.isOpaque = false
-        return wv
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.scrollView.isScrollEnabled = false
+        webView.backgroundColor = .black
+        webView.isOpaque = false
+        return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        guard uiView.url != embedURL else { return }
-        uiView.load(URLRequest(url: embedURL))
+        guard context.coordinator.lastRequestedURL != embedURL else { return }
+        context.coordinator.beginLoading(url: embedURL)
+        var request = URLRequest(url: embedURL)
+        request.timeoutInterval = 12
+        uiView.load(request)
     }
 }
 
@@ -1889,20 +2623,73 @@ private struct SocialVideoCard: View {
     let isOutgoing: Bool
     let accent: SpaceAccent
 
+    @Environment(\.openURL) private var openURL
     @State private var isExpanded = false
+    @State private var embedState: WebEmbedLoadState = .idle
+    @State private var embedTimeoutTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if isExpanded, let embedURL = link.embedURL {
-                WebEmbedView(embedURL: embedURL)
+                WebEmbedView(embedURL: embedURL) { state in
+                    embedState = state
+                    if case .failed = state {
+                        cancelEmbedTimeout()
+                    } else if state == .loaded {
+                        cancelEmbedTimeout()
+                    }
+                }
                     .frame(maxWidth: .infinity)
                     .aspectRatio(link.aspectRatio, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        if embedState == .loading || embedState == .idle {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .padding(10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.black.opacity(0.45))
+                                )
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        if case .failed(let reason) = embedState {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Embed nicht verfuegbar")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.white)
+                                Text(reason)
+                                    .font(.caption2)
+                                    .foregroundColor(.white.opacity(0.82))
+                                    .lineLimit(2)
+                                HStack(spacing: 8) {
+                                    Button("Erneut") {
+                                        embedState = .idle
+                                        startEmbedTimeout()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+
+                                    Button("Extern") {
+                                        openURL(originalURL)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                            .padding(10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.black.opacity(0.72))
+                            )
+                            .padding(10)
+                        }
+                    }
 
                 Button {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         isExpanded = false
                     }
+                    cancelEmbedTimeout()
                 } label: {
                     Label("Schließen", systemImage: "xmark.circle")
                         .font(.caption)
@@ -1912,7 +2699,9 @@ private struct SocialVideoCard: View {
                 Button {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         isExpanded = true
+                        embedState = .idle
                     }
+                    startEmbedTimeout()
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: link.platformIcon)
@@ -1950,6 +2739,24 @@ private struct SocialVideoCard: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    private func startEmbedTimeout() {
+        cancelEmbedTimeout()
+        embedTimeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if embedState == .loading || embedState == .idle {
+                    embedState = .failed("Der Anbieter blockiert die Einbettung oder antwortet nicht rechtzeitig.")
+                }
+            }
+        }
+    }
+
+    private func cancelEmbedTimeout() {
+        embedTimeoutTask?.cancel()
+        embedTimeoutTask = nil
     }
 }
 
@@ -2601,29 +3408,51 @@ private struct CalendarView: View {
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(selectedDayEvents) { event in
-                        Button {
-                            appState.openThread(event.threadID)
-                        } label: {
-                            CalendarEventRow(event: event)
-                        }
-                        .buttonStyle(.plain)
+                        calendarEventListRow(event)
                     }
                 }
             }
 
             Section("Naechste Termine") {
                 ForEach(appState.upcomingEvents().prefix(6)) { event in
-                    Button {
-                        appState.openThread(event.threadID)
-                    } label: {
-                        CalendarEventRow(event: event)
-                    }
-                    .buttonStyle(.plain)
+                    calendarEventListRow(event)
                 }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Calendar")
+    }
+
+    @ViewBuilder
+    private func calendarEventListRow(_ event: ScheduledChatEvent) -> some View {
+        if appState.thread(withID: event.threadID) != nil {
+            Button {
+                appState.openThread(event.threadID)
+            } label: {
+                CalendarEventRow(event: event)
+            }
+            .buttonStyle(.plain)
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive) {
+                    Task {
+                        await appState.deleteScheduledEvent(event.id)
+                    }
+                } label: {
+                    Label("Loeschen", systemImage: "trash")
+                }
+            }
+        } else {
+            CalendarEventRow(event: event)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        Task {
+                            await appState.deleteScheduledEvent(event.id)
+                        }
+                    } label: {
+                        Label("Loeschen", systemImage: "trash")
+                    }
+                }
+        }
     }
 }
 
@@ -2698,6 +3527,14 @@ private struct CalendarEventRow: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(thread.accent.softTint)
+                        .clipShape(Capsule())
+                } else {
+                    Text("Ohne Chat-Zuordnung")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.1))
                         .clipShape(Capsule())
                 }
 
@@ -2897,6 +3734,12 @@ private struct SettingsView: View {
                         }
                     }
                 }
+
+                Button("Push-Status pruefen") {
+                    Task {
+                        await appState.refreshPushHealthStatus()
+                    }
+                }
             }
 
             Section("Privacy und Daten") {
@@ -2974,6 +3817,25 @@ private struct SettingsView: View {
                 settingsValueRow(label: "Letzter Sync", value: diagnosticsText(appState.diagnostics.lastSuccessfulSyncAt))
                 settingsValueRow(label: "APNs erlaubt", value: appState.pushNotificationsAuthorized ? "Ja" : "Nein")
                 settingsValueRow(label: "APNs-Token", value: appState.remoteNotificationTokenAvailable ? "Vorhanden" : "Fehlt")
+                settingsValueRow(
+                    label: "Pusher registriert",
+                    value: pushRegistrationLabel(appState.pushHealthStatus.pusherRegisteredOnHomeserver)
+                )
+                settingsValueRow(
+                    label: "Gateway erreichbar",
+                    value: gatewayReachabilityLabel(
+                        reachable: appState.pushHealthStatus.pushGatewayReachable,
+                        latencyMs: appState.pushHealthStatus.lastGatewayLatencyMs
+                    )
+                )
+                settingsValueRow(label: "Pusher geprueft", value: diagnosticsText(appState.pushHealthStatus.lastPusherVerificationAt))
+                settingsValueRow(label: "Pusher zuletzt gesetzt", value: diagnosticsText(appState.pushHealthStatus.lastPusherRegistrationAt))
+
+                if let pushError = appState.pushHealthStatus.lastErrorDescription, !pushError.isEmpty {
+                    Text(pushError)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
 
                 if appState.verificationFlowState.isActive || appState.verificationFlowState.isVerified {
                     Button("Verifizierung anzeigen") {
@@ -3052,6 +3914,22 @@ private struct SettingsView: View {
     private func diagnosticsText(_ date: Date?) -> String {
         guard let date else { return "Noch nicht" }
         return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func pushRegistrationLabel(_ value: Bool?) -> String {
+        guard let value else { return "Noch nicht geprueft" }
+        return value ? "Ja" : "Nein"
+    }
+
+    private func gatewayReachabilityLabel(reachable: Bool?, latencyMs: Int?) -> String {
+        guard let reachable else { return "Noch nicht geprueft" }
+        if reachable {
+            if let latencyMs {
+                return "Ja (\(latencyMs) ms)"
+            }
+            return "Ja"
+        }
+        return "Nein"
     }
 
     @ViewBuilder

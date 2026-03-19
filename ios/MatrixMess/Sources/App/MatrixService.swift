@@ -152,6 +152,34 @@ final class MatrixService {
         sdkContext.mediaDownloadURL(contentURI: contentURI, session: storedSession)
     }
 
+    func downloadMedia(
+        contentURI: String,
+        fileNameHint: String?,
+        mimeTypeHint: String?,
+        session storedSession: MatrixSession
+    ) async throws -> URL {
+        try await sdkContext.downloadMedia(
+            contentURI: contentURI,
+            session: storedSession,
+            fileNameHint: fileNameHint,
+            mimeTypeHint: mimeTypeHint
+        )
+    }
+
+    func loadTimelineMessages(
+        roomID: String,
+        session storedSession: MatrixSession,
+        minimumMessageCount: Int = 0,
+        backPaginationBatchSize: UInt16 = 40
+    ) async throws -> MatrixSDKTimelineFetchResult {
+        try await sdkContext.timelineMessages(
+            roomID: roomID,
+            session: storedSession,
+            minimumMessageCount: minimumMessageCount,
+            backPaginationBatchSize: backPaginationBatchSize
+        )
+    }
+
     func loadWorkspace(
         session storedSession: MatrixSession,
         existingMainPins: [String],
@@ -161,8 +189,9 @@ final class MatrixService {
     ) async throws -> MatrixWorkspace {
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
         let syncResponse = try await sync(homeserver: homeserver, session: storedSession, fullState: storedSession.syncToken == nil)
-        return makeWorkspace(
+        return try await makeWorkspace(
             from: syncResponse,
+            homeserver: homeserver,
             session: storedSession,
             existingMainPins: existingMainPins,
             existingSpaces: existingSpaces,
@@ -420,14 +449,73 @@ final class MatrixService {
         )
     }
 
+    private func joinedRoomIDs(
+        homeserver: URL,
+        session storedSession: MatrixSession
+    ) async throws -> [String] {
+        let response: MatrixJoinedRoomsResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/joined_rooms",
+            method: "GET",
+            body: Optional<String>.none,
+            accessToken: storedSession.accessToken
+        )
+        return response.joinedRooms
+    }
+
+    private func roomStateEvents(
+        roomID: String,
+        homeserver: URL,
+        session storedSession: MatrixSession
+    ) async throws -> [MatrixTimelineEvent] {
+        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        return try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/state",
+            method: "GET",
+            body: Optional<String>.none,
+            accessToken: storedSession.accessToken
+        )
+    }
+
+    private func loadRoomSnapshotsForMissingJoinedRooms(
+        roomIDs: [String],
+        homeserver: URL,
+        session storedSession: MatrixSession
+    ) async -> [ParsedRoomSnapshot] {
+        var snapshots: [ParsedRoomSnapshot] = []
+        snapshots.reserveCapacity(roomIDs.count)
+        for roomID in roomIDs {
+            do {
+                let stateEvents = try await roomStateEvents(
+                    roomID: roomID,
+                    homeserver: homeserver,
+                    session: storedSession
+                )
+                snapshots.append(
+                    ParsedRoomSnapshot(
+                        roomID: roomID,
+                        unreadCount: 0,
+                        timelineEvents: [],
+                        stateEvents: stateEvents
+                    )
+                )
+            } catch {
+                AppLogger.error("State fuer fehlenden Raum \(roomID) konnte nicht geladen werden: \(error.localizedDescription)")
+            }
+        }
+        return snapshots
+    }
+
     private func makeWorkspace(
         from response: MatrixSyncResponse,
+        homeserver: URL,
         session storedSession: MatrixSession,
         existingMainPins: [String],
         existingSpaces: [ChatSpace],
         existingThreadsByID: [String: ChatThread],
         existingMessagesByThreadID: [String: [ChatMessage]]
-    ) -> MatrixWorkspace {
+    ) async throws -> MatrixWorkspace {
         let isIncrementalSync = storedSession.syncToken != nil
         let matrixDescriptor = descriptor(for: .matrix)
         let matrixSyntheticSpaceID = "space.synthetic.matrix"
@@ -453,7 +541,22 @@ final class MatrixService {
                 stateEvents: room.inviteState?.events ?? []
             )
         }
-        let parsedRooms = joinedSnapshots + invitedSnapshots
+        var parsedRooms = joinedSnapshots + invitedSnapshots
+        if !isIncrementalSync {
+            let knownRoomIDs = Set(parsedRooms.map(\.roomID))
+            let serverJoinedRoomIDs = (try? await joinedRoomIDs(homeserver: homeserver, session: storedSession)) ?? []
+            let missingJoinedRoomIDs = serverJoinedRoomIDs.filter {
+                !knownRoomIDs.contains($0) && !leftRoomIDs.contains($0)
+            }
+            if !missingJoinedRoomIDs.isEmpty {
+                let recoveredSnapshots = await loadRoomSnapshotsForMissingJoinedRooms(
+                    roomIDs: missingJoinedRoomIDs,
+                    homeserver: homeserver,
+                    session: storedSession
+                )
+                parsedRooms.append(contentsOf: recoveredSnapshots)
+            }
+        }
 
         // Parse m.typing ephemeral events for each room.
         var typingUsersByThreadID: [String: [String]] = [:]
@@ -467,41 +570,18 @@ final class MatrixService {
             }
         }
 
-        let existingActualSpacesByID = Dictionary(
-            uniqueKeysWithValues: existingSpaces
-                .filter { !$0.isMain && !$0.id.hasPrefix("space.synthetic.") }
-                .map { ($0.id, $0) }
-        )
         let existingSyntheticSpacesByID = Dictionary(
             uniqueKeysWithValues: existingSpaces
                 .filter { $0.id.hasPrefix("space.synthetic.") }
                 .map { ($0.id, $0) }
         )
 
-        let actualSpaceRooms = parsedRooms
-            .filter(\.isSpace)
-            .map { snapshot -> ChatSpace in
-                let descriptor = descriptor(for: snapshot.classification)
-                return ChatSpace(
-                    id: snapshot.roomID,
-                    kind: descriptor.kind,
-                    title: snapshot.displayName,
-                    subtitle: snapshot.topic.isEmpty ? "Matrix Space" : snapshot.topic,
-                    icon: descriptor.icon,
-                    accent: descriptor.accent
-                )
-            }
-
-        var actualSpacesByID = isIncrementalSync ? existingActualSpacesByID : [:]
-        for space in actualSpaceRooms {
-            actualSpacesByID[space.id] = space
-        }
-
         let threadedRooms = parsedRooms.filter { !$0.isSpace }
 
         var syntheticSpacesByID = isIncrementalSync ? existingSyntheticSpacesByID : [:]
         var threadsByID = isIncrementalSync ? existingThreadsByID : [:]
         var messagesByThreadID = isIncrementalSync ? existingMessagesByThreadID : [:]
+        var timelineStartReachedThreadIDs: Set<String> = []
         let matrixSpace = syntheticSpacesByID[matrixSyntheticSpaceID] ?? ChatSpace(
             id: matrixSyntheticSpaceID,
             kind: matrixDescriptor.kind,
@@ -518,43 +598,50 @@ final class MatrixService {
         }
 
         for snapshot in threadedRooms {
+            let classification = snapshot.classification
             let assignedSpaceID: String
             let assignedSpace: ChatSpace
-
-            if let parentID = snapshot.parentSpaceIDs.first(where: { actualSpacesByID[$0] != nil }),
-               let parentSpace = actualSpacesByID[parentID] {
-                assignedSpaceID = parentID
-                assignedSpace = parentSpace
+            if classification == .matrix {
+                assignedSpace = matrixSpace
+                assignedSpaceID = matrixSyntheticSpaceID
             } else {
-                let classification = snapshot.classification
-                if classification == .matrix || classification == .genericBridge {
-                    assignedSpace = matrixSpace
-                    assignedSpaceID = matrixSyntheticSpaceID
+                let descriptor = descriptor(for: classification)
+                let syntheticID = "space.synthetic.\(descriptor.key)"
+                if let existing = syntheticSpacesByID[syntheticID] {
+                    assignedSpace = existing
                 } else {
-                    let descriptor = descriptor(for: classification)
-                    let syntheticID = "space.synthetic.\(descriptor.key)"
-                    if let existing = syntheticSpacesByID[syntheticID] {
-                        assignedSpace = existing
-                    } else {
-                        let space = ChatSpace(
-                            id: syntheticID,
-                            kind: descriptor.kind,
-                            title: descriptor.title,
-                            subtitle: descriptor.subtitle,
-                            icon: descriptor.icon,
-                            accent: descriptor.accent
-                        )
-                        syntheticSpacesByID[syntheticID] = space
-                        assignedSpace = space
-                    }
-                    assignedSpaceID = assignedSpace.id
+                    let space = ChatSpace(
+                        id: syntheticID,
+                        kind: descriptor.kind,
+                        title: descriptor.title,
+                        subtitle: descriptor.subtitle,
+                        icon: descriptor.icon,
+                        accent: descriptor.accent
+                    )
+                    syntheticSpacesByID[syntheticID] = space
+                    assignedSpace = space
                 }
+                assignedSpaceID = assignedSpace.id
             }
 
             let existingMessages = messagesByThreadID[snapshot.roomID, default: []]
-            let messages = snapshot.mergedTimelineMessages(
+            let restMessages = snapshot.mergedTimelineMessages(
                 existingMessages: existingMessages,
                 currentUserID: storedSession.userID
+            )
+            let sdkResult = try? await sdkContext.timelineMessages(
+                roomID: snapshot.roomID,
+                session: storedSession,
+                minimumMessageCount: min(max(40, existingMessages.count + 30), 300),
+                backPaginationBatchSize: 30
+            )
+            if sdkResult?.hitTimelineStart == true {
+                timelineStartReachedThreadIDs.insert(snapshot.roomID)
+            }
+            let messages = mergeWorkspaceMessages(
+                sdkMessages: sdkResult?.messages,
+                restMessages: restMessages,
+                existingMessages: existingMessages
             )
             let lastMessage = messages.last
             let previousThread = threadsByID[snapshot.roomID]
@@ -569,8 +656,8 @@ final class MatrixService {
                 id: snapshot.roomID,
                 homeSpaceID: assignedSpaceID,
                 title: resolvedName,
-                subtitle: snapshot.subtitle(for: descriptor(for: snapshot.classification)),
-                avatarSymbol: descriptor(for: snapshot.classification).avatarSymbol,
+                subtitle: snapshot.subtitle(for: descriptor(for: classification)),
+                avatarSymbol: descriptor(for: classification).avatarSymbol,
                 accent: assignedSpace.accent,
                 lastMessagePreview: preview,
                 lastActivity: lastActivity,
@@ -579,7 +666,7 @@ final class MatrixService {
                 isEncrypted: snapshot.isEncrypted,
                 avatarContentURI: snapshot.avatarContentURI(excluding: storedSession.userID),
                 officialTitle: resolvedName,
-                bridgeLabel: descriptor(for: snapshot.classification).title,
+                bridgeLabel: descriptor(for: classification).title,
                 memberCount: snapshot.memberCount,
                 topic: snapshot.topic.isEmpty ? nil : snapshot.topic,
                 isDirect: snapshot.isDirect
@@ -588,11 +675,9 @@ final class MatrixService {
         }
 
         let usedSpaceIDs = Set(threadsByID.values.map(\.homeSpaceID))
-        let actualSpaceRoomIDs = Set(actualSpaceRooms.map(\.id))
         syntheticSpacesByID = syntheticSpacesByID.filter {
             usedSpaceIDs.contains($0.key) || $0.key == matrixSyntheticSpaceID
         }
-        actualSpacesByID = actualSpacesByID.filter { usedSpaceIDs.contains($0.key) || actualSpaceRoomIDs.contains($0.key) }
         let matrixSpaceForList = syntheticSpacesByID[matrixSyntheticSpaceID]
         let otherSyntheticSpaces = syntheticSpacesByID
             .filter { $0.key != matrixSyntheticSpaceID }
@@ -607,7 +692,6 @@ final class MatrixService {
             icon: "star.circle.fill",
             accent: .sunset
         )]
-        + actualSpacesByID.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         + (matrixSpaceForList.map { [$0] } ?? [])
         + otherSyntheticSpaces
 
@@ -634,8 +718,61 @@ final class MatrixService {
             threadsByID: threadsByID,
             messagesByThreadID: messagesByThreadID,
             mainPinnedThreadIDs: Array(mainPins),
-            typingUsersByThreadID: typingUsersByThreadID
+            typingUsersByThreadID: typingUsersByThreadID,
+            timelineStartReachedThreadIDs: timelineStartReachedThreadIDs
         )
+    }
+
+    private func mergeWorkspaceMessages(
+        sdkMessages: [ChatMessage]?,
+        restMessages: [ChatMessage],
+        existingMessages: [ChatMessage]
+    ) -> [ChatMessage] {
+        guard var merged = sdkMessages, !merged.isEmpty else {
+            return restMessages
+        }
+
+        var existingByEventID: [String: ChatMessage] = [:]
+        for message in restMessages + existingMessages {
+            guard let eventID = message.matrixEventID else { continue }
+            existingByEventID[eventID] = message
+        }
+
+        for index in merged.indices {
+            guard let eventID = merged[index].matrixEventID,
+                  let existing = existingByEventID[eventID] else {
+                continue
+            }
+
+            if merged[index].attachment == nil {
+                merged[index].attachment = existing.attachment
+            } else if var incomingAttachment = merged[index].attachment,
+                      incomingAttachment.localCachePath == nil,
+                      let existingAttachment = existing.attachment {
+                incomingAttachment.localCachePath = existingAttachment.localCachePath
+                merged[index].attachment = incomingAttachment
+            }
+        }
+
+        let pendingMessages = (restMessages + existingMessages).filter {
+            $0.matrixEventID == nil && ($0.isPending || $0.sendStatus == .failed)
+        }
+        for pending in pendingMessages {
+            if merged.contains(where: { message in
+                guard message.matrixEventID == nil else { return false }
+                guard message.isOutgoing == pending.isOutgoing else { return false }
+                guard message.kind == pending.kind else { return false }
+                if !pending.body.isEmpty && message.body != pending.body {
+                    return false
+                }
+                return abs(message.timestamp.timeIntervalSince(pending.timestamp)) < 180
+            }) {
+                continue
+            }
+            merged.append(pending)
+        }
+
+        return merged.sorted { $0.timestamp < $1.timestamp }
     }
 
     private func previewText(for message: ChatMessage) -> String {
@@ -900,10 +1037,29 @@ private struct ParsedRoomSnapshot {
             .compactMap(\.stateKey)
     }
 
+    private var bridgeHints: String {
+        let bridgeEvents = combinedStateEvents.filter { event in
+            let type = event.type.lowercased()
+            return type.contains("bridge")
+                || type.contains("appservice")
+                || type.contains("mautrix")
+        }
+
+        guard !bridgeEvents.isEmpty else { return "" }
+        let fragments = bridgeEvents.flatMap { event -> [String] in
+            let values = event.content?.values.map(flattenJSONValue(_:)) ?? []
+            return [event.type, event.stateKey ?? ""] + values
+        }
+        return fragments.joined(separator: " ")
+    }
+
     var classification: MatrixRoomClassification {
         let memberIDs = memberProfiles.map(\.userID).joined(separator: " ")
         let memberNames = memberProfiles.map(\.displayName).joined(separator: " ")
-        let haystack = [displayName, topic, roomID, memberIDs, memberNames]
+        let canonicalAlias = combinedStateEvents
+            .last(where: { $0.type == "m.room.canonical_alias" })?
+            .content?["alias"]?.stringValue ?? ""
+        let haystack = [displayName, canonicalAlias, topic, roomID, memberIDs, memberNames, bridgeHints]
             .joined(separator: " ")
             .lowercased()
         return MatrixRoomClassification.classify(haystack: haystack, isSpace: isSpace)
@@ -1192,6 +1348,25 @@ private struct ParsedRoomSnapshot {
     }
 }
 
+private func flattenJSONValue(_ value: MatrixJSONValue) -> String {
+    switch value {
+    case .string(let text):
+        return text
+    case .int(let number):
+        return String(number)
+    case .double(let number):
+        return String(number)
+    case .bool(let bool):
+        return bool ? "true" : "false"
+    case .object(let object):
+        return object.values.map(flattenJSONValue(_:)).joined(separator: " ")
+    case .array(let array):
+        return array.map(flattenJSONValue(_:)).joined(separator: " ")
+    case .null:
+        return ""
+    }
+}
+
 private enum MatrixRoomClassification {
     case matrix
     case signal
@@ -1205,16 +1380,16 @@ private enum MatrixRoomClassification {
     case genericBridge
 
     static func classify(haystack: String, isSpace: Bool) -> MatrixRoomClassification {
-        if haystack.contains("signal") || haystack.contains("mautrix-signal") {
+        if haystack.contains("signal") || haystack.contains("mautrix-signal") || haystack.contains("signal_") {
             return .signal
         }
-        if haystack.contains("instagram") || haystack.contains("insta") || haystack.contains("mautrix-instagram") {
+        if haystack.contains("instagram") || haystack.contains("insta") || haystack.contains("mautrix-instagram") || haystack.contains("instagram_") {
             return .instagram
         }
-        if haystack.contains("whatsapp") || haystack.contains("mautrix-whatsapp") || haystack.contains("whatsappbridge") {
+        if haystack.contains("whatsapp") || haystack.contains("mautrix-whatsapp") || haystack.contains("whatsappbridge") || haystack.contains("whatsapp_") {
             return .whatsapp
         }
-        if haystack.contains("telegram") || haystack.contains("mautrix-telegram") {
+        if haystack.contains("telegram") || haystack.contains("mautrix-telegram") || haystack.contains("telegram_") {
             return .telegram
         }
         if haystack.contains("slack") {
@@ -1226,8 +1401,19 @@ private enum MatrixRoomClassification {
         if haystack.contains("sms") || haystack.contains("imessage") {
             return .sms
         }
-        if haystack.contains("messenger") || haystack.contains("facebook") || haystack.contains("mautrix-meta") {
+        if haystack.contains("messenger") || haystack.contains("facebook") || haystack.contains("mautrix-meta") || haystack.contains("messenger_") || haystack.contains("meta_") {
             return .messenger
+        }
+        if haystack.contains("mautrix")
+            || haystack.contains("appservice")
+            || haystack.contains("double puppeting")
+            || haystack.contains("bridge bot")
+            || haystack.contains("bridge status")
+            || haystack.contains("portal room")
+            || haystack.contains("relay bot")
+            || haystack.contains("puppeting")
+            || (isSpace && haystack.contains("bridges")) {
+            return .genericBridge
         }
         return .matrix
     }
