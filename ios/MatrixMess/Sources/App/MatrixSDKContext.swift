@@ -525,7 +525,7 @@ private final class MatrixSDKVerificationDelegate: SessionVerificationController
         updateState { state in
             switch data {
             case .emojis(let emojiData):
-                state.emojis = emojiData.emojis.map { MatrixVerificationEmoji(symbol: $0.symbol, description: $0.description) }
+                state.emojis = emojiData.emojis.map { MatrixVerificationEmoji(symbol: $0.symbol(), description: $0.description()) }
             case .decimals(let values):
                 state.decimals = values
             }
