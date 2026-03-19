@@ -201,29 +201,55 @@ final class MatrixService {
     }
 
     func sendMessage(_ text: String, roomID: String, session storedSession: MatrixSession, isEncrypted: Bool) async throws -> String? {
-        if isEncrypted {
-            // Encrypted rooms go through the SDK crypto/timeline stack.
-            return try await sdkContext.sendMessage(text, roomID: roomID, session: storedSession)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw MatrixServiceError.serverError("Nachrichteninhalt ist leer.")
         }
 
-        // Plain rooms use the client REST endpoint.
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-        let txnID = UUID().uuidString.lowercased()
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
-        let response: MatrixSendEventResponse = try await performRequest(
-            homeserver: homeserver,
-            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/send/m.room.message/\(txnID)",
-            method: "PUT",
-            body: MatrixSendMessageRequest(body: text),
-            accessToken: storedSession.accessToken
-        )
-        return response.eventID
+        var primaryError: Error?
+
+        if isEncrypted {
+            do {
+                return try await sdkContext.sendMessage(trimmed, roomID: roomID, session: storedSession)
+            } catch {
+                primaryError = error
+                AppLogger.error("SDK-Senden fehlgeschlagen, versuche REST-Fallback: \(error.localizedDescription)")
+                do {
+                    return try await sendMessageREST(
+                        trimmed,
+                        roomID: roomID,
+                        homeserver: homeserver,
+                        session: storedSession
+                    )
+                } catch {
+                    throw combinedSendError(primary: primaryError, fallback: error)
+                }
+            }
+        }
+
+        do {
+            return try await sendMessageREST(
+                trimmed,
+                roomID: roomID,
+                homeserver: homeserver,
+                session: storedSession
+            )
+        } catch {
+            primaryError = error
+            AppLogger.error("REST-Senden fehlgeschlagen, versuche SDK-Fallback: \(error.localizedDescription)")
+            do {
+                return try await sdkContext.sendMessage(trimmed, roomID: roomID, session: storedSession)
+            } catch {
+                throw combinedSendError(primary: primaryError, fallback: error)
+            }
+        }
     }
 
     func sendTypingNotification(isTyping: Bool, roomID: String, session storedSession: MatrixSession) async throws {
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
-        let encodedUserID = storedSession.userID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? storedSession.userID
+        let encodedRoomID = encodedPathSegment(roomID)
+        let encodedUserID = encodedPathSegment(storedSession.userID)
 
         let _: EmptyMatrixResponse = try await performRequest(
             homeserver: homeserver,
@@ -253,7 +279,7 @@ final class MatrixService {
 
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
         let txnID = UUID().uuidString.lowercased()
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        let encodedRoomID = encodedPathSegment(roomID)
 
         let response: MatrixSendEventResponse = try await performRequest(
             homeserver: homeserver,
@@ -289,7 +315,7 @@ final class MatrixService {
 
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
         let txnID = UUID().uuidString.lowercased()
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        let encodedRoomID = encodedPathSegment(roomID)
 
         let response: MatrixSendEventResponse = try await performRequest(
             homeserver: homeserver,
@@ -324,8 +350,8 @@ final class MatrixService {
 
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
         let txnID = UUID().uuidString.lowercased()
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
-        let encodedEventID = targetEventID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? targetEventID
+        let encodedRoomID = encodedPathSegment(roomID)
+        let encodedEventID = encodedPathSegment(targetEventID)
 
         let response: MatrixSendEventResponse = try await performRequest(
             homeserver: homeserver,
@@ -343,7 +369,7 @@ final class MatrixService {
         session storedSession: MatrixSession
     ) async throws {
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        let encodedRoomID = encodedPathSegment(roomID)
 
         let _: EmptyMatrixResponse = try await performRequest(
             homeserver: homeserver,
@@ -369,8 +395,6 @@ final class MatrixService {
         }
 
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-        let txnID = UUID().uuidString.lowercased()
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
         let msgtype: String
 
         switch kind {
@@ -386,18 +410,20 @@ final class MatrixService {
             msgtype = "m.file"
         }
 
-        let response: MatrixSendEventResponse = try await performRequest(
+        let body = MatrixSendMediaMessageRequest(
+            msgtype: msgtype,
+            body: fileName,
+            filename: fileName,
+            url: contentURI,
+            info: .init(mimetype: mimeType, size: size)
+        )
+
+        let response = try await sendWithVersionFallback(
             homeserver: homeserver,
-            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/send/m.room.message/\(txnID)",
-            method: "PUT",
-            body: MatrixSendMediaMessageRequest(
-                msgtype: msgtype,
-                body: fileName,
-                filename: fileName,
-                url: contentURI,
-                info: .init(mimetype: mimeType, size: size)
-            ),
-            accessToken: storedSession.accessToken
+            roomID: roomID,
+            session: storedSession,
+            eventTypePathComponent: "m.room.message",
+            body: body
         )
         return response.eventID
     }
@@ -468,7 +494,7 @@ final class MatrixService {
         homeserver: URL,
         session storedSession: MatrixSession
     ) async throws -> [MatrixTimelineEvent] {
-        let encodedRoomID = roomID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? roomID
+        let encodedRoomID = encodedPathSegment(roomID)
         return try await performRequest(
             homeserver: homeserver,
             path: "/_matrix/client/v3/rooms/\(encodedRoomID)/state",
@@ -829,6 +855,101 @@ final class MatrixService {
         return url
     }
 
+    private func sendMessageREST(
+        _ text: String,
+        roomID: String,
+        homeserver: URL,
+        session storedSession: MatrixSession
+    ) async throws -> String {
+        let response = try await sendWithVersionFallback(
+            homeserver: homeserver,
+            roomID: roomID,
+            session: storedSession,
+            eventTypePathComponent: "m.room.message",
+            body: MatrixSendMessageRequest(body: text)
+        )
+        return response.eventID
+    }
+
+    private func sendWithVersionFallback<Body: Encodable>(
+        homeserver: URL,
+        roomID: String,
+        session storedSession: MatrixSession,
+        eventTypePathComponent: String,
+        body: Body
+    ) async throws -> MatrixSendEventResponse {
+        let encodedRoomID = encodedPathSegment(roomID)
+        let apiVersions = ["v3", "r0"]
+        var lastError: Error?
+
+        for version in apiVersions {
+            do {
+                let txnID = UUID().uuidString.lowercased()
+                return try await performRequest(
+                    homeserver: homeserver,
+                    path: "/_matrix/client/\(version)/rooms/\(encodedRoomID)/send/\(eventTypePathComponent)/\(txnID)",
+                    method: "PUT",
+                    body: body,
+                    accessToken: storedSession.accessToken
+                )
+            } catch {
+                lastError = error
+                if await tryJoinRoom(homeserver: homeserver, roomID: roomID, session: storedSession, apiVersion: version) {
+                    do {
+                        let txnID = UUID().uuidString.lowercased()
+                        return try await performRequest(
+                            homeserver: homeserver,
+                            path: "/_matrix/client/\(version)/rooms/\(encodedRoomID)/send/\(eventTypePathComponent)/\(txnID)",
+                            method: "PUT",
+                            body: body,
+                            accessToken: storedSession.accessToken
+                        )
+                    } catch {
+                        lastError = error
+                    }
+                }
+            }
+        }
+
+        throw lastError ?? MatrixServiceError.serverError("Senden fehlgeschlagen.")
+    }
+
+    private func tryJoinRoom(
+        homeserver: URL,
+        roomID: String,
+        session storedSession: MatrixSession,
+        apiVersion: String
+    ) async -> Bool {
+        do {
+            let encodedRoomID = encodedPathSegment(roomID)
+            let _: MatrixJoinRoomResponse = try await performRequest(
+                homeserver: homeserver,
+                path: "/_matrix/client/\(apiVersion)/rooms/\(encodedRoomID)/join",
+                method: "POST",
+                body: Optional<String>.none,
+                accessToken: storedSession.accessToken
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func combinedSendError(primary: Error?, fallback: Error) -> MatrixServiceError {
+        if let primary {
+            return MatrixServiceError.serverError(
+                "Senden fehlgeschlagen. Primaer: \(primary.localizedDescription) | Fallback: \(fallback.localizedDescription)"
+            )
+        }
+        return MatrixServiceError.serverError("Senden fehlgeschlagen: \(fallback.localizedDescription)")
+    }
+
+    private func encodedPathSegment(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#[]@")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
     private func performRequest<Response: Decodable, Body: Encodable>(
         homeserver: URL,
         path: String,
@@ -868,6 +989,9 @@ final class MatrixService {
         guard (200..<300).contains(httpResponse.statusCode) else {
             if let matrixError = try? jsonDecoder.decode(MatrixErrorResponse.self, from: data),
                let message = matrixError.error {
+                if let errcode = matrixError.errcode, !errcode.isEmpty {
+                    throw MatrixServiceError.serverError("\(errcode): \(message)")
+                }
                 throw MatrixServiceError.serverError(message)
             }
 
