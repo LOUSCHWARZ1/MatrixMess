@@ -950,18 +950,7 @@ final class AppState: ObservableObject {
             let events: [ScheduledChatEvent]
             switch providerKind {
             case .apple:
-                let granted = try await appleCalendarProvider.requestAccess()
-                guard granted else {
-                    throw MatrixServiceError.serverError("Apple Calendar wurde nicht freigegeben.")
-                }
-                updateCalendarProvider(
-                    providerKind,
-                    isConnected: true,
-                    accountLabel: "iPhone lokal",
-                    statusNote: "EventKit-Zugriff ist aktiv."
-                )
-                persistSnapshotIfPossible()
-                return
+                events = try await appleCalendarProvider.fetchEvents(from: startDate, to: endDate)
             case .google:
                 guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else {
                     throw MatrixServiceError.serverError("Kein OAuth-Token fuer \(providerKind.title) vorhanden.")
@@ -1122,7 +1111,7 @@ final class AppState: ObservableObject {
 
     func threadCount(for spaceID: String) -> Int {
         if spaceID == ChatSpace.mainID {
-            return mainPinnedThreadIDs.isEmpty ? threadsByID.count : mainPinnedThreadIDs.count
+            return mainPinnedThreadIDs.lazy.filter { threadsByID[$0] != nil }.count
         }
 
         return threadsByID.values.lazy.filter { $0.homeSpaceID == spaceID }.count
@@ -1132,8 +1121,7 @@ final class AppState: ObservableObject {
         let activeSpaceID = spaceID ?? selectedSpaceID
         let baseThreads: [ChatThread]
         if activeSpaceID == ChatSpace.mainID {
-            let pinned = mainPinnedThreadIDs.compactMap { threadsByID[$0] }
-            baseThreads = pinned.isEmpty ? Array(threadsByID.values) : pinned
+            baseThreads = mainPinnedThreadIDs.compactMap { threadsByID[$0] }
         } else {
             baseThreads = threadsByID.values.filter { $0.homeSpaceID == activeSpaceID }
         }
@@ -1720,6 +1708,11 @@ final class AppState: ObservableObject {
                     accountLabel: "iPhone lokal",
                     statusNote: "EventKit-Berechtigung ist aktiv."
                 )
+                await syncExternalCalendar(
+                    providerKind,
+                    from: .now.addingTimeInterval(-60 * 60 * 24 * 30),
+                    to: .now.addingTimeInterval(60 * 60 * 24 * 180)
+                )
             case .google, .outlook:
                 if try calendarTokenStore.load(providerID: providerKind.rawValue) == nil {
                     try await authorizeCalendarProvider(providerKind)
@@ -1883,7 +1876,9 @@ final class AppState: ObservableObject {
 
             AppLogger.info("Session wurde lokal wiederhergestellt.")
 
-            await refreshMatrixData(using: restoredSession, forceFullSync: snapshot == nil)
+            // Force one full sync after restoring a session so room lists and
+            // timelines are complete even when an old local snapshot existed.
+            await refreshMatrixData(using: restoredSession, forceFullSync: true)
             await startSyncLoopIfPossible()
         } catch {
             currentSession = nil

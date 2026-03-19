@@ -1353,6 +1353,10 @@ private struct MessageBubble: View {
     let retryAction: () -> Void
     let deleteAction: () -> Void
 
+    private var bubbleAccent: SpaceAccent {
+        message.isOutgoing ? accent : senderAccent(for: message.senderDisplayName)
+    }
+
     var body: some View {
         HStack {
             if message.isOutgoing {
@@ -1363,7 +1367,7 @@ private struct MessageBubble: View {
                 if !message.isOutgoing {
                     Text(message.senderDisplayName)
                         .font(.caption.weight(.semibold))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(bubbleAccent.tint)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -1396,14 +1400,14 @@ private struct MessageBubble: View {
                                 )
                         } else {
                             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                                .fill(bubbleAccent.softTint.opacity(0.85))
                         }
                     }
                 )
                 .overlay(alignment: message.isOutgoing ? .bottomTrailing : .bottomLeading) {
                     // Small tail triangle
                     Triangle()
-                        .fill(message.isOutgoing ? accent.tint.opacity(0.78) : Color(uiColor: .secondarySystemGroupedBackground))
+                        .fill(message.isOutgoing ? accent.tint.opacity(0.78) : bubbleAccent.softTint.opacity(0.85))
                         .frame(width: 12, height: 8)
                         .rotationEffect(.degrees(message.isOutgoing ? 0 : 180), anchor: .center)
                         .offset(x: message.isOutgoing ? 6 : -6, y: 4)
@@ -1454,7 +1458,7 @@ private struct MessageBubble: View {
                                     .padding(.vertical, 6)
                                     .background(
                                         Capsule()
-                                            .fill(Color(uiColor: message.isOutgoing ? .systemBlue.withAlphaComponent(0.18) : .secondarySystemBackground))
+                                            .fill(message.isOutgoing ? Color.white.opacity(0.16) : bubbleAccent.softTint.opacity(0.92))
                                     )
                             }
                         }
@@ -1466,10 +1470,10 @@ private struct MessageBubble: View {
                       .foregroundColor(.secondary)
                       .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
 
-                  if message.isOutgoing {
+                  if message.isOutgoing, let statusSymbol = deliveryStatusSymbol(for: message) {
                       HStack(spacing: 3) {
                           Spacer()
-                          Image(systemName: deliveryStatusSymbol(for: message))
+                          Image(systemName: statusSymbol)
                               .font(.caption2)
                               .foregroundColor(deliveryStatusColor(for: message))
                       }
@@ -1492,15 +1496,15 @@ private struct MessageBubble: View {
     }
 }
 
-private func deliveryStatusSymbol(for message: ChatMessage) -> String {
+private func deliveryStatusSymbol(for message: ChatMessage) -> String? {
     if let sendStatus = message.sendStatus {
         switch sendStatus {
         case .sending: return "clock"
-        case .sent: return "checkmark"
+        case .sent: return nil
         case .failed: return "exclamationmark.triangle.fill"
         }
     }
-    return message.isPending ? "clock" : "checkmark"
+    return message.isPending ? "clock" : nil
 }
 
 private func deliveryStatusColor(for message: ChatMessage) -> Color {
@@ -1508,6 +1512,16 @@ private func deliveryStatusColor(for message: ChatMessage) -> Color {
         return .red
     }
     return .secondary
+}
+
+private func senderAccent(for senderDisplayName: String) -> SpaceAccent {
+    let normalized = senderDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let hashValue = normalized.unicodeScalars.reduce(UInt64(0)) { partialResult, scalar in
+        (partialResult &* 31) &+ UInt64(scalar.value)
+    }
+    let accents = SpaceAccent.allCases
+    guard !accents.isEmpty else { return .slate }
+    return accents[Int(hashValue % UInt64(accents.count))]
 }
 
 private let sharedLinkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
@@ -1646,6 +1660,7 @@ private struct InlineImageAttachment: View {
 private struct InlineVideoAttachment: View {
     @EnvironmentObject private var appState: AppState
     @State private var localThumbnail: UIImage?
+    @State private var remoteThumbnail: UIImage?
 
     let attachment: MessageAttachment
     let action: () -> Void
@@ -1657,17 +1672,16 @@ private struct InlineVideoAttachment: View {
                     Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFill()
-                } else if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
-                    AsyncImage(url: remoteURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            Rectangle().fill(Color(uiColor: .tertiarySystemGroupedBackground))
-                        }
-                    }
+                } else if let thumbnail = remoteThumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
                 } else {
-                    Rectangle().fill(Color.black.opacity(0.7))
+                    ZStack {
+                        Rectangle().fill(Color.black.opacity(0.7))
+                        ProgressView()
+                            .tint(.white)
+                    }
                 }
 
                 Circle()
@@ -1684,13 +1698,19 @@ private struct InlineVideoAttachment: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .task(id: attachment.localCachePath) {
             guard let path = attachment.localCachePath else { return }
-            localThumbnail = await generateVideoThumbnail(from: path)
+            localThumbnail = await generateVideoThumbnail(from: URL(fileURLWithPath: path))
+        }
+        .task(id: attachment.contentURI) {
+            guard localThumbnail == nil,
+                  let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) else {
+                return
+            }
+            remoteThumbnail = await generateVideoThumbnail(from: remoteURL)
         }
     }
 
-    private func generateVideoThumbnail(from path: String) async -> UIImage? {
+    private func generateVideoThumbnail(from url: URL) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
-            let url = URL(fileURLWithPath: path)
             let asset = AVURLAsset(url: url)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
@@ -1759,7 +1779,7 @@ private struct WaveformView: View {
 private enum SocialVideoLink {
     case youtube(videoID: String)
     case tiktok(videoID: String)
-    case instagram(shortCode: String)
+    case instagram(shortCode: String, isReel: Bool)
 
     var platformName: String {
         switch self {
@@ -1792,7 +1812,10 @@ private enum SocialVideoLink {
             return URL(string: "https://www.youtube.com/embed/\(id)?playsinline=1&autoplay=0")
         case .tiktok(let id):
             return URL(string: "https://www.tiktok.com/embed/v2/\(id)")
-        case .instagram(let code):
+        case .instagram(let code, let isReel):
+            if isReel {
+                return URL(string: "https://www.instagram.com/reel/\(code)/embed/captioned/")
+            }
             return URL(string: "https://www.instagram.com/p/\(code)/embed/captioned/")
         }
     }
@@ -1811,8 +1834,9 @@ private enum SocialVideoLink {
         }
         if host.contains("instagram.com") {
             let parts = path.split(separator: "/").map(String.init)
-            if let first = parts.first, (first == "reel" || first == "p"), parts.count >= 2 {
-                return .instagram(shortCode: parts[1])
+            if let first = parts.first, (first == "reel" || first == "reels" || first == "p"), parts.count >= 2 {
+                let isReel = first == "reel" || first == "reels"
+                return .instagram(shortCode: parts[1], isReel: isReel)
             }
         }
         return nil
@@ -2442,6 +2466,47 @@ private struct CallsView: View {
 
 private struct CalendarView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var displayedMonth = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: .now)) ?? .now
+    @State private var selectedDate = Date()
+
+    private let calendar = Calendar.current
+
+    private var monthTitle: String {
+        displayedMonth.formatted(.dateTime.year().month(.wide))
+    }
+
+    private var weekdaySymbols: [String] {
+        let symbols = calendar.shortStandaloneWeekdaySymbols
+        let start = max(0, min(symbols.count - 1, calendar.firstWeekday - 1))
+        let tail = Array(symbols[start...])
+        let head = Array(symbols[..<start])
+        return tail + head
+    }
+
+    private var monthDays: [Date?] {
+        guard let monthInterval = calendar.dateInterval(of: .month, for: displayedMonth) else { return [] }
+        let firstDay = monthInterval.start
+        let daysInMonth = calendar.range(of: .day, in: .month, for: firstDay)?.count ?? 0
+        let weekdayOfFirst = calendar.component(.weekday, from: firstDay)
+        let leadingBlanks = (weekdayOfFirst - calendar.firstWeekday + 7) % 7
+
+        var values: [Date?] = Array(repeating: nil, count: leadingBlanks)
+        for offset in 0..<daysInMonth {
+            if let day = calendar.date(byAdding: .day, value: offset, to: firstDay) {
+                values.append(day)
+            }
+        }
+        while values.count % 7 != 0 {
+            values.append(nil)
+        }
+        return values
+    }
+
+    private var selectedDayEvents: [ScheduledChatEvent] {
+        appState.scheduledEvents
+            .filter { calendar.isDate($0.startDate, inSameDayAs: selectedDate) }
+            .sorted { $0.startDate < $1.startDate }
+    }
 
     var body: some View {
         List {
@@ -2460,7 +2525,7 @@ private struct CalendarView: View {
                     VStack(spacing: 6) {
                         Text("Kalender-Hub")
                             .font(.title3.weight(.bold))
-                        Text("Verbinde Apple Calendar, Google und Outlook. Termine aus Chats landen hier und werden in deine Kalender synchronisiert.")
+                        Text("Zeigt Termine aus allen verbundenen Kalendern. Verbindungen verwaltest du in den Settings.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -2470,18 +2535,81 @@ private struct CalendarView: View {
                 .padding(.vertical, 12)
             }
 
-            Section("Verbunden") {
-                ForEach(appState.calendarProviders) { provider in
-                    CalendarProviderRow(provider: provider)
+            Section("Monat") {
+                VStack(spacing: 12) {
+                    HStack {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                displayedMonth = calendar.date(byAdding: .month, value: -1, to: displayedMonth) ?? displayedMonth
+                            }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
+                        Text(monthTitle)
+                            .font(.headline)
+
+                        Spacer()
+
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                displayedMonth = calendar.date(byAdding: .month, value: 1, to: displayedMonth) ?? displayedMonth
+                            }
+                        } label: {
+                            Image(systemName: "chevron.right")
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 8) {
+                        ForEach(weekdaySymbols, id: \.self) { symbol in
+                            Text(symbol.uppercased())
+                                .font(.caption2.weight(.semibold))
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity)
+                        }
+
+                        ForEach(Array(monthDays.enumerated()), id: \.offset) { _, maybeDate in
+                            if let date = maybeDate {
+                                let isSelected = calendar.isDate(date, inSameDayAs: selectedDate)
+                                let hasEvents = appState.scheduledEvents.contains { calendar.isDate($0.startDate, inSameDayAs: date) }
+                                Button {
+                                    selectedDate = date
+                                } label: {
+                                    VStack(spacing: 3) {
+                                        Text("\(calendar.component(.day, from: date))")
+                                            .font(.subheadline.weight(isSelected ? .bold : .regular))
+                                            .foregroundColor(isSelected ? .white : .primary)
+                                        Circle()
+                                            .fill(hasEvents ? (isSelected ? Color.white.opacity(0.92) : Color.orange) : Color.clear)
+                                            .frame(width: 5, height: 5)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 34)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                            .fill(isSelected ? Color.orange : Color.clear)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Color.clear
+                                    .frame(height: 34)
+                            }
+                        }
+                    }
                 }
             }
 
-            Section("Anstehende Termine") {
-                if appState.upcomingEvents().isEmpty {
-                    Text("Noch keine Termine geplant.")
+            Section(selectedDate.formatted(date: .complete, time: .omitted)) {
+                if selectedDayEvents.isEmpty {
+                    Text("Keine Termine an diesem Tag.")
                         .foregroundColor(.secondary)
                 } else {
-                    ForEach(appState.upcomingEvents()) { event in
+                    ForEach(selectedDayEvents) { event in
                         Button {
                             appState.openThread(event.threadID)
                         } label: {
@@ -2489,6 +2617,17 @@ private struct CalendarView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+            }
+
+            Section("Naechste Termine") {
+                ForEach(appState.upcomingEvents().prefix(6)) { event in
+                    Button {
+                        appState.openThread(event.threadID)
+                    } label: {
+                        CalendarEventRow(event: event)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -2814,6 +2953,24 @@ private struct SettingsView: View {
                 Text("Redirects: Google `dev.matrixmess.app:/oauth/google`, Outlook `msauth.dev.matrixmess.app://auth`.")
                     .font(.footnote)
                     .foregroundColor(.secondary)
+            }
+
+            Section("Kalender-Verbindungen") {
+                ForEach(appState.calendarProviders) { provider in
+                    CalendarProviderRow(provider: provider)
+                }
+
+                Button("Kalender jetzt synchronisieren") {
+                    Task {
+                        for provider in appState.calendarProviders where provider.isConnected {
+                            await appState.syncExternalCalendar(
+                                provider.kind,
+                                from: .now.addingTimeInterval(-60 * 60 * 24 * 30),
+                                to: .now.addingTimeInterval(60 * 60 * 24 * 180)
+                            )
+                        }
+                    }
+                }
             }
 
             Section("Crypto und Sync") {
