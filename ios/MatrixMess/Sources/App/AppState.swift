@@ -2176,11 +2176,11 @@ final class AppState: ObservableObject {
 
     private func calendarPayloadChanged(_ lhs: ScheduledChatEvent, _ rhs: ScheduledChatEvent) -> Bool {
         let rhsThreadID = rhs.threadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? lhs.threadID : rhs.threadID
-        lhs.threadID != rhsThreadID ||
-        lhs.title != rhs.title ||
-        lhs.note != rhs.note ||
-        lhs.startDate != rhs.startDate ||
-        lhs.endDate != rhs.endDate
+        return lhs.threadID != rhsThreadID
+            || lhs.title != rhs.title
+            || lhs.note != rhs.note
+            || lhs.startDate != rhs.startDate
+            || lhs.endDate != rhs.endDate
     }
 
     private func mergeCalendarEvent(
