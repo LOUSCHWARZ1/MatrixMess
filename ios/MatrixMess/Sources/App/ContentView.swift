@@ -3860,7 +3860,7 @@ private struct SettingsView: View {
 
             Section("App-Info") {
                 settingsValueRow(label: "Version", value: appBuildLabel)
-                settingsValueRow(label: "Build", value: "2026-03-18")
+                settingsValueRow(label: "Build", value: "2026-03-19")
                 settingsValueRow(label: "Homeserver", value: appState.homeserver)
                 settingsValueRow(label: "User-ID", value: appState.currentUserID ?? "–")
             }
