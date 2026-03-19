@@ -183,6 +183,10 @@ struct ChatMessage: Identifiable, Hashable, Codable {
     var linkedEventID: UUID?
     var reactions: [MessageReaction]
     var isEdited: Bool
+    var isPending: Bool
+
+    /// True when the server has not yet confirmed this outgoing message.
+    var isDelivered: Bool { !isPending }
 
     init(
         id: UUID = UUID(),
@@ -197,7 +201,8 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         forwardedFrom: String? = nil,
         linkedEventID: UUID? = nil,
         reactions: [MessageReaction] = [],
-        isEdited: Bool = false
+        isEdited: Bool = false,
+        isPending: Bool = false
     ) {
         self.id = id
         self.matrixEventID = matrixEventID
@@ -212,6 +217,7 @@ struct ChatMessage: Identifiable, Hashable, Codable {
         self.linkedEventID = linkedEventID
         self.reactions = reactions
         self.isEdited = isEdited
+        self.isPending = isPending
     }
 }
 
@@ -365,6 +371,7 @@ final class AppState: ObservableObject {
         deviceVerificationAvailable: false
     )
     @Published var showRecoveryPrompt = false
+    @Published private(set) var verificationFlowState = MatrixVerificationFlowState()
     @Published private(set) var pushNotificationsAuthorized = false
     @Published private(set) var remoteNotificationTokenAvailable = false
     @Published private(set) var activeCallRoomID: String?
@@ -372,6 +379,7 @@ final class AppState: ObservableObject {
     @Published private(set) var diagnostics = AppDiagnostics()
     @Published var errorMessage: String?
     @Published var isSigningIn = false
+    @Published var needsPostLoginSetup = false
 
     @Published var selectedTab: AppTab = .chats {
         didSet { persistSnapshotIfPossible() }
@@ -437,6 +445,8 @@ final class AppState: ObservableObject {
     @Published private(set) var calendarProviders: [CalendarProviderConnection] = []
     @Published private(set) var scheduledEvents: [ScheduledChatEvent] = []
     @Published private(set) var draftsByThreadID: [String: String] = [:]
+    /// Maps room IDs to the list of user IDs currently typing in that room.
+    @Published private(set) var typingUsersByThreadID: [String: [String]] = [:]
 
     private let matrixService: MatrixService
     private let mediaService: MatrixMediaService
@@ -454,6 +464,8 @@ final class AppState: ObservableObject {
 
     private var hasBootstrapped = false
     private var isHydratingState = false
+    private var verificationPollingTask: Task<Void, Never>?
+    private var typingDebounceTask: Task<Void, Never>?
 
     init(
         matrixService: MatrixService = MatrixService(),
@@ -537,6 +549,10 @@ final class AppState: ObservableObject {
             if cryptoStatus.encryptionAvailable && !cryptoStatus.keyBackupConfigured {
                 showRecoveryPrompt = true
             }
+            if cryptoStatus.encryptionAvailable &&
+                cryptoStatus.verificationStateLabel != "Verifiziert" {
+                needsPostLoginSetup = true
+            }
 
             AppLogger.info("Login erfolgreich fuer \(session.userID).")
         } catch {
@@ -564,6 +580,11 @@ final class AppState: ObservableObject {
         showRecoveryPrompt = false
         isSyncing = false
         syncEngineState = .init()
+        verificationFlowState = MatrixVerificationFlowState()
+        needsPostLoginSetup = false
+        stopVerificationPolling()
+        typingDebounceTask?.cancel()
+        typingDebounceTask = nil
         clearWorkspaceData()
 
         do {
@@ -657,10 +678,84 @@ final class AppState: ObservableObject {
         do {
             try await cryptoService.requestDeviceVerification(session: currentSession)
             cryptoStatus = await cryptoService.currentStatus(session: currentSession)
+            await refreshVerificationState()
+            startVerificationPolling()
         } catch {
             errorMessage = error.localizedDescription
             AppLogger.error("Geraeteverifizierung konnte nicht gestartet werden: \(error.localizedDescription)")
         }
+    }
+
+    func startSasVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.startSasVerification(session: currentSession)
+            await refreshVerificationState()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("SAS-Verifizierung konnte nicht gestartet werden: \(error.localizedDescription)")
+        }
+    }
+
+    func approveVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.approveVerification(session: currentSession)
+            await refreshVerificationState()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Verifizierung konnte nicht bestaetigt werden: \(error.localizedDescription)")
+        }
+    }
+
+    func declineVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.declineVerification(session: currentSession)
+            await refreshVerificationState()
+            stopVerificationPolling()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Verifizierung konnte nicht abgelehnt werden: \(error.localizedDescription)")
+        }
+    }
+
+    func cancelVerification() async {
+        guard let currentSession else { return }
+        do {
+            try await cryptoService.cancelVerification(session: currentSession)
+            await refreshVerificationState()
+            stopVerificationPolling()
+        } catch {
+            errorMessage = error.localizedDescription
+            AppLogger.error("Verifizierung konnte nicht abgebrochen werden: \(error.localizedDescription)")
+        }
+    }
+
+    func refreshVerificationState() async {
+        verificationFlowState = await cryptoService.currentVerificationState()
+    }
+
+    private static let verificationPollingIntervalNs: UInt64 = 1_500_000_000
+
+    private func startVerificationPolling() {
+        verificationPollingTask?.cancel()
+        verificationPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                await self.refreshVerificationState()
+                let state = self.verificationFlowState
+                if state.isVerified || state.isFailed || state.isCancelled || !state.isActive {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: Self.verificationPollingIntervalNs)
+            }
+        }
+    }
+
+    private func stopVerificationPolling() {
+        verificationPollingTask?.cancel()
+        verificationPollingTask = nil
     }
 
     func requestPushNotifications() async {
@@ -876,10 +971,16 @@ final class AppState: ObservableObject {
             }
 
             var mergedEvents = scheduledEvents
+            var providerEventIDToIndex: [String: Int] = [:]
+            for (index, event) in mergedEvents.enumerated() {
+                if let pid = event.providerEventIDs[providerKind.rawValue] {
+                    providerEventIDToIndex[pid] = index
+                }
+            }
             for fetchedEvent in events {
                 let providerEventID = fetchedEvent.providerEventIDs[providerKind.rawValue]
                 if let providerEventID,
-                   let existingIndex = mergedEvents.firstIndex(where: { $0.providerEventIDs[providerKind.rawValue] == providerEventID }) {
+                   let existingIndex = providerEventIDToIndex[providerEventID] {
                     var updatedEvent = mergedEvents[existingIndex]
                     updatedEvent = ScheduledChatEvent(
                         id: updatedEvent.id,
@@ -1020,7 +1121,7 @@ final class AppState: ObservableObject {
             return mainPinnedThreadIDs.isEmpty ? threadsByID.count : mainPinnedThreadIDs.count
         }
 
-        return threadsByID.values.filter { $0.homeSpaceID == spaceID }.count
+        return threadsByID.values.lazy.filter { $0.homeSpaceID == spaceID }.count
     }
 
     func visibleThreads(in spaceID: String? = nil) -> [ChatThread] {
@@ -1053,7 +1154,7 @@ final class AppState: ObservableObject {
     }
 
     func messages(for threadID: String) -> [ChatMessage] {
-        messagesByThreadID[threadID, default: []].sorted { $0.timestamp < $1.timestamp }
+        messagesByThreadID[threadID, default: []]
     }
 
     func sharedMedia(for threadID: String) -> [ChatMessage] {
@@ -1061,9 +1162,7 @@ final class AppState: ObservableObject {
     }
 
     func events(for threadID: String) -> [ScheduledChatEvent] {
-        scheduledEvents
-            .filter { $0.threadID == threadID }
-            .sorted { $0.startDate < $1.startDate }
+        scheduledEvents.filter { $0.threadID == threadID }
     }
 
     func forwardTargets(excluding threadID: String) -> [ChatThread] {
@@ -1088,9 +1187,7 @@ final class AppState: ObservableObject {
     }
 
     func upcomingEvents() -> [ScheduledChatEvent] {
-        scheduledEvents
-            .filter { $0.endDate >= .now.addingTimeInterval(-3600) }
-            .sorted { $0.startDate < $1.startDate }
+        scheduledEvents.filter { $0.endDate >= .now.addingTimeInterval(-3600) }
     }
 
     func draft(for threadID: String) -> String {
@@ -1109,6 +1206,25 @@ final class AppState: ObservableObject {
             draftsByThreadID[threadID] = value
         }
         persistSnapshotIfPossible()
+        if typingIndicatorsEnabled {
+            scheduleTypingNotification(isTyping: !trimmed.isEmpty, roomID: threadID)
+        }
+    }
+
+    private func scheduleTypingNotification(isTyping: Bool, roomID: String) {
+        typingDebounceTask?.cancel()
+        // Capture the session synchronously on the main actor before dispatching.
+        let session = currentSession
+        typingDebounceTask = Task {
+            // Debounce: wait 400 ms before actually sending so we don't spam on every keystroke.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let session else { return }
+            try? await matrixService.sendTypingNotification(
+                isTyping: isTyping,
+                roomID: roomID,
+                session: session
+            )
+        }
     }
 
     func clearDraft(for threadID: String) {
@@ -1159,6 +1275,7 @@ final class AppState: ObservableObject {
     func sendMessage(_ text: String, to threadID: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard let currentSession, let thread = thread(withID: threadID) else { return }
 
         let messageID = UUID()
         var sentEventID: String?
@@ -1207,6 +1324,7 @@ final class AppState: ObservableObject {
             messages[index].sendStatus = sendFailed ? .failed : .sent
             messagesByThreadID[threadID] = messages
         }
+
 
         persistSnapshotIfPossible()
 
@@ -1398,7 +1516,6 @@ final class AppState: ObservableObject {
     private func markThreadReadRemotely(_ threadID: String) async {
         guard let currentSession,
               let latestEventID = messagesByThreadID[threadID]?
-                .sorted(by: { $0.timestamp < $1.timestamp })
                 .last?
                 .matrixEventID else {
             return
@@ -1812,6 +1929,19 @@ final class AppState: ObservableObject {
             messagesByThreadID = workspace.messagesByThreadID
             mainPinnedThreadIDs = workspace.mainPinnedThreadIDs
 
+            // Merge incoming typing users; clear rooms that are no longer typing.
+            var updatedTyping = typingUsersByThreadID
+            for (roomID, users) in workspace.typingUsersByThreadID {
+                updatedTyping[roomID] = users
+            }
+            // Remove rooms where the sync payload had no typing users (meaning everyone stopped).
+            for roomID in workspace.threadsByID.keys {
+                if workspace.typingUsersByThreadID[roomID] == nil {
+                    updatedTyping.removeValue(forKey: roomID)
+                }
+            }
+            typingUsersByThreadID = updatedTyping
+
             if !spaces.contains(where: { $0.id == selectedSpaceID }) {
                 selectedSpaceID = ChatSpace.mainID
             }
@@ -1895,9 +2025,9 @@ final class AppState: ObservableObject {
             if includeWorkspace {
                 spaces = snapshot.spaces
                 threadsByID = snapshot.threadsByID
-                messagesByThreadID = snapshot.messagesByThreadID
+                messagesByThreadID = snapshot.messagesByThreadID.mapValues { $0.sorted { $0.timestamp < $1.timestamp } }
                 mainPinnedThreadIDs = snapshot.mainPinnedThreadIDs
-                calls = snapshot.calls
+                calls = snapshot.calls.sorted { $0.startedAt > $1.startedAt }
                 calendarProviders = snapshot.calendarProviders
                 scheduledEvents = snapshot.scheduledEvents
                 draftsByThreadID = snapshot.draftsByThreadID
@@ -1992,6 +2122,7 @@ final class AppState: ObservableObject {
             calls = []
             scheduledEvents = []
             draftsByThreadID = [:]
+            typingUsersByThreadID = [:]
         }
 
         refreshDiagnosticsStatus()
@@ -2013,7 +2144,7 @@ final class AppState: ObservableObject {
     }
 
     private func recalculateThreadPreview(for threadID: String) {
-        guard let latest = messagesByThreadID[threadID]?.sorted(by: { $0.timestamp < $1.timestamp }).last else {
+        guard let latest = messagesByThreadID[threadID]?.last else {
             return
         }
 
