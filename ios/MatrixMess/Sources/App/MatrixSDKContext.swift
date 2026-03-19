@@ -359,7 +359,10 @@ actor MatrixSDKContext {
         guard parts.count == 2 else { return nil }
 
         var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-        components?.path = "/_matrix/media/v3/download/\(parts[0])/\(parts[1])"
+        components?.path = combinedPath(
+            basePath: homeserver.path,
+            endpointPath: "/_matrix/media/v3/download/\(encodedPathSegment(parts[0]))/\(encodedPathSegment(parts[1]))"
+        )
         components?.queryItems = [URLQueryItem(name: "access_token", value: session.accessToken)]
         return components?.url
     }
@@ -608,7 +611,9 @@ actor MatrixSDKContext {
             profileDisplayName(item.senderProfile),
             fallbackUserID: item.sender
         )
-        let isOutgoing = item.sender.compare(currentUserID, options: .caseInsensitive) == .orderedSame || item.isOwn
+        // Use the sender MXID as the primary source of truth for direction.
+        // Relying on item.isOwn can misclassify messages in some edge cases.
+        let isOutgoing = item.sender.compare(currentUserID, options: .caseInsensitive) == .orderedSame
         let timestamp = Date(timeIntervalSince1970: TimeInterval(item.timestamp) / 1000)
 
         var matrixEventID: String?
@@ -629,6 +634,7 @@ actor MatrixSDKContext {
         )
 
         if let localSendState = item.localSendState {
+            message.isOutgoing = true
             switch localSendState {
             case .notSentYet(progress: _):
                 message.sendStatus = .sending
@@ -836,6 +842,25 @@ actor MatrixSDKContext {
         }
     }
 
+    nonisolated private func encodedPathSegment(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#[]@")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    nonisolated private func combinedPath(basePath: String, endpointPath: String) -> String {
+        let cleanBase = basePath == "/" ? "" : basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanEndpoint = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if cleanBase.isEmpty {
+            return "/" + cleanEndpoint
+        }
+        if cleanEndpoint.isEmpty {
+            return "/" + cleanBase
+        }
+        return "/" + cleanBase + "/" + cleanEndpoint
+    }
+
     private func membershipEventText(actor: String, change: MembershipChange?) -> String {
         guard let change else {
             return "\(actor) hat den Raum aktualisiert."
@@ -909,6 +934,12 @@ actor MatrixSDKContext {
                 dataPath: sessionPaths.data.path,
                 cachePath: sessionPaths.cache.path
             )
+            .requestConfig(config: .init(
+                retryLimit: 3,
+                timeout: 30_000,
+                maxConcurrentRequests: nil,
+                maxRetryTime: 60_000
+            ))
             .autoEnableCrossSigning(autoEnableCrossSigning: true)
             .autoEnableBackups(autoEnableBackups: true)
             .threadsEnabled(enabled: true, threadSubscriptions: true)

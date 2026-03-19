@@ -120,7 +120,7 @@ actor MatrixNotificationService {
             }
 
             var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-            components?.path = "/_matrix/client/v3/pushers/set"
+            components?.path = combinedPath(basePath: homeserver.path, endpointPath: "/_matrix/client/v3/pushers/set")
             guard let url = components?.url else {
                 throw MatrixNotificationServiceError.invalidHomeserver
             }
@@ -184,7 +184,7 @@ actor MatrixNotificationService {
         }
 
         var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-        components?.path = "/_matrix/client/v3/pushers"
+        components?.path = combinedPath(basePath: homeserver.path, endpointPath: "/_matrix/client/v3/pushers")
         guard let url = components?.url else {
             throw MatrixNotificationServiceError.invalidHomeserver
         }
@@ -246,5 +246,18 @@ actor MatrixNotificationService {
             healthStatus.pushGatewayReachable = false
             healthStatus.lastErrorDescription = error.localizedDescription
         }
+    }
+
+    private func combinedPath(basePath: String, endpointPath: String) -> String {
+        let cleanBase = basePath == "/" ? "" : basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanEndpoint = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if cleanBase.isEmpty {
+            return "/" + cleanEndpoint
+        }
+        if cleanEndpoint.isEmpty {
+            return "/" + cleanBase
+        }
+        return "/" + cleanBase + "/" + cleanEndpoint
     }
 }

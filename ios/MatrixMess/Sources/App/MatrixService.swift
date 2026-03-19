@@ -63,11 +63,27 @@ final class MatrixService {
         guard !sanitizedUsername.isEmpty, !password.isEmpty else {
             throw MatrixServiceError.missingCredentials
         }
-        return try await sdkContext.signIn(
-            homeserver: normalizedHomeserver.absoluteString,
-            username: sanitizedUsername,
-            password: password
-        )
+
+        do {
+            return try await sdkContext.signIn(
+                homeserver: normalizedHomeserver.absoluteString,
+                username: sanitizedUsername,
+                password: password
+            )
+        } catch {
+            // Fallback for deployments that expose the Matrix API behind a custom
+            // base path and advertise it via .well-known (for example /matrix).
+            if let discovered = try? await discoverHomeserverBaseURL(from: normalizedHomeserver),
+               discovered.absoluteString != normalizedHomeserver.absoluteString {
+                AppLogger.info("Homeserver per .well-known entdeckt: \(discovered.absoluteString)")
+                return try await sdkContext.signIn(
+                    homeserver: discovered.absoluteString,
+                    username: sanitizedUsername,
+                    password: password
+                )
+            }
+            throw error
+        }
     }
 
     func restoreSession(_ storedSession: MatrixSession) async throws -> MatrixSession {
@@ -207,41 +223,25 @@ final class MatrixService {
         }
 
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
-        var primaryError: Error?
-
-        if isEncrypted {
-            do {
-                return try await sdkContext.sendMessage(trimmed, roomID: roomID, session: storedSession)
-            } catch {
-                primaryError = error
-                AppLogger.error("SDK-Senden fehlgeschlagen, versuche REST-Fallback: \(error.localizedDescription)")
-                do {
-                    return try await sendMessageREST(
-                        trimmed,
-                        roomID: roomID,
-                        homeserver: homeserver,
-                        session: storedSession
-                    )
-                } catch {
-                    throw combinedSendError(primary: primaryError, fallback: error)
-                }
-            }
-        }
-
+        // Element X and matrix-rust-sdk primarily send through the timeline/SDK queue.
+        // We do the same for all room types and only fall back to REST for plain rooms.
         do {
-            return try await sendMessageREST(
-                trimmed,
-                roomID: roomID,
-                homeserver: homeserver,
-                session: storedSession
-            )
+            return try await sdkContext.sendMessage(trimmed, roomID: roomID, session: storedSession)
         } catch {
-            primaryError = error
-            AppLogger.error("REST-Senden fehlgeschlagen, versuche SDK-Fallback: \(error.localizedDescription)")
+            if isEncrypted {
+                throw error
+            }
+            let sdkError = error
+            AppLogger.error("SDK-Senden fehlgeschlagen, REST-Fallback wird versucht: \(sdkError.localizedDescription)")
             do {
-                return try await sdkContext.sendMessage(trimmed, roomID: roomID, session: storedSession)
+                return try await sendMessageREST(
+                    trimmed,
+                    roomID: roomID,
+                    homeserver: homeserver,
+                    session: storedSession
+                )
             } catch {
-                throw combinedSendError(primary: primaryError, fallback: error)
+                throw combinedSendError(primary: sdkError, fallback: error)
             }
         }
     }
@@ -843,16 +843,53 @@ final class MatrixService {
             throw MatrixServiceError.invalidHomeserver
         }
 
+        let normalizedPath: String
+        let sourcePath = source.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sourcePath.isEmpty || sourcePath == "/" {
+            normalizedPath = ""
+        } else {
+            normalizedPath = "/" + sourcePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+
         var normalized = URLComponents()
         normalized.scheme = scheme
         normalized.host = host
         normalized.port = source.port
-        normalized.path = ""
+        normalized.path = normalizedPath
 
         guard let url = normalized.url else {
             throw MatrixServiceError.invalidHomeserver
         }
         return url
+    }
+
+    private func discoverHomeserverBaseURL(from homeserver: URL) async throws -> URL? {
+        var components = URLComponents()
+        components.scheme = homeserver.scheme
+        components.host = homeserver.host
+        components.port = homeserver.port
+        components.path = "/.well-known/matrix/client"
+
+        guard let discoveryURL = components.url else {
+            return nil
+        }
+
+        var request = URLRequest(url: discoveryURL)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            return nil
+        }
+
+        guard let discovered = try? jsonDecoder.decode(MatrixWellKnownClientResponse.self, from: data),
+              let baseURL = discovered.homeserver?.baseURL else {
+            return nil
+        }
+
+        return try? normalizedHomeserver(from: baseURL)
     }
 
     private func sendMessageREST(
@@ -959,7 +996,7 @@ final class MatrixService {
         queryItems: [URLQueryItem] = []
     ) async throws -> Response {
         var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
-        components?.path = path
+        components?.path = combinedPath(basePath: homeserver.path, endpointPath: path)
         if !queryItems.isEmpty {
             components?.queryItems = queryItems
         }
@@ -981,37 +1018,117 @@ final class MatrixService {
             request.httpBody = try jsonEncoder.encode(body)
         }
 
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw MatrixServiceError.invalidResponse
-        }
+        let maxAttempts = 3
+        var lastNetworkError: Error?
 
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            if let matrixError = try? jsonDecoder.decode(MatrixErrorResponse.self, from: data),
-               let message = matrixError.error {
-                if let errcode = matrixError.errcode, !errcode.isEmpty {
-                    throw MatrixServiceError.serverError("\(errcode): \(message)")
+        for attempt in 1...maxAttempts {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw MatrixServiceError.invalidResponse
                 }
-                throw MatrixServiceError.serverError(message)
+
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    if attempt < maxAttempts, shouldRetry(statusCode: httpResponse.statusCode) {
+                        try? await Task.sleep(nanoseconds: retryDelayNs(forAttempt: attempt))
+                        continue
+                    }
+
+                    if let matrixError = try? jsonDecoder.decode(MatrixErrorResponse.self, from: data),
+                       let message = matrixError.error {
+                        if let errcode = matrixError.errcode, !errcode.isEmpty {
+                            throw MatrixServiceError.serverError("\(errcode): \(message)")
+                        }
+                        throw MatrixServiceError.serverError(message)
+                    }
+
+                    throw MatrixServiceError.serverError("Homeserver-Fehler \(httpResponse.statusCode).")
+                }
+
+                if Response.self == EmptyMatrixResponse.self {
+                    return EmptyMatrixResponse() as! Response
+                }
+
+                do {
+                    return try jsonDecoder.decode(Response.self, from: data)
+                } catch {
+                    AppLogger.error("Matrix-Antwort konnte nicht decodiert werden: \(error.localizedDescription)")
+                    throw MatrixServiceError.invalidResponse
+                }
+            } catch {
+                lastNetworkError = error
+                let urlError = error as? URLError
+                if attempt < maxAttempts, shouldRetry(urlError: urlError) {
+                    try? await Task.sleep(nanoseconds: retryDelayNs(forAttempt: attempt))
+                    continue
+                }
+                throw error
             }
-
-            throw MatrixServiceError.serverError("Homeserver-Fehler \(httpResponse.statusCode).")
         }
 
-        if Response.self == EmptyMatrixResponse.self {
-            return EmptyMatrixResponse() as! Response
-        }
+        throw lastNetworkError ?? MatrixServiceError.invalidResponse
+    }
 
-        do {
-            return try jsonDecoder.decode(Response.self, from: data)
-        } catch {
-            AppLogger.error("Matrix-Antwort konnte nicht decodiert werden: \(error.localizedDescription)")
-            throw MatrixServiceError.invalidResponse
+    private func retryDelayNs(forAttempt attempt: Int) -> UInt64 {
+        // 250ms, 500ms, 1000ms ...
+        let baseMs = 250
+        let value = baseMs * (1 << max(0, attempt - 1))
+        return UInt64(value) * 1_000_000
+    }
+
+    private func shouldRetry(statusCode: Int) -> Bool {
+        statusCode == 429 || (500...599).contains(statusCode)
+    }
+
+    private func shouldRetry(urlError: URLError?) -> Bool {
+        guard let urlError else { return false }
+        switch urlError.code {
+        case .timedOut,
+             .cannotFindHost,
+             .cannotConnectToHost,
+             .networkConnectionLost,
+             .dnsLookupFailed,
+             .notConnectedToInternet,
+             .internationalRoamingOff,
+             .callIsActive,
+             .dataNotAllowed:
+            return true
+        default:
+            return false
         }
+    }
+
+    private func combinedPath(basePath: String, endpointPath: String) -> String {
+        let cleanBase = basePath == "/" ? "" : basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanEndpoint = endpointPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if cleanBase.isEmpty {
+            return "/" + cleanEndpoint
+        }
+        if cleanEndpoint.isEmpty {
+            return "/" + cleanBase
+        }
+        return "/" + cleanBase + "/" + cleanEndpoint
     }
 }
 
 private struct EmptyMatrixResponse: Decodable {}
+
+private struct MatrixWellKnownClientResponse: Decodable {
+    struct Homeserver: Decodable {
+        let baseURL: String
+
+        enum CodingKeys: String, CodingKey {
+            case baseURL = "base_url"
+        }
+    }
+
+    let homeserver: Homeserver?
+
+    enum CodingKeys: String, CodingKey {
+        case homeserver = "m.homeserver"
+    }
+}
 
 private struct SpaceDescriptor {
     let key: String
