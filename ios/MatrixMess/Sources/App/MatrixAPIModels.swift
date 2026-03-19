@@ -132,6 +132,14 @@ struct MatrixWhoAmIResponse: Decodable {
     }
 }
 
+struct MatrixJoinedRoomsResponse: Decodable {
+    let joinedRooms: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case joinedRooms = "joined_rooms"
+    }
+}
+
 struct MatrixSyncResponse: Decodable {
     struct Rooms: Decodable {
         let join: [String: JoinedRoom]?
@@ -335,4 +343,6 @@ struct MatrixWorkspace {
     let mainPinnedThreadIDs: [String]
     /// Maps room-IDs to the list of user-IDs currently typing in that room.
     let typingUsersByThreadID: [String: [String]]
+    /// Rooms where the SDK timeline reported that the start of history was reached.
+    let timelineStartReachedThreadIDs: Set<String>
 }

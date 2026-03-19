@@ -85,6 +85,7 @@ struct ChatSpace: Identifiable, Hashable, Codable {
         case whatsapp
         case telegram
         case bridge
+        case custom
     }
 
     static let mainID = "space.main"
@@ -101,7 +102,7 @@ struct ChatSpace: Identifiable, Hashable, Codable {
 
 struct ChatThread: Identifiable, Hashable, Codable {
     let id: String
-    let homeSpaceID: String
+    var homeSpaceID: String
     var title: String
     var subtitle: String
     var avatarSymbol: String
@@ -300,8 +301,10 @@ struct ScheduledChatEvent: Identifiable, Hashable, Codable {
     let startDate: Date
     let endDate: Date
     let createdBy: String
-    let providerIDs: [String]
+    var providerIDs: [String]
     var providerEventIDs: [String: String]
+    var lastModifiedAt: Date
+    var lastSyncedAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -312,7 +315,9 @@ struct ScheduledChatEvent: Identifiable, Hashable, Codable {
         endDate: Date,
         createdBy: String,
         providerIDs: [String],
-        providerEventIDs: [String: String] = [:]
+        providerEventIDs: [String: String] = [:],
+        lastModifiedAt: Date = .now,
+        lastSyncedAt: Date? = nil
     ) {
         self.id = id
         self.threadID = threadID
@@ -323,6 +328,37 @@ struct ScheduledChatEvent: Identifiable, Hashable, Codable {
         self.createdBy = createdBy
         self.providerIDs = providerIDs
         self.providerEventIDs = providerEventIDs
+        self.lastModifiedAt = lastModifiedAt
+        self.lastSyncedAt = lastSyncedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case threadID
+        case title
+        case note
+        case startDate
+        case endDate
+        case createdBy
+        case providerIDs
+        case providerEventIDs
+        case lastModifiedAt
+        case lastSyncedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        threadID = try container.decodeIfPresent(String.self, forKey: .threadID) ?? ""
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? "Termin"
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        startDate = try container.decodeIfPresent(Date.self, forKey: .startDate) ?? .now
+        endDate = try container.decodeIfPresent(Date.self, forKey: .endDate) ?? startDate.addingTimeInterval(60 * 30)
+        createdBy = try container.decodeIfPresent(String.self, forKey: .createdBy) ?? "Unbekannt"
+        providerIDs = try container.decodeIfPresent([String].self, forKey: .providerIDs) ?? []
+        providerEventIDs = try container.decodeIfPresent([String: String].self, forKey: .providerEventIDs) ?? [:]
+        lastModifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastModifiedAt) ?? .now
+        lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
     }
 }
 
@@ -374,6 +410,7 @@ final class AppState: ObservableObject {
     @Published private(set) var verificationFlowState = MatrixVerificationFlowState()
     @Published private(set) var pushNotificationsAuthorized = false
     @Published private(set) var remoteNotificationTokenAvailable = false
+    @Published private(set) var pushHealthStatus = MatrixPushHealthStatus()
     @Published private(set) var activeCallRoomID: String?
     @Published private(set) var syncEngineState = MatrixSyncEngine.State()
     @Published private(set) var diagnostics = AppDiagnostics()
@@ -438,6 +475,8 @@ final class AppState: ObservableObject {
     }
 
     @Published private(set) var spaces: [ChatSpace] = []
+    @Published private(set) var customSpaces: [ChatSpace] = []
+    @Published private(set) var threadSpaceOverrides: [String: String] = [:]
     @Published private(set) var threadsByID: [String: ChatThread] = [:]
     @Published private(set) var messagesByThreadID: [String: [ChatMessage]] = [:]
     @Published private(set) var mainPinnedThreadIDs: [String] = []
@@ -447,6 +486,8 @@ final class AppState: ObservableObject {
     @Published private(set) var draftsByThreadID: [String: String] = [:]
     /// Maps room IDs to the list of user IDs currently typing in that room.
     @Published private(set) var typingUsersByThreadID: [String: [String]] = [:]
+    @Published private(set) var historyLoadingThreadIDs: Set<String> = []
+    @Published private(set) var historyExhaustedThreadIDs: Set<String> = []
 
     private let matrixService: MatrixService
     private let mediaService: MatrixMediaService
@@ -466,6 +507,8 @@ final class AppState: ObservableObject {
     private var isHydratingState = false
     private var verificationPollingTask: Task<Void, Never>?
     private var typingDebounceTask: Task<Void, Never>?
+    private var syncedSpaces: [ChatSpace] = []
+    private var originalHomeSpaceByThreadID: [String: String] = [:]
 
     init(
         matrixService: MatrixService = MatrixService(),
@@ -515,6 +558,7 @@ final class AppState: ObservableObject {
         diagnostics = updatedDiagnostics
 
         await refreshCryptoStatus()
+        await refreshPushHealthStatus()
         isBootstrapping = false
         AppLogger.info("Bootstrap abgeschlossen.")
     }
@@ -545,6 +589,7 @@ final class AppState: ObservableObject {
             await refreshMatrixData(using: session, forceFullSync: true)
             await startSyncLoopIfPossible()
             await refreshCryptoStatus()
+            await refreshPushHealthStatus()
 
             if cryptoStatus.encryptionAvailable && !cryptoStatus.keyBackupConfigured {
                 showRecoveryPrompt = true
@@ -586,6 +631,7 @@ final class AppState: ObservableObject {
         typingDebounceTask?.cancel()
         typingDebounceTask = nil
         clearWorkspaceData()
+        pushHealthStatus = MatrixPushHealthStatus()
 
         do {
             try sessionStore.clear()
@@ -765,8 +811,11 @@ final class AppState: ObservableObject {
             if granted {
                 await notificationService.registerForRemoteNotifications()
             }
+            await refreshPushHealthStatus()
         } catch {
             errorMessage = error.localizedDescription
+            await notificationService.noteRegistrationFailure(error)
+            await refreshPushHealthStatus()
         }
     }
 
@@ -774,6 +823,7 @@ final class AppState: ObservableObject {
         await notificationService.updateDeviceToken(tokenData)
         remoteNotificationTokenAvailable = true
         await registerMatrixPusherIfPossible()
+        await refreshPushHealthStatus()
     }
 
     func registerMatrixPusher() async {
@@ -792,8 +842,16 @@ final class AppState: ObservableObject {
                     pushGatewayURL: trimmedGatewayURL
                 )
             )
+            _ = try await notificationService.verifyPusherRegistration(
+                session: currentSession,
+                config: .init(appID: "dev.matrixmess.app", pushGatewayURL: trimmedGatewayURL)
+            )
+            await notificationService.checkPushGatewayReachability(pushGatewayURL: trimmedGatewayURL)
+            await refreshPushHealthStatus()
         } catch {
             errorMessage = error.localizedDescription
+            await notificationService.noteRegistrationFailure(error)
+            await refreshPushHealthStatus()
         }
     }
 
@@ -806,10 +864,40 @@ final class AppState: ObservableObject {
         remoteNotificationTokenAvailable = false
         errorMessage = error.localizedDescription
 
+        Task {
+            await notificationService.noteRegistrationFailure(error)
+            await refreshPushHealthStatus()
+        }
+
         var updatedDiagnostics = diagnostics
         updatedDiagnostics.lastErrorDescription = error.localizedDescription
         updatedDiagnostics.statusNote = "APNs-Registrierung ist fehlgeschlagen."
         diagnostics = updatedDiagnostics
+    }
+
+    func refreshPushHealthStatus() async {
+        let trimmedGatewayURL = pushGatewayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedGatewayURL.isEmpty {
+            await notificationService.checkPushGatewayReachability(pushGatewayURL: trimmedGatewayURL)
+        }
+
+        if let currentSession,
+           !trimmedGatewayURL.isEmpty,
+           remoteNotificationTokenAvailable {
+            do {
+                _ = try await notificationService.verifyPusherRegistration(
+                    session: currentSession,
+                    config: .init(
+                        appID: "dev.matrixmess.app",
+                        pushGatewayURL: trimmedGatewayURL
+                    )
+                )
+            } catch {
+                await notificationService.noteRegistrationFailure(error)
+            }
+        }
+
+        pushHealthStatus = await notificationService.currentHealthStatus()
     }
 
     func startCall(for threadID: String) async {
@@ -934,7 +1022,26 @@ final class AppState: ObservableObject {
         }
 
         do {
-            let fileURL = try await mediaService.downloadMedia(contentURI: contentURI, session: currentSession)
+            let isEncryptedThread = thread(withID: threadID)?.isEncrypted ?? false
+            let fileURL: URL
+
+            if isEncryptedThread {
+                do {
+                    fileURL = try await matrixService.downloadMedia(
+                        contentURI: contentURI,
+                        fileNameHint: attachment.title,
+                        mimeTypeHint: attachment.mimeType,
+                        session: currentSession
+                    )
+                } catch {
+                    // Fallback for rooms where the media payload is not encrypted
+                    // even though the room itself is encrypted.
+                    fileURL = try await mediaService.downloadMedia(contentURI: contentURI, session: currentSession)
+                }
+            } else {
+                fileURL = try await mediaService.downloadMedia(contentURI: contentURI, session: currentSession)
+            }
+
             var updatedAttachment = attachment
             updatedAttachment.localCachePath = fileURL.path
             messages[index].attachment = updatedAttachment
@@ -947,57 +1054,132 @@ final class AppState: ObservableObject {
 
     func syncExternalCalendar(_ providerKind: CalendarProviderKind, from startDate: Date, to endDate: Date) async {
         do {
-            let events: [ScheduledChatEvent]
-            switch providerKind {
-            case .apple:
-                events = try await appleCalendarProvider.fetchEvents(from: startDate, to: endDate)
-            case .google:
-                guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else {
-                    throw MatrixServiceError.serverError("Kein OAuth-Token fuer \(providerKind.title) vorhanden.")
+            let providerID = providerKind.rawValue
+            let fetchedEvents = try await loadExternalEvents(
+                providerKind: providerKind,
+                from: startDate,
+                to: endDate
+            )
+
+            var mergedEventsByID = Dictionary(uniqueKeysWithValues: scheduledEvents.map { ($0.id, $0) })
+            var providerEventIDToLocalID: [String: UUID] = [:]
+            for event in mergedEventsByID.values {
+                if let providerEventID = event.providerEventIDs[providerID] {
+                    providerEventIDToLocalID[providerEventID] = event.id
                 }
-                events = try await googleCalendarProvider.fetchEvents(token: token, from: startDate, to: endDate)
-            case .outlook:
-                guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else {
-                    throw MatrixServiceError.serverError("Kein OAuth-Token fuer \(providerKind.title) vorhanden.")
-                }
-                events = try await outlookCalendarProvider.fetchEvents(token: token, from: startDate, to: endDate)
             }
 
-            var mergedEvents = scheduledEvents
-            var providerEventIDToIndex: [String: Int] = [:]
-            for (index, event) in mergedEvents.enumerated() {
-                if let pid = event.providerEventIDs[providerKind.rawValue] {
-                    providerEventIDToIndex[pid] = index
-                }
-            }
-            for fetchedEvent in events {
-                let providerEventID = fetchedEvent.providerEventIDs[providerKind.rawValue]
-                if let providerEventID,
-                   let existingIndex = providerEventIDToIndex[providerEventID] {
-                    var updatedEvent = mergedEvents[existingIndex]
-                    updatedEvent = ScheduledChatEvent(
-                        id: updatedEvent.id,
-                        threadID: updatedEvent.threadID,
-                        title: fetchedEvent.title,
-                        note: fetchedEvent.note,
-                        startDate: fetchedEvent.startDate,
-                        endDate: fetchedEvent.endDate,
-                        createdBy: fetchedEvent.createdBy,
-                        providerIDs: Array(Set(updatedEvent.providerIDs + fetchedEvent.providerIDs)).sorted(),
-                        providerEventIDs: updatedEvent.providerEventIDs.merging(fetchedEvent.providerEventIDs) { _, new in new }
-                    )
-                    mergedEvents[existingIndex] = updatedEvent
+            var fetchedProviderEventIDs = Set<String>()
+            var importedCount = 0
+            var updatedCount = 0
+            var conflictResolvedCount = 0
+            var deletedCount = 0
+            var recreatedCount = 0
+            var unresolvedCount = 0
+
+            for fetchedEvent in fetchedEvents {
+                guard let providerEventID = fetchedEvent.providerEventIDs[providerID] else { continue }
+                fetchedProviderEventIDs.insert(providerEventID)
+                let matchedEventID = matchingScheduledEventID(
+                    for: fetchedEvent,
+                    providerID: providerID,
+                    providerEventID: providerEventID,
+                    providerEventIDToLocalID: providerEventIDToLocalID,
+                    mergedEventsByID: mergedEventsByID
+                )
+
+                if let matchedEventID, var localEvent = mergedEventsByID[matchedEventID] {
+                    providerEventIDToLocalID[providerEventID] = matchedEventID
+                    let payloadChanged = calendarPayloadChanged(localEvent, fetchedEvent)
+                    let localChangedAfterSync = localEvent.lastModifiedAt > (localEvent.lastSyncedAt ?? .distantPast)
+
+                    if payloadChanged && localChangedAfterSync {
+                        do {
+                            let ensuredProviderEventID = try await upsertProviderEvent(
+                                localEvent,
+                                providerKind: providerKind,
+                                providerEventID: providerEventID
+                            )
+                            localEvent.providerEventIDs[providerID] = ensuredProviderEventID
+                            localEvent.providerIDs = Array(Set(localEvent.providerIDs + [providerID])).sorted()
+                            localEvent.lastSyncedAt = .now
+                            mergedEventsByID[matchedEventID] = localEvent
+                            conflictResolvedCount += 1
+                            if ensuredProviderEventID != providerEventID {
+                                recreatedCount += 1
+                            }
+                        } catch {
+                            AppLogger.error("Kalender-Konflikt konnte nicht aufgeloest werden: \(error.localizedDescription)")
+                            errorMessage = error.localizedDescription
+                        }
+                    } else {
+                        let mergedEvent = mergeCalendarEvent(local: localEvent, remote: fetchedEvent, providerKind: providerKind)
+                        mergedEventsByID[matchedEventID] = mergedEvent
+                        if payloadChanged {
+                            updatedCount += 1
+                        }
+                    }
                 } else {
-                    mergedEvents.append(fetchedEvent)
+                    var importedEvent = fetchedEvent
+                    if importedEvent.threadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        importedEvent.threadID = inferThreadID(forImportedEvent: importedEvent, from: Array(mergedEventsByID.values))
+                    }
+                    if importedEvent.threadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        unresolvedCount += 1
+                    }
+                    importedEvent.providerIDs = Array(Set(importedEvent.providerIDs + [providerID])).sorted()
+                    importedEvent.lastSyncedAt = .now
+                    mergedEventsByID[importedEvent.id] = importedEvent
+                    providerEventIDToLocalID[providerEventID] = importedEvent.id
+                    importedCount += 1
                 }
             }
 
-            scheduledEvents = mergedEvents.sorted { $0.startDate < $1.startDate }
+            for eventID in Array(mergedEventsByID.keys) {
+                guard var localEvent = mergedEventsByID[eventID],
+                      let providerEventID = localEvent.providerEventIDs[providerID] else {
+                    continue
+                }
+                guard !fetchedProviderEventIDs.contains(providerEventID) else { continue }
+                guard isEventInSyncWindow(event: localEvent, startDate: startDate, endDate: endDate) else { continue }
+
+                let localChangedAfterSync = localEvent.lastModifiedAt > (localEvent.lastSyncedAt ?? .distantPast)
+                if localChangedAfterSync {
+                    do {
+                        let recreatedProviderEventID = try await upsertProviderEvent(
+                            localEvent,
+                            providerKind: providerKind,
+                            providerEventID: nil
+                        )
+                        localEvent.providerEventIDs[providerID] = recreatedProviderEventID
+                        localEvent.providerIDs = Array(Set(localEvent.providerIDs + [providerID])).sorted()
+                        localEvent.lastSyncedAt = .now
+                        mergedEventsByID[eventID] = localEvent
+                        recreatedCount += 1
+                    } catch {
+                        AppLogger.error("Kalender-Event konnte nicht neu erstellt werden: \(error.localizedDescription)")
+                        errorMessage = error.localizedDescription
+                    }
+                } else {
+                    localEvent.providerEventIDs.removeValue(forKey: providerID)
+                    localEvent.providerIDs.removeAll { $0 == providerID }
+                    localEvent.lastSyncedAt = .now
+                    if localEvent.providerIDs.isEmpty {
+                        mergedEventsByID.removeValue(forKey: eventID)
+                    } else {
+                        mergedEventsByID[eventID] = localEvent
+                    }
+                    deletedCount += 1
+                }
+            }
+
+            scheduledEvents = mergedEventsByID.values.sorted { $0.startDate < $1.startDate }
+            let statusSummary = "Sync: +\(importedCount), ~\(updatedCount), Konflikte \(conflictResolvedCount), geloescht \(deletedCount), neu erstellt \(recreatedCount), ungeklaert \(unresolvedCount)"
             updateCalendarProvider(
                 providerKind,
                 isConnected: true,
                 accountLabel: providerLabel(for: providerKind),
-                statusNote: "Kalenderdaten wurden zuletzt am \(Date.now.formatted(date: .abbreviated, time: .shortened)) synchronisiert."
+                statusNote: "Kalenderdaten wurden zuletzt am \(Date.now.formatted(date: .abbreviated, time: .shortened)) synchronisiert. \(statusSummary)"
             )
             persistSnapshotIfPossible()
         } catch {
@@ -1077,6 +1259,109 @@ final class AppState: ObservableObject {
 
     func bridgeLabel(for thread: ChatThread) -> String {
         thread.bridgeLabel ?? sourceSpace(for: thread)?.title ?? "Matrix"
+    }
+
+    func createCustomSpace(
+        title: String,
+        subtitle: String = "Benutzerdefinierter Space",
+        icon: String = "folder.fill",
+        accent: SpaceAccent = .indigo
+    ) {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+        let customID = "space.custom.\(UUID().uuidString.lowercased())"
+        let space = ChatSpace(
+            id: customID,
+            kind: .custom,
+            title: trimmedTitle,
+            subtitle: subtitle,
+            icon: icon,
+            accent: accent
+        )
+        customSpaces.append(space)
+        customSpaces.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        rebuildVisibleSpaces()
+        persistSnapshotIfPossible()
+    }
+
+    func updateCustomSpace(
+        spaceID: String,
+        title: String,
+        subtitle: String,
+        icon: String,
+        accent: SpaceAccent
+    ) {
+        guard let index = customSpaces.firstIndex(where: { $0.id == spaceID }) else { return }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+        customSpaces[index] = ChatSpace(
+            id: spaceID,
+            kind: .custom,
+            title: trimmedTitle,
+            subtitle: subtitle,
+            icon: icon,
+            accent: accent
+        )
+        customSpaces.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        rebuildVisibleSpaces()
+        persistSnapshotIfPossible()
+    }
+
+    func deleteCustomSpace(spaceID: String) {
+        guard let index = customSpaces.firstIndex(where: { $0.id == spaceID }) else { return }
+        customSpaces.remove(at: index)
+        threadSpaceOverrides = threadSpaceOverrides.filter { $0.value != spaceID }
+        selectedSpaceID = selectedSpaceID == spaceID ? ChatSpace.mainID : selectedSpaceID
+        applyThreadSpaceOverrides()
+        rebuildVisibleSpaces()
+        persistSnapshotIfPossible()
+    }
+
+    func assignThread(_ threadID: String, to spaceID: String?) {
+        guard threadsByID[threadID] != nil else { return }
+        if let spaceID {
+            guard spaces.contains(where: { $0.id == spaceID }) else { return }
+            threadSpaceOverrides[threadID] = spaceID
+        } else {
+            threadSpaceOverrides.removeValue(forKey: threadID)
+        }
+        applyThreadSpaceOverrides()
+        rebuildVisibleSpaces()
+        persistSnapshotIfPossible()
+    }
+
+    func isHistoryLoading(for threadID: String) -> Bool {
+        historyLoadingThreadIDs.contains(threadID)
+    }
+
+    func reachedHistoryStart(for threadID: String) -> Bool {
+        historyExhaustedThreadIDs.contains(threadID)
+    }
+
+    func loadOlderMessagesIfNeeded(for threadID: String, minimumMessageCount: Int = 160) async {
+        guard let currentSession, thread(withID: threadID) != nil else { return }
+        guard !historyLoadingThreadIDs.contains(threadID) else { return }
+        guard !historyExhaustedThreadIDs.contains(threadID) else { return }
+
+        historyLoadingThreadIDs.insert(threadID)
+        defer { historyLoadingThreadIDs.remove(threadID) }
+
+        do {
+            let result = try await matrixService.loadTimelineMessages(
+                roomID: threadID,
+                session: currentSession,
+                minimumMessageCount: minimumMessageCount,
+                backPaginationBatchSize: 40
+            )
+            messagesByThreadID[threadID] = result.messages
+            recalculateThreadPreview(for: threadID)
+            if result.hitTimelineStart {
+                historyExhaustedThreadIDs.insert(threadID)
+            }
+            persistSnapshotIfPossible()
+        } catch {
+            AppLogger.error("Back-Pagination fuer \(threadID) fehlgeschlagen: \(error.localizedDescription)")
+        }
     }
 
     func renameThreadLocally(_ threadID: String, to newTitle: String) {
@@ -1569,14 +1854,21 @@ final class AppState: ObservableObject {
 
     private func prefetchInlineMedia(for session: MatrixSession) async {
         let targets = messagesByThreadID.flatMap { threadID, messages in
-            messages.compactMap { message -> (threadID: String, messageID: UUID, contentURI: String, timestamp: Date)? in
+            messages.compactMap { message -> (threadID: String, messageID: UUID, contentURI: String, title: String, mimeType: String?, timestamp: Date)? in
                 guard message.kind == .image || message.kind == .video else { return nil }
                 guard let attachment = message.attachment,
                       let contentURI = attachment.contentURI,
                       attachment.localCachePath == nil else {
                     return nil
                 }
-                return (threadID: threadID, messageID: message.id, contentURI: contentURI, timestamp: message.timestamp)
+                return (
+                    threadID: threadID,
+                    messageID: message.id,
+                    contentURI: contentURI,
+                    title: attachment.title,
+                    mimeType: attachment.mimeType,
+                    timestamp: message.timestamp
+                )
             }
         }
         .sorted { $0.timestamp > $1.timestamp }
@@ -1587,7 +1879,23 @@ final class AppState: ObservableObject {
             if Task.isCancelled { break }
 
             do {
-                let localFile = try await mediaService.downloadMedia(contentURI: target.contentURI, session: session)
+                let isEncryptedThread = thread(withID: target.threadID)?.isEncrypted ?? false
+                let localFile: URL
+                if isEncryptedThread {
+                    do {
+                        localFile = try await matrixService.downloadMedia(
+                            contentURI: target.contentURI,
+                            fileNameHint: target.title,
+                            mimeTypeHint: target.mimeType,
+                            session: session
+                        )
+                    } catch {
+                        localFile = try await mediaService.downloadMedia(contentURI: target.contentURI, session: session)
+                    }
+                } else {
+                    localFile = try await mediaService.downloadMedia(contentURI: target.contentURI, session: session)
+                }
+
                 guard var messages = messagesByThreadID[target.threadID],
                       let index = messages.firstIndex(where: { $0.id == target.messageID }),
                       var attachment = messages[index].attachment,
@@ -1677,6 +1985,37 @@ final class AppState: ObservableObject {
         persistSnapshotIfPossible()
     }
 
+    func deleteScheduledEvent(_ eventID: UUID) async {
+        guard let event = scheduledEvents.first(where: { $0.id == eventID }) else { return }
+
+        for providerID in event.providerIDs {
+            guard let providerKind = CalendarProviderKind(rawValue: providerID),
+                  let providerEventID = event.providerEventIDs[providerID] else {
+                continue
+            }
+            do {
+                try await deleteProviderEvent(providerKind: providerKind, providerEventID: providerEventID)
+            } catch {
+                AppLogger.error("Kalender-Delete bei \(providerKind.title) fehlgeschlagen: \(error.localizedDescription)")
+                errorMessage = error.localizedDescription
+            }
+        }
+
+        scheduledEvents.removeAll { $0.id == eventID }
+
+        if var threadMessages = messagesByThreadID[event.threadID] {
+            for index in threadMessages.indices where threadMessages[index].linkedEventID == eventID {
+                threadMessages[index].linkedEventID = nil
+                threadMessages[index].attachment = nil
+                threadMessages[index].body = "Termin wurde entfernt."
+                threadMessages[index].kind = .text
+            }
+            messagesByThreadID[event.threadID] = threadMessages
+        }
+
+        persistSnapshotIfPossible()
+    }
+
     func toggleCalendarConnection(_ providerID: String) async {
         guard let index = calendarProviders.firstIndex(where: { $0.id == providerID }) else { return }
 
@@ -1739,30 +2078,191 @@ final class AppState: ObservableObject {
             guard let provider = provider(withID: providerID), provider.isConnected else { continue }
 
             do {
-                switch provider.kind {
-                case .apple:
-                    let providerEventID = try await appleCalendarProvider.createEvent(syncedEvent)
-                    syncedEvent.providerEventIDs[provider.kind.rawValue] = providerEventID
-                case .google:
-                    guard let token = try calendarTokenStore.load(providerID: provider.kind.rawValue) else {
-                        continue
-                    }
-                    let providerEventID = try await googleCalendarProvider.createEvent(syncedEvent, token: token)
-                    syncedEvent.providerEventIDs[provider.kind.rawValue] = providerEventID
-                case .outlook:
-                    guard let token = try calendarTokenStore.load(providerID: provider.kind.rawValue) else {
-                        continue
-                    }
-                    let providerEventID = try await outlookCalendarProvider.createEvent(syncedEvent, token: token)
-                    syncedEvent.providerEventIDs[provider.kind.rawValue] = providerEventID
-                }
+                let existingProviderEventID = syncedEvent.providerEventIDs[provider.kind.rawValue]
+                let providerEventID = try await upsertProviderEvent(
+                    syncedEvent,
+                    providerKind: provider.kind,
+                    providerEventID: existingProviderEventID
+                )
+                syncedEvent.providerEventIDs[provider.kind.rawValue] = providerEventID
+                syncedEvent.providerIDs = Array(Set(syncedEvent.providerIDs + [provider.kind.rawValue])).sorted()
             } catch {
                 AppLogger.error("Kalender-Sync fuer \(provider.kind.title) fehlgeschlagen: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
             }
         }
 
+        syncedEvent.lastSyncedAt = .now
         return syncedEvent
+    }
+
+    private func loadExternalEvents(
+        providerKind: CalendarProviderKind,
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> [ScheduledChatEvent] {
+        switch providerKind {
+        case .apple:
+            return try await appleCalendarProvider.fetchEvents(from: startDate, to: endDate)
+        case .google:
+            guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else {
+                throw MatrixServiceError.serverError("Kein OAuth-Token fuer \(providerKind.title) vorhanden.")
+            }
+            return try await googleCalendarProvider.fetchEvents(token: token, from: startDate, to: endDate)
+        case .outlook:
+            guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else {
+                throw MatrixServiceError.serverError("Kein OAuth-Token fuer \(providerKind.title) vorhanden.")
+            }
+            return try await outlookCalendarProvider.fetchEvents(token: token, from: startDate, to: endDate)
+        }
+    }
+
+    private func matchingScheduledEventID(
+        for fetchedEvent: ScheduledChatEvent,
+        providerID: String,
+        providerEventID: String,
+        providerEventIDToLocalID: [String: UUID],
+        mergedEventsByID: [UUID: ScheduledChatEvent]
+    ) -> UUID? {
+        if mergedEventsByID[fetchedEvent.id] != nil {
+            return fetchedEvent.id
+        }
+        if let localID = providerEventIDToLocalID[providerEventID], mergedEventsByID[localID] != nil {
+            return localID
+        }
+
+        let normalizedFetchedTitle = fetchedEvent.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedFetchedTitle.isEmpty else { return nil }
+
+        return mergedEventsByID.values.first(where: { candidate in
+            guard candidate.providerEventIDs[providerID] == nil else { return false }
+            let normalizedCandidateTitle = candidate.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard normalizedCandidateTitle == normalizedFetchedTitle else { return false }
+            let startDelta = abs(candidate.startDate.timeIntervalSince(fetchedEvent.startDate))
+            return startDelta <= 60 * 30
+        })?.id
+    }
+
+    private func inferThreadID(
+        forImportedEvent event: ScheduledChatEvent,
+        from existingEvents: [ScheduledChatEvent]
+    ) -> String {
+        let directThreadID = event.threadID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !directThreadID.isEmpty {
+            return directThreadID
+        }
+
+        let normalizedTitle = event.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !normalizedTitle.isEmpty {
+            if let matchingEvent = existingEvents.first(where: { candidate in
+                guard !candidate.threadID.isEmpty else { return false }
+                let candidateTitle = candidate.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard candidateTitle == normalizedTitle else { return false }
+                return abs(candidate.startDate.timeIntervalSince(event.startDate)) <= 60 * 60
+            }) {
+                return matchingEvent.threadID
+            }
+
+            if let matchingThread = threadsByID.values.first(where: { thread in
+                let title = thread.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return !title.isEmpty && (normalizedTitle.contains(title) || title.contains(normalizedTitle))
+            }) {
+                return matchingThread.id
+            }
+        }
+
+        return ""
+    }
+
+    private func calendarPayloadChanged(_ lhs: ScheduledChatEvent, _ rhs: ScheduledChatEvent) -> Bool {
+        let rhsThreadID = rhs.threadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? lhs.threadID : rhs.threadID
+        lhs.threadID != rhsThreadID ||
+        lhs.title != rhs.title ||
+        lhs.note != rhs.note ||
+        lhs.startDate != rhs.startDate ||
+        lhs.endDate != rhs.endDate
+    }
+
+    private func mergeCalendarEvent(
+        local: ScheduledChatEvent,
+        remote: ScheduledChatEvent,
+        providerKind: CalendarProviderKind
+    ) -> ScheduledChatEvent {
+        let providerID = providerKind.rawValue
+        let mergedThreadID = remote.threadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? local.threadID : remote.threadID
+        let mergedProviderIDs = Array(Set(local.providerIDs + remote.providerIDs + [providerID])).sorted()
+        let mergedProviderEventIDs = local.providerEventIDs.merging(remote.providerEventIDs) { _, newValue in newValue }
+
+        return ScheduledChatEvent(
+            id: local.id,
+            threadID: mergedThreadID,
+            title: remote.title,
+            note: remote.note,
+            startDate: remote.startDate,
+            endDate: remote.endDate,
+            createdBy: remote.createdBy,
+            providerIDs: mergedProviderIDs,
+            providerEventIDs: mergedProviderEventIDs,
+            lastModifiedAt: local.lastModifiedAt,
+            lastSyncedAt: .now
+        )
+    }
+
+    private func isEventInSyncWindow(
+        event: ScheduledChatEvent,
+        startDate: Date,
+        endDate: Date
+    ) -> Bool {
+        event.startDate <= endDate && event.endDate >= startDate
+    }
+
+    private func upsertProviderEvent(
+        _ event: ScheduledChatEvent,
+        providerKind: CalendarProviderKind,
+        providerEventID: String?
+    ) async throws -> String {
+        switch providerKind {
+        case .apple:
+            if let providerEventID {
+                try await appleCalendarProvider.updateEvent(event, providerEventID: providerEventID)
+                return providerEventID
+            }
+            return try await appleCalendarProvider.createEvent(event)
+        case .google:
+            guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else {
+                throw MatrixServiceError.serverError("Kein OAuth-Token fuer \(providerKind.title) vorhanden.")
+            }
+            if let providerEventID {
+                try await googleCalendarProvider.updateEvent(event, providerEventID: providerEventID, token: token)
+                return providerEventID
+            }
+            return try await googleCalendarProvider.createEvent(event, token: token)
+        case .outlook:
+            guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else {
+                throw MatrixServiceError.serverError("Kein OAuth-Token fuer \(providerKind.title) vorhanden.")
+            }
+            if let providerEventID {
+                try await outlookCalendarProvider.updateEvent(event, providerEventID: providerEventID, token: token)
+                return providerEventID
+            }
+            return try await outlookCalendarProvider.createEvent(event, token: token)
+        }
+    }
+
+    private func deleteProviderEvent(
+        providerKind: CalendarProviderKind,
+        providerEventID: String
+    ) async throws {
+        switch providerKind {
+        case .apple:
+            try await appleCalendarProvider.deleteEvent(providerEventID: providerEventID)
+        case .google:
+            guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else { return }
+            try await googleCalendarProvider.deleteEvent(providerEventID: providerEventID, token: token)
+        case .outlook:
+            guard let token = try calendarTokenStore.load(providerID: providerKind.rawValue) else { return }
+            try await outlookCalendarProvider.deleteEvent(providerEventID: providerEventID, token: token)
+        }
     }
 
     private func authorizeCalendarProvider(_ providerKind: CalendarProviderKind) async throws {
@@ -1977,6 +2477,7 @@ final class AppState: ObservableObject {
 
         await refreshSyncDiagnostics()
         await registerMatrixPusherIfPossible()
+        await refreshPushHealthStatus()
     }
 
     private func refreshSyncDiagnostics() async {
@@ -1995,10 +2496,18 @@ final class AppState: ObservableObject {
 
     private func applyMatrixWorkspace(_ workspace: MatrixWorkspace) {
         performHydratingChanges {
-            spaces = workspace.spaces
+            syncedSpaces = workspace.spaces
             threadsByID = workspace.threadsByID
-            messagesByThreadID = workspace.messagesByThreadID
+            originalHomeSpaceByThreadID = workspace.threadsByID.reduce(into: [:]) { partialResult, pair in
+                partialResult[pair.key] = pair.value.homeSpaceID
+            }
+            messagesByThreadID = workspace.messagesByThreadID.mapValues { messages in
+                messages.sorted { $0.timestamp < $1.timestamp }
+            }
             mainPinnedThreadIDs = workspace.mainPinnedThreadIDs
+            historyExhaustedThreadIDs = historyExhaustedThreadIDs
+                .intersection(Set(workspace.threadsByID.keys))
+                .union(workspace.timelineStartReachedThreadIDs)
 
             // Merge incoming typing users; clear rooms that are no longer typing.
             var updatedTyping = typingUsersByThreadID
@@ -2013,15 +2522,15 @@ final class AppState: ObservableObject {
             }
             typingUsersByThreadID = updatedTyping
 
-            if !spaces.contains(where: { $0.id == selectedSpaceID }) {
-                selectedSpaceID = ChatSpace.mainID
-            }
+            applyThreadSpaceOverrides()
+            rebuildVisibleSpaces()
 
             if let selectedThreadID, threadsByID[selectedThreadID] == nil {
                 self.selectedThreadID = nil
             }
 
             draftsByThreadID = draftsByThreadID.filter { workspace.threadsByID[$0.key] != nil }
+            threadSpaceOverrides = threadSpaceOverrides.filter { workspace.threadsByID[$0.key] != nil }
 
             if calendarProviders.isEmpty {
                 calendarProviders = defaultCalendarProviders()
@@ -2029,6 +2538,76 @@ final class AppState: ObservableObject {
         }
 
         refreshDiagnosticsStatus()
+    }
+
+    private func applyThreadSpaceOverrides() {
+        guard !threadsByID.isEmpty else { return }
+        let availableSpaceIDs = Set((syncedSpaces + customSpaces).map(\.id))
+        var updatedThreads = threadsByID
+
+        for (threadID, originalSpaceID) in originalHomeSpaceByThreadID {
+            guard var thread = updatedThreads[threadID] else { continue }
+            thread.homeSpaceID = originalSpaceID
+            updatedThreads[threadID] = thread
+        }
+
+        for (threadID, overrideSpaceID) in threadSpaceOverrides {
+            guard availableSpaceIDs.contains(overrideSpaceID),
+                  var thread = updatedThreads[threadID] else {
+                continue
+            }
+            thread.homeSpaceID = overrideSpaceID
+            updatedThreads[threadID] = thread
+        }
+        threadsByID = updatedThreads
+    }
+
+    private func rebuildVisibleSpaces() {
+        let systemSpaces = syncedSpaces.filter { $0.id == ChatSpace.mainID }
+        let serverSpaces = syncedSpaces.filter { $0.id != ChatSpace.mainID }
+        let nonMainServerSpaces = serverSpaces.filter { $0.kind != .main }
+
+        var combined = systemSpaces + nonMainServerSpaces
+        for customSpace in customSpaces {
+            if !combined.contains(where: { $0.id == customSpace.id }) {
+                combined.append(customSpace)
+            }
+        }
+
+        let usedSpaceIDs = Set(threadsByID.values.map(\.homeSpaceID))
+        let mandatorySpaceIDs = Set([ChatSpace.mainID, "space.synthetic.matrix"])
+        combined = combined.filter { space in
+            if mandatorySpaceIDs.contains(space.id) || space.kind == .custom {
+                return true
+            }
+            return usedSpaceIDs.contains(space.id)
+        }
+
+        let mainSpace = combined.first(where: { $0.id == ChatSpace.mainID })
+        let rest = combined
+            .filter { $0.id != ChatSpace.mainID }
+            .sorted { lhs, rhs in
+                if lhs.kind == .custom && rhs.kind != .custom {
+                    return false
+                }
+                if lhs.kind != .custom && rhs.kind == .custom {
+                    return true
+                }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+
+        spaces = (mainSpace.map { [$0] } ?? [ChatSpace(
+            id: ChatSpace.mainID,
+            kind: .main,
+            title: "Main",
+            subtitle: "Wichtige Chats aus allen Spaces",
+            icon: "star.circle.fill",
+            accent: .sunset
+        )]) + rest
+
+        if !spaces.contains(where: { $0.id == selectedSpaceID }) {
+            selectedSpaceID = ChatSpace.mainID
+        }
     }
 
     private func ensureLocalUtilityDefaults() {
@@ -2092,16 +2671,28 @@ final class AppState: ObservableObject {
             autoDownloadOnWiFi = snapshot.autoDownloadOnWiFi
             calendarAutoSyncEnabled = snapshot.calendarAutoSyncEnabled
             defaultMeetingDurationMinutes = snapshot.defaultMeetingDurationMinutes
+            customSpaces = snapshot.customSpaces
+            threadSpaceOverrides = snapshot.threadSpaceOverrides
 
             if includeWorkspace {
+                syncedSpaces = snapshot.spaces.filter { $0.kind != .custom }
                 spaces = snapshot.spaces
                 threadsByID = snapshot.threadsByID
+                originalHomeSpaceByThreadID = snapshot.originalHomeSpaceByThreadID.isEmpty
+                    ? snapshot.threadsByID.reduce(into: [:]) { partialResult, pair in
+                        partialResult[pair.key] = pair.value.homeSpaceID
+                    }
+                    : snapshot.originalHomeSpaceByThreadID
                 messagesByThreadID = snapshot.messagesByThreadID.mapValues { $0.sorted { $0.timestamp < $1.timestamp } }
                 mainPinnedThreadIDs = snapshot.mainPinnedThreadIDs
                 calls = snapshot.calls.sorted { $0.startedAt > $1.startedAt }
                 calendarProviders = snapshot.calendarProviders
                 scheduledEvents = snapshot.scheduledEvents
                 draftsByThreadID = snapshot.draftsByThreadID
+                historyLoadingThreadIDs = []
+                historyExhaustedThreadIDs = []
+                applyThreadSpaceOverrides()
+                rebuildVisibleSpaces()
             }
         }
 
@@ -2130,6 +2721,9 @@ final class AppState: ObservableObject {
             calendarAutoSyncEnabled: calendarAutoSyncEnabled,
             defaultMeetingDurationMinutes: defaultMeetingDurationMinutes,
             spaces: spaces,
+            customSpaces: customSpaces,
+            threadSpaceOverrides: threadSpaceOverrides,
+            originalHomeSpaceByThreadID: originalHomeSpaceByThreadID,
             threadsByID: threadsByID,
             messagesByThreadID: messagesByThreadID,
             mainPinnedThreadIDs: mainPinnedThreadIDs,
@@ -2187,6 +2781,8 @@ final class AppState: ObservableObject {
             selectedThreadID = nil
             searchText = ""
             spaces = []
+            syncedSpaces = []
+            originalHomeSpaceByThreadID = [:]
             threadsByID = [:]
             messagesByThreadID = [:]
             mainPinnedThreadIDs = []
@@ -2194,6 +2790,11 @@ final class AppState: ObservableObject {
             scheduledEvents = []
             draftsByThreadID = [:]
             typingUsersByThreadID = [:]
+            historyLoadingThreadIDs = []
+            historyExhaustedThreadIDs = []
+            threadSpaceOverrides = threadSpaceOverrides.filter { _, spaceID in
+                customSpaces.contains(where: { $0.id == spaceID })
+            }
         }
 
         refreshDiagnosticsStatus()
@@ -2251,6 +2852,7 @@ final class AppState: ObservableObject {
             ]
 
             threadsByID = Dictionary(uniqueKeysWithValues: seededThreads.map { ($0.id, $0) })
+            originalHomeSpaceByThreadID = Dictionary(uniqueKeysWithValues: seededThreads.map { ($0.id, $0.homeSpaceID) })
             mainPinnedThreadIDs = seededThreads.map(\.id)
 
             let familyDinner = ScheduledChatEvent(threadID: "thread.matrix.family", title: "Familienessen", note: "Abendessen bei Mara, bitte Dessert mitbringen.", startDate: now.addingTimeInterval(86400), endDate: now.addingTimeInterval(88200), createdBy: "Du", providerIDs: ["apple", "google"])
