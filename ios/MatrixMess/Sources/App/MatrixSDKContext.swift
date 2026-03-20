@@ -271,7 +271,8 @@ actor MatrixSDKContext {
         fileName: String,
         kind: ChatMessageKind,
         roomID: String,
-        session: MatrixSession
+        session: MatrixSession,
+        durationSeconds: TimeInterval? = nil
     ) async throws -> MatrixSDKMediaSendResult {
         let timeline: Timeline
         do {
@@ -317,7 +318,8 @@ actor MatrixSDKContext {
             let joinHandle = try timeline.sendVideo(params: uploadParameters, thumbnailSource: nil, videoInfo: info)
             try await joinHandle.join()
         case .voice:
-            let info = AudioInfo(duration: nil, size: UInt64(data.count), mimetype: mimeType)
+            let duration = durationSeconds.flatMap { $0 > 0 ? $0 : nil }
+            let info = AudioInfo(duration: duration, size: UInt64(data.count), mimetype: mimeType)
             let joinHandle = try timeline.sendVoiceMessage(params: uploadParameters, audioInfo: info, waveform: [])
             try await joinHandle.join()
         case .file:
@@ -335,10 +337,16 @@ actor MatrixSDKContext {
         }
 
         let localCachePath = try persistOutgoingMedia(data: data, fileName: fileName)
+        let subtitle = attachmentSubtitle(
+            mimeType: mimeType,
+            byteCount: data.count,
+            kind: kind,
+            durationSeconds: durationSeconds
+        )
         let attachment = MessageAttachment(
             icon: icon(for: kind),
             title: fileName,
-            subtitle: "\(mimeType) / \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))",
+            subtitle: subtitle,
             contentURI: nil,
             mimeType: mimeType,
             localCachePath: localCachePath.path,
@@ -613,7 +621,7 @@ actor MatrixSDKContext {
         )
         // Use the sender MXID as the primary source of truth for direction.
         // Relying on item.isOwn can misclassify messages in some edge cases.
-        let isOutgoing = item.sender.compare(currentUserID, options: .caseInsensitive) == .orderedSame
+        let isOutgoing = isCurrentUserID(item.sender, currentUserID: currentUserID)
         let timestamp = Date(timeIntervalSince1970: TimeInterval(item.timestamp) / 1000)
 
         var matrixEventID: String?
@@ -696,7 +704,7 @@ actor MatrixSDKContext {
                 emoji: reaction.key,
                 count: max(1, reaction.senders.count),
                 isOwnReaction: reaction.senders.contains {
-                    $0.senderId.compare(currentUserID, options: .caseInsensitive) == .orderedSame
+                    isCurrentUserID($0.senderId, currentUserID: currentUserID)
                 }
             )
         }
@@ -747,6 +755,7 @@ actor MatrixSDKContext {
                     mimeType: audio.info?.mimetype,
                     size: audio.info?.size,
                     contentURI: mediaSourceURL(audio.source),
+                    durationSeconds: audio.info?.duration,
                     fallbackSubtitle: "Audio"
                 )
             case .file(content: let file):
@@ -800,10 +809,18 @@ actor MatrixSDKContext {
         mimeType: String?,
         size: UInt64?,
         contentURI: String?,
+        durationSeconds: TimeInterval? = nil,
         fallbackSubtitle: String
     ) -> MessageAttachment {
         let subtitle: String
-        if let mimeType {
+        if let durationSeconds, durationSeconds > 0 {
+            let durationText = formattedDuration(seconds: durationSeconds)
+            if let mimeType {
+                subtitle = "\(durationText) / \(mimeType)"
+            } else {
+                subtitle = durationText
+            }
+        } else if let mimeType {
             if let size, let intSize = safeInt(size) {
                 subtitle = "\(mimeType) / \(ByteCountFormatter.string(fromByteCount: Int64(intSize), countStyle: .file))"
             } else {
@@ -828,6 +845,25 @@ actor MatrixSDKContext {
         value > UInt64(Int.max) ? nil : Int(value)
     }
 
+    private func attachmentSubtitle(
+        mimeType: String,
+        byteCount: Int,
+        kind: ChatMessageKind,
+        durationSeconds: TimeInterval?
+    ) -> String {
+        if kind == .voice, let durationSeconds, durationSeconds > 0 {
+            return "\(formattedDuration(seconds: durationSeconds)) / \(ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file))"
+        }
+        return "\(mimeType) / \(ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file))"
+    }
+
+    private func formattedDuration(seconds value: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(value.rounded()))
+        let minutes = totalSeconds / 60
+        let secondPart = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, secondPart)
+    }
+
     private func mediaSourceURL(_ source: MediaSource) -> String? {
         let raw = source.url().trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.isEmpty ? nil : raw
@@ -840,6 +876,11 @@ actor MatrixSDKContext {
         default:
             return nil
         }
+    }
+
+    private func isCurrentUserID(_ senderID: String, currentUserID: String) -> Bool {
+        senderID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            == currentUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     nonisolated private func encodedPathSegment(_ value: String) -> String {

@@ -4,9 +4,10 @@ import UniformTypeIdentifiers
 import AVFoundation
 import AVKit
 import QuickLook
+import SafariServices
 import WebKit
 
-private let appBuildLabel = "v0.3.1 - 2026-03-20"
+private let appBuildLabel = "v0.3.2 - 2026-03-20"
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
@@ -1190,13 +1191,14 @@ private struct ConversationDetailView: View {
                       }
                   }
                   .sheet(isPresented: $showingVoiceRecorderSheet) {
-                      VoiceRecorderSheet { data, fileName in
+                      VoiceRecorderSheet { data, fileName, durationSeconds in
                           Task {
                               await appState.uploadMedia(
                                   data: data,
                                   mimeType: "audio/mp4",
                                   fileName: fileName,
                                   kind: .voice,
+                                  durationSeconds: durationSeconds,
                                   to: thread.id
                               )
                           }
@@ -1628,30 +1630,13 @@ private struct MessageBubble: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(
-                    Group {
-                        if message.isOutgoing {
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [accent.tint, accent.tint.opacity(0.78)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                        } else {
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .fill(bubbleAccent.softTint.opacity(0.85))
-                        }
-                    }
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(message.isOutgoing ? accent.tint : Color(uiColor: .secondarySystemGroupedBackground))
                 )
-                .overlay(alignment: message.isOutgoing ? .bottomTrailing : .bottomLeading) {
-                    // Small tail triangle
-                    Triangle()
-                        .fill(message.isOutgoing ? accent.tint.opacity(0.78) : bubbleAccent.softTint.opacity(0.85))
-                        .frame(width: 12, height: 8)
-                        .rotationEffect(.degrees(message.isOutgoing ? 0 : 180), anchor: .center)
-                        .offset(x: message.isOutgoing ? 6 : -6, y: 4)
-                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(message.isOutgoing ? Color.clear : bubbleAccent.softTint, lineWidth: 1)
+                )
                 .contextMenu {
                     ForEach(quickReactionEmoji, id: \.self) { emoji in
                         Button(emoji) { reactAction(emoji) }
@@ -1758,14 +1743,26 @@ private struct MediaPlaybackSheet: View {
     @Environment(\.dismiss) private var dismiss
     let item: MediaPlaybackItem
     @State private var player: AVPlayer?
+    @State private var isPlaying = false
+    @State private var currentTime: Double = 0
+    @State private var duration: Double = 0
+    @State private var playbackRate: Float = 1.0
+    @State private var isSeeking = false
+    @State private var timeObserverToken: Any?
+
+    private let audioRates: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
         NavigationView {
             VStack(spacing: 16) {
                 if let player {
-                    VideoPlayer(player: player)
-                        .frame(maxWidth: .infinity, maxHeight: item.kind == .audio ? 220 : .infinity)
-                        .background(Color.black)
+                    if item.kind == .audio {
+                        audioPlayerContent(player: player)
+                    } else {
+                        VideoPlayer(player: player)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color.black)
+                    }
                 } else {
                     ProgressView("Lade Medien ...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1782,13 +1779,201 @@ private struct MediaPlaybackSheet: View {
         }
         .onAppear {
             let avPlayer = AVPlayer(url: item.url)
+            avPlayer.automaticallyWaitsToMinimizeStalling = true
             player = avPlayer
-            avPlayer.play()
+            configureDuration(for: avPlayer)
+            registerTimeObserver(for: avPlayer)
+            startPlayback(avPlayer)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
+            guard let currentItem = player?.currentItem,
+                  notification.object as? AVPlayerItem === currentItem else {
+                return
+            }
+            isPlaying = false
+            currentTime = duration
         }
         .onDisappear {
-            player?.pause()
+            stopPlayback()
+            unregisterTimeObserver()
             player = nil
         }
+    }
+
+    @ViewBuilder
+    private func audioPlayerContent(player: AVPlayer) -> some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                    .frame(width: 90, height: 90)
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 44, weight: .regular))
+                    .foregroundColor(.accentColor)
+            }
+
+            VStack(spacing: 10) {
+                Slider(
+                    value: Binding(
+                        get: { max(0, min(currentTime, max(duration, 0.001))) },
+                        set: { newValue in
+                            currentTime = newValue
+                        }
+                    ),
+                    in: 0...max(duration, 0.001),
+                    onEditingChanged: { editing in
+                        isSeeking = editing
+                        if !editing {
+                            seek(to: currentTime)
+                        }
+                    }
+                )
+                .disabled(duration <= 0.001)
+
+                HStack {
+                    Text(formattedTime(currentTime))
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(formattedTime(max(duration - currentTime, 0), includeMinusPrefix: true))
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            HStack(spacing: 14) {
+                Button {
+                    seek(by: -10)
+                } label: {
+                    Image(systemName: "gobackward.10")
+                        .font(.title3.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    togglePlayback()
+                } label: {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.headline.weight(.bold))
+                        .frame(width: 20)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    seek(by: 10)
+                } label: {
+                    Image(systemName: "goforward.10")
+                        .font(.title3.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Picker("Geschwindigkeit", selection: $playbackRate) {
+                ForEach(audioRates, id: \.self) { rate in
+                    Text("\(rate, specifier: "%.2g")x").tag(rate)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: playbackRate) { _ in
+                applyPlaybackRate()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: 320)
+    }
+
+    private func registerTimeObserver(for player: AVPlayer) {
+        unregisterTimeObserver()
+        timeObserverToken = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.2, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            guard !isSeeking else { return }
+            currentTime = max(0, time.seconds.isFinite ? time.seconds : 0)
+            if let itemDuration = player.currentItem?.duration.seconds,
+               itemDuration.isFinite,
+               itemDuration > 0 {
+                duration = itemDuration
+            }
+        }
+    }
+
+    private func unregisterTimeObserver() {
+        guard let token = timeObserverToken, let player else { return }
+        player.removeTimeObserver(token)
+        timeObserverToken = nil
+    }
+
+    private func configureDuration(for player: AVPlayer) {
+        if let itemDuration = player.currentItem?.duration.seconds,
+           itemDuration.isFinite,
+           itemDuration > 0 {
+            duration = itemDuration
+        } else {
+            duration = 0
+        }
+    }
+
+    private func startPlayback(_ player: AVPlayer) {
+        if item.kind == .audio {
+            do {
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .default, options: [.allowBluetooth])
+                try audioSession.setActive(true)
+            } catch {
+                AppLogger.error("AudioSession konnte nicht aktiviert werden: \(error.localizedDescription)")
+            }
+        }
+        player.play()
+        applyPlaybackRate()
+        isPlaying = true
+    }
+
+    private func stopPlayback() {
+        player?.pause()
+        isPlaying = false
+        if item.kind == .audio {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+    }
+
+    private func togglePlayback() {
+        guard let player else { return }
+        if isPlaying {
+            player.pause()
+            isPlaying = false
+        } else {
+            player.play()
+            applyPlaybackRate()
+            isPlaying = true
+        }
+    }
+
+    private func applyPlaybackRate() {
+        guard item.kind == .audio else { return }
+        guard let player else { return }
+        guard isPlaying else { return }
+        player.rate = playbackRate
+    }
+
+    private func seek(to value: Double) {
+        guard let player else { return }
+        let clamped = max(0, min(value, duration > 0 ? duration : value))
+        let time = CMTime(seconds: clamped, preferredTimescale: 600)
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    private func seek(by delta: Double) {
+        let target = max(0, min(currentTime + delta, duration > 0 ? duration : currentTime + delta))
+        currentTime = target
+        seek(to: target)
+    }
+
+    private func formattedTime(_ value: Double, includeMinusPrefix: Bool = false) -> String {
+        let safeValue = max(0, Int(value.rounded()))
+        let minutes = safeValue / 60
+        let seconds = safeValue % 60
+        let text = String(format: "%02d:%02d", minutes, seconds)
+        return includeMinusPrefix ? "-\(text)" : text
     }
 }
 
@@ -1946,7 +2131,7 @@ private final class VoiceRecorderModel: NSObject, ObservableObject, AVAudioRecor
 private struct VoiceRecorderSheet: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model = VoiceRecorderModel()
-    let onSend: (Data, String) -> Void
+    let onSend: (Data, String, TimeInterval) -> Void
 
     var body: some View {
         NavigationView {
@@ -1993,7 +2178,7 @@ private struct VoiceRecorderSheet: View {
                 Button("Senden") {
                     guard let data = model.recordedData(),
                           let url = model.outputURL else { return }
-                    onSend(data, url.lastPathComponent)
+                    onSend(data, url.lastPathComponent, model.elapsedSeconds)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -2273,9 +2458,14 @@ private struct InlineVoiceAttachment: View {
                 VStack(alignment: .leading, spacing: 4) {
                     WaveformView(isOutgoing: isOutgoing, accent: accent)
                         .frame(height: 28)
-                    Text(attachment.subtitle)
-                        .font(.caption2)
-                        .foregroundColor(isOutgoing ? .white.opacity(0.72) : .secondary)
+                    HStack(spacing: 6) {
+                        Text(attachment.subtitle)
+                            .font(.caption2)
+                        Text("Tippen zum Abspielen")
+                            .font(.caption2.weight(.medium))
+                            .opacity(0.78)
+                    }
+                    .foregroundColor(isOutgoing ? .white.opacity(0.72) : .secondary)
                 }
 
                 Spacer(minLength: 0)
@@ -2387,6 +2577,12 @@ private enum SocialVideoLink {
             let clean = id.prefix(while: { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
             return clean.isEmpty ? nil : String(clean)
         }
+        // youtube.com/live/VIDEO_ID
+        if path.lowercased().hasPrefix("/live/") {
+            let id = String(path.dropFirst("/live/".count))
+            let clean = id.prefix(while: { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+            return clean.isEmpty ? nil : String(clean)
+        }
         // youtube.com/watch?v=VIDEO_ID
         return URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "v" })?.value
@@ -2478,6 +2674,26 @@ private struct WebEmbedView: UIViewRepresentable {
     }
 }
 
+private struct InAppBrowserItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct InAppBrowserSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.preferredControlTintColor = UIColor.systemBlue
+        controller.dismissButtonStyle = .close
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {
+        // No-op
+    }
+}
+
 /// A tappable card that expands in-place to an embedded video player.
 private struct SocialVideoCard: View {
     let link: SocialVideoLink
@@ -2489,6 +2705,7 @@ private struct SocialVideoCard: View {
     @State private var isExpanded = false
     @State private var embedState: WebEmbedLoadState = .idle
     @State private var embedTimeoutTask: Task<Void, Never>?
+    @State private var inAppBrowserItem: InAppBrowserItem?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -2532,6 +2749,11 @@ private struct SocialVideoCard: View {
                                     }
                                     .buttonStyle(.borderedProminent)
 
+                                    Button("In App") {
+                                        inAppBrowserItem = InAppBrowserItem(url: originalURL)
+                                    }
+                                    .buttonStyle(.bordered)
+
                                     Button("Extern") {
                                         openURL(originalURL)
                                     }
@@ -2553,7 +2775,7 @@ private struct SocialVideoCard: View {
                     }
                     cancelEmbedTimeout()
                 } label: {
-                    Label("Schließen", systemImage: "xmark.circle")
+                    Label("Schliessen", systemImage: "xmark.circle")
                         .font(.caption)
                         .foregroundColor(isOutgoing ? .white.opacity(0.72) : .secondary)
                 }
@@ -2600,6 +2822,13 @@ private struct SocialVideoCard: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+        .onDisappear {
+            cancelEmbedTimeout()
+        }
+        .sheet(item: $inAppBrowserItem) { item in
+            InAppBrowserSheet(url: item.url)
+                .ignoresSafeArea()
         }
     }
 
@@ -2713,9 +2942,9 @@ private struct TypingIndicatorBanner: View {
     private var label: String {
         let names = Array(Set(userIDs.map { displayName(for: $0) })).sorted()
         switch names.count {
-        case 1: return "\(names[0]) tippt…"
-        case 2: return "\(names[0]) und \(names[1]) tippen…"
-        default: return "\(names.count) Personen tippen…"
+        case 1: return "\(names[0]) tippt..."
+        case 2: return "\(names[0]) und \(names[1]) tippen..."
+        default: return "\(names.count) Personen tippen..."
         }
     }
 
@@ -2768,33 +2997,35 @@ private struct ComposerBar: View {
                 Button { eventAction() } label: { Label("Termin", systemImage: "calendar.badge.plus") }
             } label: {
                 Image(systemName: "plus")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundColor(accent.tint)
-                    .frame(width: 34, height: 34)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary.opacity(0.82))
+                    .frame(width: 32, height: 32)
                     .background(
-                        Circle().fill(accent.softTint)
+                        Circle().fill(Color(uiColor: .tertiarySystemGroupedBackground))
                     )
             }
 
             HStack(spacing: 8) {
-                TextField("Schreibe eine Nachricht ...", text: $draft)
+                TextField("Nachricht", text: $draft, axis: .vertical)
+                    .lineLimit(1...4)
                     .textFieldStyle(.plain)
+                    .font(.subheadline)
 
                 Button {
                     sendAction()
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(accent.tint)
-                            .frame(width: 32, height: 32)
+                            .fill(accent.tint.opacity(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending ? 0.35 : 1.0))
+                            .frame(width: 30, height: 30)
                         if isSending {
                             ProgressView()
                                 .progressViewStyle(.circular)
                                 .tint(.white)
-                                .scaleEffect(0.68)
+                                .scaleEffect(0.62)
                         } else {
                             Image(systemName: "paperplane.fill")
-                                .font(.caption.weight(.bold))
+                                .font(.caption2.weight(.bold))
                                 .foregroundColor(.white)
                         }
                     }
@@ -2802,17 +3033,17 @@ private struct ComposerBar: View {
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(Color(uiColor: .secondarySystemGroupedBackground))
             )
 
         }
         .padding(.horizontal, 12)
-        .padding(.top, 8)
+        .padding(.top, 6)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+        .background(.thinMaterial)
     }
 }
 
@@ -3930,17 +4161,6 @@ private struct RecoveryKeySheet: View {
                     .disabled(recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-        }
-    }
-}
-
-private struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        Path { p in
-            p.move(to: CGPoint(x: rect.midX, y: rect.maxY))
-            p.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
-            p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-            p.closeSubpath()
         }
     }
 }

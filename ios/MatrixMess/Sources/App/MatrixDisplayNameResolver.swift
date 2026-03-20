@@ -14,11 +14,23 @@ enum MatrixDisplayNameResolver {
         "gmessages_",
         "sms_"
     ]
+    private static let noiseFragments = [
+        "mautrix",
+        "bridge",
+        "double puppeting",
+        "relay bot",
+        "appservice",
+        "(telegram)",
+        "(whatsapp)",
+        "(signal)",
+        "(instagram)"
+    ]
 
     static func sanitizedDisplayName(_ raw: String?, fallbackUserID: String? = nil) -> String {
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !trimmed.isEmpty, !looksLikeRawMatrixIdentifier(trimmed) {
-            return collapseWhitespace(trimmed)
+        let cleaned = cleanCandidate(trimmed)
+        if !cleaned.isEmpty, !looksLikeRawMatrixIdentifier(cleaned) {
+            return cleaned
         }
 
         if let fallbackUserID {
@@ -26,6 +38,10 @@ enum MatrixDisplayNameResolver {
             if !friendly.isEmpty {
                 return friendly
             }
+        }
+
+        if !cleaned.isEmpty {
+            return userFacingName(from: cleaned)
         }
 
         if !trimmed.isEmpty {
@@ -36,30 +52,35 @@ enum MatrixDisplayNameResolver {
     }
 
     static func userFacingName(from identifier: String) -> String {
-        let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = cleanCandidate(identifier)
         if trimmed.hasPrefix("!") {
             return "Unbenannter Chat"
         }
 
         let local = matrixLocalpart(from: identifier)
         guard !local.isEmpty else {
-            return collapseWhitespace(identifier)
+            return cleanCandidate(identifier)
         }
 
-        for prefix in bridgePrefixes where local.lowercased().hasPrefix(prefix) {
-            let suffix = String(local.dropFirst(prefix.count))
+        let normalizedLocal = cleanCandidate(local)
+        for prefix in bridgePrefixes where normalizedLocal.lowercased().hasPrefix(prefix) {
+            let suffix = String(normalizedLocal.dropFirst(prefix.count))
             if suffix.allSatisfy(\.isNumber) {
                 return "+\(suffix)"
             }
             let decodedSuffix = suffix.replacingOccurrences(of: "_", with: " ")
-            return collapseWhitespace(decodedSuffix)
+            return cleanCandidate(decodedSuffix)
         }
 
-        let decoded = local
+        if normalizedLocal.allSatisfy(\.isNumber), normalizedLocal.count >= 7 {
+            return "+\(normalizedLocal)"
+        }
+
+        let decoded = normalizedLocal
             .replacingOccurrences(of: ".", with: " ")
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
-        return collapseWhitespace(decoded)
+        return cleanCandidate(decoded)
     }
 
     static func extractNameFromTopic(_ topic: String) -> String? {
@@ -98,6 +119,33 @@ enum MatrixDisplayNameResolver {
             local = String(local[..<colon])
         }
         return local
+    }
+
+    private static func cleanCandidate(_ value: String) -> String {
+        guard !value.isEmpty else { return "" }
+
+        var cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleaned = cleaned.replacingOccurrences(of: "%20", with: " ")
+        cleaned = cleaned.replacingOccurrences(of: "+", with: " ")
+        cleaned = cleaned.removingPercentEncoding ?? cleaned
+        cleaned = cleaned.replacingOccurrences(of: "\"", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "(", with: " ")
+        cleaned = cleaned.replacingOccurrences(of: ")", with: " ")
+        cleaned = cleaned.replacingOccurrences(of: "[", with: " ")
+        cleaned = cleaned.replacingOccurrences(of: "]", with: " ")
+
+        let lowered = cleaned.lowercased()
+        if let atIndex = lowered.firstIndex(of: "@"), let colonIndex = lowered.firstIndex(of: ":"),
+           atIndex < colonIndex, lowered.distance(from: atIndex, to: colonIndex) > 2 {
+            cleaned = String(cleaned[..<atIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        for fragment in noiseFragments {
+            cleaned = cleaned.replacingOccurrences(of: fragment, with: "", options: .caseInsensitive)
+        }
+
+        cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+        return collapseWhitespace(cleaned)
     }
 
     private static func collapseWhitespace(_ value: String) -> String {
