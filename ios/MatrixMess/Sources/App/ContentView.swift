@@ -3006,8 +3006,7 @@ private struct ComposerBar: View {
             }
 
             HStack(spacing: 8) {
-                TextField("Nachricht", text: $draft, axis: .vertical)
-                    .lineLimit(1...4)
+                TextField("Nachricht", text: $draft)
                     .textFieldStyle(.plain)
                     .font(.subheadline)
 
