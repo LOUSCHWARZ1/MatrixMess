@@ -6,7 +6,7 @@ import AVKit
 import QuickLook
 import WebKit
 
-private let appBuildLabel = "v0.3.1 – 2026-03-19"
+private let appBuildLabel = "v0.3.1 - 2026-03-20"
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
@@ -141,85 +141,56 @@ private struct LoginView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                // Dark gradient background (inspired by Element X)
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.12, green: 0.08, blue: 0.24),
-                        Color(red: 0.06, green: 0.04, blue: 0.14),
-                        Color(uiColor: .systemBackground)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
+                Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
 
                 ScrollView {
-                    VStack(spacing: 32) {
-                        Spacer(minLength: 36)
+                    VStack(spacing: 24) {
+                        Spacer(minLength: 24)
 
-                        // App logo with glow effect
                         ZStack {
                             Circle()
-                                .fill(
-                                    RadialGradient(
-                                        colors: [Color.purple.opacity(0.3), Color.clear],
-                                        center: .center,
-                                        startRadius: 30,
-                                        endRadius: 80
-                                    )
-                                )
-                                .frame(width: 160, height: 160)
+                                .fill(Color.indigo.opacity(0.14))
+                                .frame(width: 110, height: 110)
 
                             Circle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color(red: 0.55, green: 0.30, blue: 0.95), Color.indigo],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                .frame(width: 96, height: 96)
-                                .shadow(color: Color.purple.opacity(0.45), radius: 28, y: 8)
+                                .fill(Color.indigo)
+                                .frame(width: 72, height: 72)
 
                             Image(systemName: "bubble.left.and.bubble.right.fill")
-                                .font(.system(size: 40, weight: .semibold))
+                                .font(.system(size: 30, weight: .semibold))
                                 .foregroundColor(.white)
                         }
 
-                        VStack(spacing: 10) {
+                        VStack(spacing: 6) {
                             Text("MatrixMess")
-                                .font(.system(size: 36, weight: .bold, design: .rounded))
+                                .font(.system(size: 32, weight: .bold, design: .rounded))
 
-                            Text("Sicher chatten ueber das Matrix-Netzwerk.\nSpaces, Bridges, Calls und Kalender.")
+                            Text("Anmelden")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                .lineSpacing(3)
-                                .padding(.horizontal, 20)
                         }
 
-                        // Login card
-                        VStack(spacing: 18) {
-                            LoginField(title: "Homeserver", text: $appState.homeserver, icon: "server.rack", hint: "z.B. https://matrix.org")
+                        VStack(spacing: 12) {
+                            LoginField(title: "Homeserver", text: $appState.homeserver, icon: "server.rack", hint: "https://matrix.org")
                                 .keyboardType(.URL)
 
-                            LoginField(title: "Benutzername", text: $appState.username, icon: "at", hint: "dein Matrix-Username")
+                            LoginField(title: "Benutzername", text: $appState.username, icon: "at", hint: "@name:server")
 
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label("Passwort", systemImage: "key.fill")
-                                    .font(.caption.weight(.semibold))
+                            HStack(spacing: 10) {
+                                Image(systemName: "key.fill")
+                                    .font(.footnote.weight(.semibold))
                                     .foregroundColor(.secondary)
-
-                                SecureField("Dein Passwort", text: $appState.password)
+                                    .frame(width: 16)
+                                SecureField("Passwort", text: $appState.password)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 14)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                            .fill(Color(uiColor: .secondarySystemGroupedBackground))
-                                    )
                             }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 13)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color(uiColor: .secondarySystemBackground))
+                            )
 
                             Button {
                                 Task { await appState.signIn() }
@@ -230,23 +201,16 @@ private struct LoginView: View {
                                         ProgressView().tint(.white)
                                         Text("Verbinde ...")
                                     } else {
-                                        Image(systemName: "arrow.right.circle.fill")
+                                        Image(systemName: "arrow.right")
                                         Text("Anmelden")
                                     }
                                     Spacer()
                                 }
-                                .font(.headline)
+                                .font(.subheadline.weight(.semibold))
                                 .foregroundColor(.white)
-                                .padding(.vertical, 16)
-                                .background(
-                                    LinearGradient(
-                                        colors: [Color(red: 0.55, green: 0.30, blue: 0.95), Color.indigo],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .shadow(color: Color.purple.opacity(0.30), radius: 12, y: 6)
+                                .padding(.vertical, 14)
+                                .background(Color.indigo)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             }
                             .disabled(appState.isSigningIn)
 
@@ -259,47 +223,30 @@ private struct LoginView: View {
                                         .foregroundColor(.red)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
+                                .padding(10)
                                 .background(
                                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                                         .fill(Color.red.opacity(0.08))
                                 )
                             }
                         }
-                        .padding(24)
+                        .padding(18)
                         .background(
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .fill(Color(uiColor: .systemBackground))
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                .stroke(Color(uiColor: .separator).opacity(0.3), lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(Color(uiColor: .separator).opacity(0.25), lineWidth: 1)
                         )
-                        .shadow(color: Color.black.opacity(0.10), radius: 30, y: 15)
 
-                        // Footer
-                        VStack(spacing: 8) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "lock.shield.fill")
-                                    .foregroundColor(.green)
-                                    .font(.caption)
-                                Text("Ende-zu-Ende verschluesselt")
-                                    .font(.caption.weight(.medium))
-                                    .foregroundColor(.secondary)
-                            }
-
-                            HStack(spacing: 6) {
-                                Image(systemName: "m.circle.fill")
-                                    .foregroundColor(.indigo)
-                                Text("Powered by Matrix")
-                                    .font(.caption.weight(.medium))
-                                    .foregroundColor(.secondary)
-                            }
-
+                        VStack(spacing: 6) {
+                            Text("Sicher mit Matrix")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                             Text(appBuildLabel)
                                 .font(.caption2)
                                 .foregroundColor(.secondary.opacity(0.5))
-                                .padding(.top, 4)
                         }
 
                         Spacer(minLength: 0)
@@ -319,21 +266,21 @@ private struct LoginField: View {
     var hint: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(title, systemImage: icon)
-                .font(.caption.weight(.semibold))
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
                 .foregroundColor(.secondary)
-
+                .frame(width: 16)
             TextField(hint.isEmpty ? title : hint, text: $text)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemGroupedBackground))
-                )
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+        )
     }
 }
 
@@ -436,146 +383,102 @@ private struct ConversationListView: View {
     private var visibleThreads: [ChatThread] { appState.visibleThreads() }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            List {
-                if let activeSpace {
-                    Section {
-                        SpaceOverviewCard(space: activeSpace, chatCount: appState.threadCount(for: activeSpace.id))
-                            .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
-                            .listRowBackground(Color.clear)
+        List {
+            if let activeSpace {
+                Section {
+                    SpaceOverviewCard(space: activeSpace, chatCount: appState.threadCount(for: activeSpace.id))
+                        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                        .listRowBackground(Color.clear)
 
-                        SpaceTabStrip()
-                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 10, trailing: 0))
+                    SpaceTabStrip()
+                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 10, trailing: 0))
+                        .listRowBackground(Color.clear)
+                }
+
+                if visibleThreads.isEmpty {
+                    Section(activeSpace.isMain ? "Main" : activeSpace.title) {
+                        EmptyThreadState(space: activeSpace)
                             .listRowBackground(Color.clear)
                     }
-
-                    if visibleThreads.isEmpty {
-                        Section(activeSpace.isMain ? "Main Space" : activeSpace.title) {
-                            EmptyThreadState(space: activeSpace)
-                                .listRowBackground(Color.clear)
-                        }
-                    } else {
-                        Section(activeSpace.isMain ? "Main Space" : activeSpace.title) {
-                            ForEach(visibleThreads) { thread in
-                                NavigationLink(tag: thread.id, selection: $appState.selectedThreadID) {
-                                    ConversationDetailView(threadID: thread.id)
+                } else {
+                    Section(activeSpace.isMain ? "Main" : activeSpace.title) {
+                        ForEach(visibleThreads) { thread in
+                            NavigationLink(tag: thread.id, selection: $appState.selectedThreadID) {
+                                ConversationDetailView(threadID: thread.id)
+                            } label: {
+                                ConversationRow(thread: thread)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    appState.toggleMute(for: thread.id)
                                 } label: {
-                                    ConversationRow(thread: thread)
+                                    Label(thread.isMuted ? "Laut" : "Stumm", systemImage: thread.isMuted ? "bell.fill" : "bell.slash.fill")
                                 }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        appState.toggleMute(for: thread.id)
-                                    } label: {
-                                        Label(thread.isMuted ? "Laut" : "Stumm", systemImage: thread.isMuted ? "bell.fill" : "bell.slash.fill")
-                                    }
-                                    .tint(thread.isMuted ? .green : .gray)
+                                .tint(thread.isMuted ? .green : .gray)
 
-                                    Button {
-                                        appState.toggleMainPin(for: thread.id)
-                                    } label: {
-                                        Label(appState.isPinnedInMain(thread.id) ? "Aus Main" : "In Main", systemImage: appState.isPinnedInMain(thread.id) ? "star.slash.fill" : "star.fill")
-                                    }
-                                    .tint(appState.isPinnedInMain(thread.id) ? .orange : .indigo)
+                                Button {
+                                    appState.toggleMainPin(for: thread.id)
+                                } label: {
+                                    Label(appState.isPinnedInMain(thread.id) ? "Aus Main" : "In Main", systemImage: appState.isPinnedInMain(thread.id) ? "star.slash.fill" : "star.fill")
                                 }
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        appState.markThreadRead(thread.id)
-                                    } label: {
-                                        Label("Gelesen", systemImage: "checkmark.circle.fill")
-                                    }
-                                    .tint(.green)
+                                .tint(appState.isPinnedInMain(thread.id) ? .orange : .indigo)
+                            }
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    appState.markThreadRead(thread.id)
+                                } label: {
+                                    Label("Gelesen", systemImage: "checkmark.circle.fill")
                                 }
-                                .contextMenu {
-                                    Button(appState.isPinnedInMain(thread.id) ? "Aus Main entfernen" : "In Main legen") {
-                                        appState.toggleMainPin(for: thread.id)
-                                    }
-
-                                    Button(thread.isMuted ? "Stumm aus" : "Stumm") {
-                                        appState.toggleMute(for: thread.id)
-                                    }
-
-                                    Button("Als gelesen markieren") {
-                                        appState.markThreadRead(thread.id)
-                                    }
-                                }
+                                .tint(.green)
                             }
                         }
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .searchable(text: $appState.searchText, prompt: "Chats durchsuchen")
-            .navigationTitle("Chats")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if let activeSpace {
-                        HStack(spacing: 8) {
-                            Image(systemName: activeSpace.icon)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(activeSpace.accent.tint)
-
-                            if appState.isSyncing {
-                                ProgressView()
-                                    .scaleEffect(0.72)
-                            }
+        }
+        .listStyle(.insetGrouped)
+        .searchable(text: $appState.searchText, prompt: "Chats durchsuchen")
+        .navigationTitle("Chats")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if let activeSpace {
+                    HStack(spacing: 8) {
+                        Image(systemName: activeSpace.icon)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(activeSpace.accent.tint)
+                        if appState.isSyncing {
+                            ProgressView().scaleEffect(0.72)
                         }
                     }
                 }
+            }
 
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button {
-                            Task { await appState.refreshMatrixData(forceFullSync: true) }
-                        } label: {
-                            Label("Sync jetzt", systemImage: "arrow.clockwise")
-                        }
-                        Button {
-                            appState.selectTab(.calendar)
-                        } label: {
-                            Label("Calendar", systemImage: "calendar")
-                        }
-                        Button {
-                            appState.selectTab(.settings)
-                        } label: {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-                        Divider()
-                        Button(role: .destructive) {
-                            appState.signOut()
-                        } label: {
-                            Label("Abmelden", systemImage: "rectangle.portrait.and.arrow.right")
-                        }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button {
+                        Task { await appState.refreshMatrixData(forceFullSync: true) }
                     } label: {
-                        Image(systemName: "ellipsis.circle.fill")
-                            .symbolRenderingMode(.hierarchical)
-                            .font(.title3)
+                        Label("Sync", systemImage: "arrow.clockwise")
                     }
+                    Button {
+                        appState.selectTab(.settings)
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        appState.signOut()
+                    } label: {
+                        Label("Abmelden", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.title3)
                 }
             }
-            .refreshable {
-                await appState.refreshMatrixData()
-            }
-
-            // Floating action button – syncs rooms (new chat creation not yet supported)
-            Button {
-                Task { await appState.refreshMatrixData(forceFullSync: true) }
-            } label: {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(.white)
-                    .frame(width: 56, height: 56)
-                    .background(
-                        LinearGradient(
-                            colors: [Color(red: 0.55, green: 0.30, blue: 0.95), Color.indigo],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .clipShape(Circle())
-                    .shadow(color: Color.purple.opacity(0.35), radius: 12, y: 6)
-            }
-            .padding(.trailing, 20)
-            .padding(.bottom, 20)
+        }
+        .refreshable {
+            await appState.refreshMatrixData()
         }
     }
 }
@@ -585,52 +488,31 @@ private struct SpaceOverviewCard: View {
     let chatCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(space.title, systemImage: space.icon)
-                        .font(.headline.weight(.bold))
+        HStack(spacing: 12) {
+            Image(systemName: space.icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(width: 32, height: 32)
+                .background(Color.white.opacity(0.24))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                    Text(space.subtitle)
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.88))
-                }
-
-                Spacer()
-
-                Text("\(chatCount)")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.20))
-                    .clipShape(Capsule())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(space.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                Text("\(chatCount) Chats")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.88))
             }
 
-            Divider()
-                .background(Color.white.opacity(0.2))
-
-            HStack(spacing: 14) {
-                Label("\(chatCount) Chats", systemImage: "bubble.left.and.bubble.right.fill")
-                if space.isMain {
-                    Label("Kuratiert", systemImage: "star.fill")
-                } else {
-                    Label("Nur dieser Space", systemImage: "square.grid.2x2.fill")
-                }
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundColor(.white.opacity(0.92))
+            Spacer()
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(space.accent.gradient)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-        .shadow(color: space.accent.tint.opacity(0.28), radius: 16, y: 8)
         .padding(.horizontal, 2)
     }
 }
@@ -702,22 +584,10 @@ private struct ConversationRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
-            ZStack(alignment: .bottomTrailing) {
-                ThreadAvatarView(thread: thread, size: 58)
+        HStack(spacing: 12) {
+            ThreadAvatarView(thread: thread, size: 52)
 
-                // Online indicator dot
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 14, height: 14)
-                    .overlay(
-                        Circle()
-                            .stroke(Color(uiColor: .systemBackground), lineWidth: 2.5)
-                    )
-                    .offset(x: 2, y: 2)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(thread.title)
                         .font(.body.weight(.semibold))
@@ -741,7 +611,7 @@ private struct ConversationRow: View {
                 Text(draftPreview.map { "\u{270E} \($0)" } ?? thread.lastMessagePreview)
                     .font(.subheadline)
                     .foregroundColor(draftPreview == nil ? .secondary : .orange)
-                    .lineLimit(2)
+                    .lineLimit(1)
 
                 HStack(spacing: 10) {
                     if let sourceSpace {
@@ -879,11 +749,6 @@ private struct SpaceManagementSheet: View {
                     }
                 }
 
-                Section("Hinweis") {
-                    Text("Main bleibt standardmaessig leer. Chats erscheinen dort erst, wenn du sie explizit in Main pinnst.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                }
             }
             .navigationTitle("Spaces")
             .toolbar {
@@ -1054,11 +919,11 @@ private struct EmptyThreadState: View {
                     .font(.headline)
 
                 if space.isMain {
-                    Text("Lege Chats aus Matrix oder deinen Bridge-Spaces in den Main-Space, damit sie hier gesammelt erscheinen.")
+                    Text("Main ist leer, bis du Chats manuell hinzufuegst.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 } else {
-                    Text("In diesem Space werden nur Chats aus \(space.title) angezeigt. Wechsle oben den Space oder suche nach einem Chat.")
+                    Text("Hier siehst du nur Chats aus \(space.title).")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -1092,7 +957,7 @@ private struct EmptyDetailState: View {
             Text(space?.title ?? "Chats")
                 .font(.title3.weight(.semibold))
 
-            Text("Waehle links einen Chat aus. Termine, Medien und weitere Aktionen werden direkt im Chat gesteuert statt in einer extra Medien-Ansicht.")
+            Text("Waehle einen Chat, um zu starten.")
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: 320)
@@ -1686,9 +1551,6 @@ private struct ThreadProfileSheet: View {
                                 }
                             }
 
-                            Text("Damit kannst du Chats in eigene Spaces verschieben, ohne den Matrix-Raum selbst zu veraendern.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
                         }
                     }
                     .onAppear {
@@ -2896,26 +2758,25 @@ private struct ComposerBar: View {
     let eventAction: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Menu {
-                Section("Teilen") {
-                    Button { attachmentAction(.voice) } label: { Label("Sprachnachricht", systemImage: "waveform") }
-                    Button { attachmentAction(.image) } label: { Label("Bild", systemImage: "photo") }
-                    Button { attachmentAction(.video) } label: { Label("Video", systemImage: "video.fill") }
-                    Button { attachmentAction(.file) } label: { Label("Datei", systemImage: "doc.fill") }
-                }
-
-                Section("Planung") {
-                    Button { eventAction() } label: { Label("Termin planen", systemImage: "calendar.badge.plus") }
-                }
+                Button { attachmentAction(.image) } label: { Label("Bild", systemImage: "photo") }
+                Button { attachmentAction(.video) } label: { Label("Video", systemImage: "video.fill") }
+                Button { attachmentAction(.file) } label: { Label("Datei", systemImage: "doc.fill") }
+                Button { attachmentAction(.voice) } label: { Label("Sprachnachricht", systemImage: "waveform") }
+                Divider()
+                Button { eventAction() } label: { Label("Termin", systemImage: "calendar.badge.plus") }
             } label: {
-                Image(systemName: "plus.circle.fill")
-                    .font(.title3.weight(.semibold))
+                Image(systemName: "plus")
+                    .font(.subheadline.weight(.bold))
                     .foregroundColor(accent.tint)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        Circle().fill(accent.softTint)
+                    )
             }
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 TextField("Schreibe eine Nachricht ...", text: $draft)
                     .textFieldStyle(.plain)
 
@@ -2925,32 +2786,32 @@ private struct ComposerBar: View {
                     ZStack {
                         Circle()
                             .fill(accent.tint)
-                            .frame(width: 34, height: 34)
+                            .frame(width: 32, height: 32)
                         if isSending {
                             ProgressView()
                                 .progressViewStyle(.circular)
                                 .tint(.white)
-                                .scaleEffect(0.72)
+                                .scaleEffect(0.68)
                         } else {
                             Image(systemName: "paperplane.fill")
-                                .font(.subheadline.weight(.bold))
+                                .font(.caption.weight(.bold))
                                 .foregroundColor(.white)
                         }
                     }
                 }
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .fill(Color(uiColor: .secondarySystemGroupedBackground))
             )
 
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
         .background(.ultraThinMaterial)
     }
 }
@@ -3097,11 +2958,6 @@ private struct EventPlannerSheet: View {
                         }
                     }
 
-                    if appState.connectedProviderIDs().isEmpty {
-                        Text("Aktuell wird der Termin nur in MatrixMess gespeichert. Verbinde im Calendar-Tab Apple Calendar, Google oder Outlook.")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                    }
                 }
             }
             .navigationTitle("Termin planen")
@@ -3196,7 +3052,7 @@ private struct CallsView: View {
                     VStack(spacing: 6) {
                         Text("Calls")
                             .font(.title3.weight(.bold))
-                        Text("Starte Sprach- oder Videoanrufe direkt aus einem Chat heraus. Nutze den Calendar-Tab fuer Termin-Syncs.")
+                        Text("Anrufe startest du direkt im Chat.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -3321,7 +3177,7 @@ private struct CalendarView: View {
                     VStack(spacing: 6) {
                         Text("Kalender-Hub")
                             .font(.title3.weight(.bold))
-                        Text("Zeigt Termine aus allen verbundenen Kalendern. Verbindungen verwaltest du in den Settings.")
+                        Text("Alle verbundenen Termine auf einen Blick.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -3781,10 +3637,6 @@ private struct SettingsView: View {
                 ))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-
-                Text("Redirects: Google `dev.matrixmess.app:/oauth/google`, Outlook `msauth.dev.matrixmess.app://auth`.")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
             }
 
             Section("Kalender-Verbindungen") {
@@ -3860,7 +3712,7 @@ private struct SettingsView: View {
 
             Section("App-Info") {
                 settingsValueRow(label: "Version", value: appBuildLabel)
-                settingsValueRow(label: "Build", value: "2026-03-19")
+                settingsValueRow(label: "Build", value: "2026-03-20")
                 settingsValueRow(label: "Homeserver", value: appState.homeserver)
                 settingsValueRow(label: "User-ID", value: appState.currentUserID ?? "–")
             }
@@ -3964,7 +3816,7 @@ private struct PostLoginSetupSheet: View {
                     Text("Ende-zu-Ende-Verschlüsselung")
                         .font(.title2.weight(.bold))
 
-                    Text("Richte die Verschlüsselung ein, damit deine Nachrichten sicher bleiben und auf allen Geräten lesbar sind.")
+                    Text("Einmal einrichten, dann sind deine Chats sicher und auf allen Geraeten lesbar.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -4061,9 +3913,6 @@ private struct RecoveryKeySheet: View {
                 Section("Wiederherstellungsschluessel") {
                     TextEditor(text: $recoveryKey)
                         .frame(minHeight: 140)
-                    Text("Nutze hier denselben Recovery Key, den andere Matrix-Clients beim Geraete- oder Session-Restore abfragen.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
                 }
             }
             .navigationTitle("Recovery Key")
