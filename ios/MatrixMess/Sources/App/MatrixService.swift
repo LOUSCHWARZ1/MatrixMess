@@ -149,7 +149,8 @@ final class MatrixService {
         fileName: String,
         kind: ChatMessageKind,
         roomID: String,
-        session storedSession: MatrixSession
+        session storedSession: MatrixSession,
+        durationSeconds: TimeInterval? = nil
     ) async throws -> MatrixSDKMediaSendResult {
         try await sdkContext.sendMedia(
             data: data,
@@ -157,7 +158,8 @@ final class MatrixService {
             fileName: fileName,
             kind: kind,
             roomID: roomID,
-            session: storedSession
+            session: storedSession,
+            durationSeconds: durationSeconds
         )
     }
 
@@ -388,7 +390,8 @@ final class MatrixService {
         size: Int,
         kind: ChatMessageKind,
         session storedSession: MatrixSession,
-        isEncrypted: Bool
+        isEncrypted: Bool,
+        durationMilliseconds: Int? = nil
     ) async throws -> String {
         guard !isEncrypted else {
             throw MatrixServiceError.unsupportedEncryptedRoom
@@ -415,7 +418,7 @@ final class MatrixService {
             body: fileName,
             filename: fileName,
             url: contentURI,
-            info: .init(mimetype: mimeType, size: size)
+            info: .init(mimetype: mimeType, size: size, duration: durationMilliseconds)
         )
 
         let response = try await sendWithVersionFallback(
@@ -1382,7 +1385,7 @@ private struct ParsedRoomSnapshot {
             fallbackUserID: senderID
         )
         let timestamp = Date(timeIntervalSince1970: TimeInterval((event.originServerTS ?? 0)) / 1000)
-        let isOutgoing = senderID.compare(currentUserID, options: .caseInsensitive) == .orderedSame
+        let isOutgoing = isCurrentUser(senderID, currentUserID: currentUserID)
 
         if event.type == "m.room.encrypted" {
             return ChatMessage(
@@ -1406,7 +1409,7 @@ private struct ParsedRoomSnapshot {
         case "m.image":
             let contentURI = content["url"]?.stringValue
             let mimeType = content["info"]?.objectValue?["mimetype"]?.stringValue
-            let fileSize = Int(content["info"]?.objectValue?["size"]?.stringValue ?? "")
+            let fileSize = content["info"]?.objectValue?["size"]?.intValue
             return ChatMessage(
                 matrixEventID: event.eventID,
                 senderDisplayName: senderDisplayName,
@@ -1426,7 +1429,7 @@ private struct ParsedRoomSnapshot {
         case "m.video":
             let contentURI = content["url"]?.stringValue
             let mimeType = content["info"]?.objectValue?["mimetype"]?.stringValue
-            let fileSize = Int(content["info"]?.objectValue?["size"]?.stringValue ?? "")
+            let fileSize = content["info"]?.objectValue?["size"]?.intValue
             return ChatMessage(
                 matrixEventID: event.eventID,
                 senderDisplayName: senderDisplayName,
@@ -1446,7 +1449,7 @@ private struct ParsedRoomSnapshot {
         case "m.file":
             let contentURI = content["url"]?.stringValue
             let mimeType = content["info"]?.objectValue?["mimetype"]?.stringValue
-            let fileSize = Int(content["info"]?.objectValue?["size"]?.stringValue ?? "")
+            let fileSize = content["info"]?.objectValue?["size"]?.intValue
             return ChatMessage(
                 matrixEventID: event.eventID,
                 senderDisplayName: senderDisplayName,
@@ -1466,7 +1469,7 @@ private struct ParsedRoomSnapshot {
         case "m.audio":
             let contentURI = content["url"]?.stringValue
             let mimeType = content["info"]?.objectValue?["mimetype"]?.stringValue
-            let fileSize = Int(content["info"]?.objectValue?["size"]?.stringValue ?? "")
+            let fileSize = content["info"]?.objectValue?["size"]?.intValue
             return ChatMessage(
                 matrixEventID: event.eventID,
                 senderDisplayName: senderDisplayName,
@@ -1477,7 +1480,7 @@ private struct ParsedRoomSnapshot {
                 attachment: .init(
                     icon: "waveform",
                     title: "Sprachnachricht",
-                    subtitle: attachmentSubtitle(from: content, fallback: "Audio"),
+                    subtitle: voiceAttachmentSubtitle(from: content, fallback: "Audio"),
                     contentURI: contentURI,
                     mimeType: mimeType,
                     fileSize: fileSize
@@ -1504,6 +1507,30 @@ private struct ParsedRoomSnapshot {
             }
         }
         return fallback
+    }
+
+    private func voiceAttachmentSubtitle(from content: [String: MatrixJSONValue], fallback: String) -> String {
+        guard let info = content["info"]?.objectValue else {
+            return fallback
+        }
+
+        if let durationMs = info["duration"]?.intValue, durationMs > 0 {
+            let totalSeconds = durationMs / 1000
+            let minutes = totalSeconds / 60
+            let seconds = totalSeconds % 60
+            let durationText = String(format: "%02d:%02d", minutes, seconds)
+            if let mimetype = info["mimetype"]?.stringValue, !mimetype.isEmpty {
+                return "\(durationText) / \(mimetype)"
+            }
+            return durationText
+        }
+
+        return attachmentSubtitle(from: content, fallback: fallback)
+    }
+
+    private func isCurrentUser(_ senderID: String, currentUserID: String) -> Bool {
+        senderID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            == currentUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func toggleReaction(_ emoji: String, sender: String?, currentUserID: String, in message: inout ChatMessage) {

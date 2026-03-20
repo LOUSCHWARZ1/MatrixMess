@@ -211,6 +211,19 @@ struct MatrixSyncResponse: Decodable {
         }
     }
 
+    var intValue: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .double(let value):
+            return Int(value)
+        case .string(let value):
+            return Int(value)
+        default:
+            return nil
+        }
+    }
+
     struct LeftRoom: Decodable {}
 
     let nextBatch: String
@@ -334,6 +347,7 @@ struct MatrixSendMediaMessageRequest: Encodable {
     struct Info: Encodable {
         let mimetype: String
         let size: Int
+        let duration: Int?
     }
 
     let msgtype: String

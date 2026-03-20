@@ -534,7 +534,7 @@ final class AppState: ObservableObject {
     }
 
     var isLoggedIn: Bool { currentUserID != nil }
-    var buildVersionLabel: String { "v0.3.1 - 2026-03-20" }
+    var buildVersionLabel: String { "v0.3.2 - 2026-03-20" }
     var preferredColorScheme: ColorScheme? { themeMode.preferredColorScheme }
     var selectedSpace: ChatSpace? { spaces.first(where: { $0.id == selectedSpaceID }) ?? spaces.first }
 
@@ -935,6 +935,7 @@ final class AppState: ObservableObject {
         mimeType: String,
         fileName: String,
         kind: ChatMessageKind,
+        durationSeconds: TimeInterval? = nil,
         to threadID: String
     ) async {
         guard let currentSession, let thread = thread(withID: threadID) else { return }
@@ -947,7 +948,8 @@ final class AppState: ObservableObject {
                     fileName: fileName,
                     kind: kind,
                     roomID: threadID,
-                    session: currentSession
+                    session: currentSession,
+                    durationSeconds: durationSeconds
                 )
 
                 let body = attachmentBody(for: kind, fallback: fileName)
@@ -983,7 +985,8 @@ final class AppState: ObservableObject {
                 fileName: fileName,
                 messageKind: kind,
                 session: currentSession,
-                roomIsEncrypted: thread.isEncrypted
+                roomIsEncrypted: thread.isEncrypted,
+                durationSeconds: durationSeconds
             )
 
             let eventID = try await matrixService.sendMediaMessage(
@@ -994,7 +997,8 @@ final class AppState: ObservableObject {
                 size: data.count,
                 kind: kind,
                 session: currentSession,
-                isEncrypted: thread.isEncrypted
+                isEncrypted: thread.isEncrypted,
+                durationMilliseconds: (kind == .voice && durationSeconds != nil) ? Int((durationSeconds ?? 0) * 1000) : nil
             )
 
             appendMessage(

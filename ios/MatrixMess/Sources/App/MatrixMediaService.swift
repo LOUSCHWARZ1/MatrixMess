@@ -45,7 +45,8 @@ actor MatrixMediaService {
         fileName: String,
         messageKind: ChatMessageKind,
         session matrixSession: MatrixSession,
-        roomIsEncrypted: Bool
+        roomIsEncrypted: Bool,
+        durationSeconds: TimeInterval? = nil
     ) async throws -> MatrixMediaUploadResult {
         guard !fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw MatrixMediaServiceError.missingFileName
@@ -68,10 +69,16 @@ actor MatrixMediaService {
         )
 
         let localFile = try persistOutgoingMedia(data: data, fileName: fileName)
+        let subtitle = subtitle(
+            mimeType: mimeType,
+            byteCount: data.count,
+            messageKind: messageKind,
+            durationSeconds: durationSeconds
+        )
         let attachment = MessageAttachment(
             icon: icon(for: messageKind),
             title: fileName,
-            subtitle: "\(mimeType) / \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))",
+            subtitle: subtitle,
             contentURI: uploadResponse.contentURI,
             mimeType: mimeType,
             localCachePath: localFile.path,
@@ -114,6 +121,26 @@ actor MatrixMediaService {
         case .voice: return "waveform"
         case .text, .event: return "paperclip"
         }
+    }
+
+    private func subtitle(
+        mimeType: String,
+        byteCount: Int,
+        messageKind: ChatMessageKind,
+        durationSeconds: TimeInterval?
+    ) -> String {
+        let sizeText = ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+        if messageKind == .voice, let durationSeconds {
+            return "\(formattedDuration(durationSeconds)) / \(sizeText)"
+        }
+        return "\(mimeType) / \(sizeText)"
+    }
+
+    private func formattedDuration(_ value: TimeInterval) -> String {
+        let total = max(0, Int(value.rounded()))
+        let minutes = total / 60
+        let seconds = total % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 
     private func parseMXC(_ contentURI: String) throws -> (serverName: String, mediaID: String) {
