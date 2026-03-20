@@ -2083,7 +2083,7 @@ private final class VoiceRecorderModel: NSObject, ObservableObject, AVAudioRecor
         return try? Data(contentsOf: outputURL)
     }
 
-    func recorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         isRecording = false
         stopTimer()
         outputURL = flag ? recorder.url : nil

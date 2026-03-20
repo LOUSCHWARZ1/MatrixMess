@@ -65,6 +65,19 @@ enum MatrixJSONValue: Codable, Hashable {
         }
     }
 
+    var intValue: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .double(let value):
+            return Int(value)
+        case .string(let value):
+            return Int(value)
+        default:
+            return nil
+        }
+    }
+
     var boolValue: Bool? {
         switch self {
         case .bool(let value):
@@ -208,19 +221,6 @@ struct MatrixSyncResponse: Decodable {
 
         enum CodingKeys: String, CodingKey {
             case inviteState = "invite_state"
-        }
-    }
-
-    var intValue: Int? {
-        switch self {
-        case .int(let value):
-            return value
-        case .double(let value):
-            return Int(value)
-        case .string(let value):
-            return Int(value)
-        default:
-            return nil
         }
     }
 
