@@ -147,6 +147,7 @@ struct MessageAttachment: Hashable, Codable {
     let title: String
     let subtitle: String
     var contentURI: String?
+    var mediaSourceJSON: String?
     var mimeType: String?
     var localCachePath: String?
     var fileSize: Int?
@@ -156,6 +157,7 @@ struct MessageAttachment: Hashable, Codable {
         title: String,
         subtitle: String,
         contentURI: String? = nil,
+        mediaSourceJSON: String? = nil,
         mimeType: String? = nil,
         localCachePath: String? = nil,
         fileSize: Int? = nil
@@ -164,6 +166,7 @@ struct MessageAttachment: Hashable, Codable {
         self.title = title
         self.subtitle = subtitle
         self.contentURI = contentURI
+        self.mediaSourceJSON = mediaSourceJSON
         self.mimeType = mimeType
         self.localCachePath = localCachePath
         self.fileSize = fileSize
@@ -1039,6 +1042,7 @@ final class AppState: ObservableObject {
                 do {
                     fileURL = try await matrixService.downloadMedia(
                         contentURI: contentURI,
+                        mediaSourceJSON: attachment.mediaSourceJSON,
                         fileNameHint: attachment.title,
                         mimeTypeHint: attachment.mimeType,
                         session: currentSession
@@ -1247,7 +1251,10 @@ final class AppState: ObservableObject {
     func openThread(_ threadID: String) {
         guard let thread = thread(withID: threadID) else { return }
         selectedTab = .chats
-        selectedSpaceID = thread.homeSpaceID
+        // Keep Main selected when opening from Main to avoid jumpy context switches.
+        if selectedSpaceID != ChatSpace.mainID {
+            selectedSpaceID = thread.homeSpaceID
+        }
         selectedThreadID = threadID
         markThreadRead(threadID)
         Task {
@@ -1869,7 +1876,7 @@ final class AppState: ObservableObject {
 
     private func prefetchInlineMedia(for session: MatrixSession) async {
         let targets = messagesByThreadID.flatMap { threadID, messages in
-            messages.compactMap { message -> (threadID: String, messageID: UUID, contentURI: String, title: String, mimeType: String?, timestamp: Date)? in
+            messages.compactMap { message -> (threadID: String, messageID: UUID, contentURI: String, mediaSourceJSON: String?, title: String, mimeType: String?, timestamp: Date)? in
                 guard message.kind == .image || message.kind == .video else { return nil }
                 guard let attachment = message.attachment,
                       let contentURI = attachment.contentURI,
@@ -1880,6 +1887,7 @@ final class AppState: ObservableObject {
                     threadID: threadID,
                     messageID: message.id,
                     contentURI: contentURI,
+                    mediaSourceJSON: attachment.mediaSourceJSON,
                     title: attachment.title,
                     mimeType: attachment.mimeType,
                     timestamp: message.timestamp
@@ -1900,6 +1908,7 @@ final class AppState: ObservableObject {
                     do {
                         localFile = try await matrixService.downloadMedia(
                             contentURI: target.contentURI,
+                            mediaSourceJSON: target.mediaSourceJSON,
                             fileNameHint: target.title,
                             mimeTypeHint: target.mimeType,
                             session: session
@@ -2432,13 +2441,20 @@ final class AppState: ObservableObject {
                 sdkStoreID: session.sdkStoreID
             )
             : session
+        let existingThreadsForWorkspace: [String: ChatThread] = forceFullSync ? [:] : threadsByID.mapValues { thread in
+            var normalized = thread
+            if let originalSpaceID = originalHomeSpaceByThreadID[thread.id] {
+                normalized.homeSpaceID = originalSpaceID
+            }
+            return normalized
+        }
 
         do {
             let workspace = try await matrixService.loadWorkspace(
                 session: effectiveSession,
                 existingMainPins: mainPinnedThreadIDs,
                 existingSpaces: forceFullSync ? [] : spaces,
-                existingThreadsByID: forceFullSync ? [:] : threadsByID,
+                existingThreadsByID: existingThreadsForWorkspace,
                 existingMessagesByThreadID: forceFullSync ? [:] : messagesByThreadID
             )
 

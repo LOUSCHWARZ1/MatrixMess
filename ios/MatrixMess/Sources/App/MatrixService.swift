@@ -172,12 +172,14 @@ final class MatrixService {
 
     func downloadMedia(
         contentURI: String,
+        mediaSourceJSON: String?,
         fileNameHint: String?,
         mimeTypeHint: String?,
         session storedSession: MatrixSession
     ) async throws -> URL {
         try await sdkContext.downloadMedia(
             contentURI: contentURI,
+            mediaSourceJSON: mediaSourceJSON,
             session: storedSession,
             fileNameHint: fileNameHint,
             mimeTypeHint: mimeTypeHint
@@ -633,25 +635,36 @@ final class MatrixService {
         }
 
         for snapshot in threadedRooms {
-            let classification = snapshot.classification
+            let previousThread = threadsByID[snapshot.roomID]
+            let rawClassification = snapshot.classification
+            let classification: MatrixRoomClassification
+            if rawClassification == .matrix,
+               isIncrementalSync,
+               let previousSpaceID = previousThread?.homeSpaceID,
+               let preserved = classificationForSyntheticSpaceID(previousSpaceID) {
+                classification = preserved
+            } else {
+                classification = rawClassification
+            }
+
+            let spaceDescriptor = descriptor(for: classification)
             let assignedSpaceID: String
             let assignedSpace: ChatSpace
             if classification == .matrix {
                 assignedSpace = matrixSpace
                 assignedSpaceID = matrixSyntheticSpaceID
             } else {
-                let descriptor = descriptor(for: classification)
-                let syntheticID = "space.synthetic.\(descriptor.key)"
+                let syntheticID = "space.synthetic.\(spaceDescriptor.key)"
                 if let existing = syntheticSpacesByID[syntheticID] {
                     assignedSpace = existing
                 } else {
                     let space = ChatSpace(
                         id: syntheticID,
-                        kind: descriptor.kind,
-                        title: descriptor.title,
-                        subtitle: descriptor.subtitle,
-                        icon: descriptor.icon,
-                        accent: descriptor.accent
+                        kind: spaceDescriptor.kind,
+                        title: spaceDescriptor.title,
+                        subtitle: spaceDescriptor.subtitle,
+                        icon: spaceDescriptor.icon,
+                        accent: spaceDescriptor.accent
                     )
                     syntheticSpacesByID[syntheticID] = space
                     assignedSpace = space
@@ -673,13 +686,29 @@ final class MatrixService {
             if sdkResult?.hitTimelineStart == true {
                 timelineStartReachedThreadIDs.insert(snapshot.roomID)
             }
-            let messages = mergeWorkspaceMessages(
-                sdkMessages: sdkResult?.messages,
-                restMessages: restMessages,
-                existingMessages: existingMessages
-            )
+            let messages: [ChatMessage]
+            if snapshot.isEncrypted {
+                if let sdkMessages = sdkResult?.messages, !sdkMessages.isEmpty {
+                    messages = mergeWorkspaceMessages(
+                        sdkMessages: sdkMessages,
+                        restMessages: restMessages,
+                        existingMessages: existingMessages
+                    )
+                } else if !existingMessages.isEmpty {
+                    // For encrypted rooms we avoid replacing local history with
+                    // REST-only placeholders when SDK timeline is temporarily unavailable.
+                    messages = existingMessages
+                } else {
+                    messages = restMessages
+                }
+            } else {
+                messages = mergeWorkspaceMessages(
+                    sdkMessages: sdkResult?.messages,
+                    restMessages: restMessages,
+                    existingMessages: existingMessages
+                )
+            }
             let lastMessage = messages.last
-            let previousThread = threadsByID[snapshot.roomID]
             let lastActivity = lastMessage?.timestamp ?? previousThread?.lastActivity ?? .now
             let preview = lastMessage.map(previewText(for:))
                 ?? previousThread?.lastMessagePreview
@@ -691,8 +720,8 @@ final class MatrixService {
                 id: snapshot.roomID,
                 homeSpaceID: assignedSpaceID,
                 title: resolvedName,
-                subtitle: snapshot.subtitle(for: descriptor(for: classification)),
-                avatarSymbol: descriptor(for: classification).avatarSymbol,
+                subtitle: snapshot.subtitle(for: spaceDescriptor),
+                avatarSymbol: spaceDescriptor.avatarSymbol,
                 accent: assignedSpace.accent,
                 lastMessagePreview: preview,
                 lastActivity: lastActivity,
@@ -701,7 +730,7 @@ final class MatrixService {
                 isEncrypted: snapshot.isEncrypted,
                 avatarContentURI: snapshot.avatarContentURI(excluding: storedSession.userID),
                 officialTitle: resolvedName,
-                bridgeLabel: descriptor(for: classification).title,
+                bridgeLabel: spaceDescriptor.title,
                 memberCount: snapshot.memberCount,
                 topic: snapshot.topic.isEmpty ? nil : snapshot.topic,
                 isDirect: snapshot.isDirect
@@ -785,6 +814,12 @@ final class MatrixService {
                       incomingAttachment.localCachePath == nil,
                       let existingAttachment = existing.attachment {
                 incomingAttachment.localCachePath = existingAttachment.localCachePath
+                if incomingAttachment.mediaSourceJSON == nil {
+                    incomingAttachment.mediaSourceJSON = existingAttachment.mediaSourceJSON
+                }
+                if incomingAttachment.contentURI == nil {
+                    incomingAttachment.contentURI = existingAttachment.contentURI
+                }
                 merged[index].attachment = incomingAttachment
             }
         }
@@ -1574,6 +1609,14 @@ private struct ParsedRoomSnapshot {
                incomingAttachment.contentURI == existingAttachment.contentURI {
                 incomingAttachment.localCachePath = existingAttachment.localCachePath
             }
+            if let existingAttachment = existing.attachment {
+                if incomingAttachment.mediaSourceJSON == nil {
+                    incomingAttachment.mediaSourceJSON = existingAttachment.mediaSourceJSON
+                }
+                if incomingAttachment.contentURI == nil {
+                    incomingAttachment.contentURI = existingAttachment.contentURI
+                }
+            }
             merged.attachment = incomingAttachment
         } else {
             merged.attachment = nil
@@ -1671,6 +1714,33 @@ private enum MatrixRoomClassification {
             return .genericBridge
         }
         return .matrix
+    }
+}
+
+private func classificationForSyntheticSpaceID(_ spaceID: String) -> MatrixRoomClassification? {
+    switch spaceID {
+    case "space.synthetic.matrix":
+        return .matrix
+    case "space.synthetic.signal":
+        return .signal
+    case "space.synthetic.instagram":
+        return .instagram
+    case "space.synthetic.whatsapp":
+        return .whatsapp
+    case "space.synthetic.telegram":
+        return .telegram
+    case "space.synthetic.slack":
+        return .slack
+    case "space.synthetic.discord":
+        return .discord
+    case "space.synthetic.sms":
+        return .sms
+    case "space.synthetic.messenger":
+        return .messenger
+    case "space.synthetic.bridge":
+        return .genericBridge
+    default:
+        return nil
     }
 }
 
