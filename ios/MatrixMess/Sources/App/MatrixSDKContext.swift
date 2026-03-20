@@ -28,6 +28,7 @@ actor MatrixSDKContext {
     }
 
     private let fileManager: FileManager
+    private let keychain: KeychainStore
     private var client: Client?
     private var syncService: SyncService?
     private var activeSessionKey: String?
@@ -36,8 +37,9 @@ actor MatrixSDKContext {
     private var verificationDelegate: MatrixSDKVerificationDelegate?
     private var verificationFlowState = MatrixVerificationFlowState()
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, keychain: KeychainStore = KeychainStore()) {
         self.fileManager = fileManager
+        self.keychain = keychain
     }
 
     func signIn(
@@ -45,17 +47,20 @@ actor MatrixSDKContext {
         username: String,
         password: String
     ) async throws -> MatrixSession {
-        let storeID = UUID().uuidString.lowercased()
+        let storeID = stableStoreID(homeserver: homeserver, username: username)
+        let preferredDeviceID = stableDeviceID()
         let client = try await buildClient(homeserver: homeserver, storeID: storeID)
         try await client.login(
             username: username,
             password: password,
             initialDeviceName: "MatrixMess iPhone",
-            deviceId: nil
+            deviceId: preferredDeviceID
         )
         try await attach(client: client, sessionKey: storeID)
         await client.encryption().waitForE2eeInitializationTasks()
-        return matrixSession(from: try client.session(), storeID: storeID)
+        let session = try client.session()
+        persistStableDeviceID(session.deviceId)
+        return matrixSession(from: session, storeID: storeID)
     }
 
     func restoreSession(_ session: MatrixSession) async throws -> MatrixSession {
@@ -65,7 +70,9 @@ actor MatrixSDKContext {
         try await client.restoreSession(session: sdkSession)
         try await attach(client: client, sessionKey: sessionKey(for: session, storeID: storeID))
         await client.encryption().waitForE2eeInitializationTasks()
-        return matrixSession(from: try client.session(), storeID: storeID)
+        let restoredSession = try client.session()
+        persistStableDeviceID(restoredSession.deviceId)
+        return matrixSession(from: restoredSession, storeID: storeID)
     }
 
     func currentCryptoStatus(session: MatrixSession?) async -> MatrixCryptoStatus {
@@ -377,12 +384,13 @@ actor MatrixSDKContext {
 
     func downloadMedia(
         contentURI: String,
+        mediaSourceJSON: String?,
         session: MatrixSession,
         fileNameHint: String?,
         mimeTypeHint: String?
     ) async throws -> URL {
         let client = try await ensureClient(for: session)
-        let mediaSource = try MediaSource.fromUrl(url: contentURI)
+        let mediaSource = try resolvedMediaSource(contentURI: contentURI, mediaSourceJSON: mediaSourceJSON)
         let data = try await client.getMediaContent(mediaSource: mediaSource)
         return try persistDownloadedMedia(
             data: data,
@@ -732,7 +740,7 @@ actor MatrixSDKContext {
                     title: image.filename,
                     mimeType: image.info?.mimetype,
                     size: image.info?.size,
-                    contentURI: mediaSourceURL(image.source),
+                    mediaSource: image.source,
                     fallbackSubtitle: "Bild"
                 )
             case .video(content: let video):
@@ -743,7 +751,7 @@ actor MatrixSDKContext {
                     title: video.filename,
                     mimeType: video.info?.mimetype,
                     size: video.info?.size,
-                    contentURI: mediaSourceURL(video.source),
+                    mediaSource: video.source,
                     fallbackSubtitle: "Video"
                 )
             case .audio(content: let audio):
@@ -754,7 +762,7 @@ actor MatrixSDKContext {
                     title: audio.filename.isEmpty ? "Sprachnachricht" : audio.filename,
                     mimeType: audio.info?.mimetype,
                     size: audio.info?.size,
-                    contentURI: mediaSourceURL(audio.source),
+                    mediaSource: audio.source,
                     durationSeconds: audio.info?.duration,
                     fallbackSubtitle: "Audio"
                 )
@@ -766,7 +774,7 @@ actor MatrixSDKContext {
                     title: file.filename,
                     mimeType: file.info?.mimetype,
                     size: file.info?.size,
-                    contentURI: mediaSourceURL(file.source),
+                    mediaSource: file.source,
                     fallbackSubtitle: "Datei"
                 )
             case .other(msgtype: _, body: let body):
@@ -783,7 +791,7 @@ actor MatrixSDKContext {
                 title: body.isEmpty ? "Sticker" : body,
                 mimeType: info.mimetype,
                 size: info.size,
-                contentURI: mediaSourceURL(source),
+                mediaSource: source,
                 fallbackSubtitle: "Sticker"
             )
         case .poll(question: let question, kind: _, maxSelections: _, answers: _, votes: _, endTime: _, hasBeenEdited: _):
@@ -808,10 +816,12 @@ actor MatrixSDKContext {
         title: String,
         mimeType: String?,
         size: UInt64?,
-        contentURI: String?,
+        mediaSource: MediaSource?,
         durationSeconds: TimeInterval? = nil,
         fallbackSubtitle: String
     ) -> MessageAttachment {
+        let contentURI = mediaSource.flatMap(mediaSourceURL(_:))
+        let sourceJSON = mediaSource.flatMap(mediaSourceJSON(_:))
         let subtitle: String
         if let durationSeconds, durationSeconds > 0 {
             let durationText = formattedDuration(seconds: durationSeconds)
@@ -835,6 +845,7 @@ actor MatrixSDKContext {
             title: title,
             subtitle: subtitle,
             contentURI: contentURI,
+            mediaSourceJSON: sourceJSON,
             mimeType: mimeType,
             localCachePath: nil,
             fileSize: size.flatMap(safeInt)
@@ -866,6 +877,11 @@ actor MatrixSDKContext {
 
     private func mediaSourceURL(_ source: MediaSource) -> String? {
         let raw = source.url().trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? nil : raw
+    }
+
+    private func mediaSourceJSON(_ source: MediaSource) -> String? {
+        let raw = source.toJson().trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.isEmpty ? nil : raw
     }
 
@@ -1108,6 +1124,18 @@ actor MatrixSDKContext {
         return ""
     }
 
+    private func resolvedMediaSource(contentURI: String, mediaSourceJSON: String?) throws -> MediaSource {
+        let trimmedJSON = mediaSourceJSON?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedJSON.isEmpty {
+            do {
+                return try MediaSource.fromJson(json: trimmedJSON)
+            } catch {
+                AppLogger.error("MediaSource JSON konnte nicht gelesen werden, URL-Fallback wird genutzt: \(error.localizedDescription)")
+            }
+        }
+        return try MediaSource.fromUrl(url: contentURI)
+    }
+
     private func sdkSession(from session: MatrixSession) -> Session {
         Session(
             accessToken: session.accessToken,
@@ -1138,9 +1166,49 @@ actor MatrixSDKContext {
         "\(storeID ?? stableStoreID(for: session))::\(session.userID)::\(session.deviceID)"
     }
 
+    private func stableStoreID(homeserver: String, username: String) -> String {
+        let normalizedHomeserver = homeserver.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let source = "\(normalizedHomeserver)|\(normalizedUsername)"
+        return source.unicodeScalars.map { String(format: "%02X", $0.value) }.joined()
+    }
+
     private func stableStoreID(for session: MatrixSession) -> String {
         let source = "\(session.userID)|\(session.deviceID)|\(session.homeserver)"
         return source.unicodeScalars.map { String(format: "%02X", $0.value) }.joined()
+    }
+
+    private func stableDeviceID() -> String? {
+        let service = "dev.matrixmess.app.device-id"
+        let account = "stable"
+
+        if let data = try? keychain.read(service: service, account: account),
+           let stored = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !stored.isEmpty {
+            return stored
+        }
+
+        let generated = "MM" + String(
+            UUID().uuidString
+                .replacingOccurrences(of: "-", with: "")
+                .prefix(10)
+                .uppercased()
+        )
+        persistStableDeviceID(generated)
+        return generated
+    }
+
+    private func persistStableDeviceID(_ deviceID: String) {
+        let trimmed = deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
+        let service = "dev.matrixmess.app.device-id"
+        let account = "stable"
+        do {
+            try keychain.write(data, service: service, account: account)
+        } catch {
+            AppLogger.error("Device-ID konnte nicht in der Keychain gespeichert werden: \(error.localizedDescription)")
+        }
     }
 
     private func icon(for kind: ChatMessageKind) -> String {
