@@ -433,6 +433,116 @@ final class MatrixService {
         return response.eventID
     }
 
+    func createRoom(
+        name: String?,
+        isDirect: Bool,
+        inviteUserIDs: [String],
+        session storedSession: MatrixSession
+    ) async throws -> String {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let preset = isDirect ? "trusted_private_chat" : "private_chat"
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = MatrixCreateRoomRequest(
+            name: trimmedName?.isEmpty == false ? trimmedName : nil,
+            topic: nil,
+            visibility: "private",
+            inviteUserIDs: inviteUserIDs.isEmpty ? nil : inviteUserIDs,
+            isDirect: isDirect ? true : nil,
+            preset: preset
+        )
+        let response: MatrixCreateRoomResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/createRoom",
+            method: "POST",
+            body: body,
+            accessToken: storedSession.accessToken
+        )
+        return response.roomID
+    }
+
+    func leaveRoom(roomID: String, session storedSession: MatrixSession) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedRoomID = encodedPathSegment(roomID)
+        let _: EmptyMatrixResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/leave",
+            method: "POST",
+            body: Optional<String>.none,
+            accessToken: storedSession.accessToken
+        )
+    }
+
+    func inviteUser(_ userID: String, to roomID: String, session storedSession: MatrixSession) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedRoomID = encodedPathSegment(roomID)
+        let _: EmptyMatrixResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/rooms/\(encodedRoomID)/invite",
+            method: "POST",
+            body: MatrixInviteUserRequest(userID: userID),
+            accessToken: storedSession.accessToken
+        )
+    }
+
+    func sendReplyMessage(
+        _ text: String,
+        roomID: String,
+        replyToEventID: String,
+        replyToBody: String,
+        session storedSession: MatrixSession,
+        isEncrypted: Bool
+    ) async throws -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw MatrixServiceError.serverError("Nachrichteninhalt ist leer.")
+        }
+
+        if isEncrypted {
+            return try await sdkContext.sendMessage(trimmed, roomID: roomID, session: storedSession)
+        }
+
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let fallbackBody = "> \(replyToBody)\n\n\(trimmed)"
+        let body = MatrixReplyMessageRequest(
+            body: fallbackBody,
+            format: nil,
+            formattedBody: nil,
+            mRelatesTo: .init(inReplyTo: .init(eventID: replyToEventID))
+        )
+        let response = try await sendWithVersionFallback(
+            homeserver: homeserver,
+            roomID: roomID,
+            session: storedSession,
+            eventTypePathComponent: "m.room.message",
+            body: body
+        )
+        return response.eventID
+    }
+
+    func fetchUserProfile(userID: String, session storedSession: MatrixSession) async throws -> MatrixUserProfileResponse {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedUserID = encodedPathSegment(userID)
+        return try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/profile/\(encodedUserID)",
+            method: "GET",
+            body: Optional<String>.none,
+            accessToken: storedSession.accessToken
+        )
+    }
+
+    func updateUserDisplayName(_ displayName: String, session storedSession: MatrixSession) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedUserID = encodedPathSegment(storedSession.userID)
+        let _: EmptyMatrixResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/profile/\(encodedUserID)/displayname",
+            method: "PUT",
+            body: MatrixUpdateDisplayNameRequest(displayname: displayName),
+            accessToken: storedSession.accessToken
+        )
+    }
+
     func logout(session storedSession: MatrixSession) async {
         await sdkContext.stop()
         guard let homeserver = try? normalizedHomeserver(from: storedSession.homeserver) else {
