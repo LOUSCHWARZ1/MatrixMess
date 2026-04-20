@@ -379,6 +379,7 @@ private struct SettingsRootView: View {
 
 private struct ConversationListView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var showingNewChatSheet = false
 
     private var activeSpace: ChatSpace? { appState.selectedSpace }
     private var visibleThreads: [ChatThread] { appState.visibleThreads() }
@@ -454,7 +455,14 @@ private struct ConversationListView: View {
                 }
             }
 
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button {
+                    showingNewChatSheet = true
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.title3)
+                }
+
                 Menu {
                     Button {
                         Task { await appState.refreshMatrixData(forceFullSync: true) }
@@ -477,6 +485,10 @@ private struct ConversationListView: View {
                         .font(.title3)
                 }
             }
+        }
+        .sheet(isPresented: $showingNewChatSheet) {
+            NewChatSheet()
+                .environmentObject(appState)
         }
         .refreshable {
             await appState.refreshMatrixData()
@@ -1020,6 +1032,7 @@ private struct ConversationDetailView: View {
     @State private var mediaPlaybackItem: MediaPlaybackItem?
     @State private var quickLookItem: QuickLookItem?
     @State private var isSending = false
+    @State private var replyToMessage: ChatMessage?
 
     let threadID: String
 
@@ -1136,14 +1149,32 @@ private struct ConversationDetailView: View {
                           if appState.typingIndicatorsEnabled, !typingUsers.isEmpty {
                               TypingIndicatorBanner(userIDs: typingUsers)
                           }
+                          if let replyTarget = replyToMessage {
+                              ReplyBanner(message: replyTarget, accent: thread.accent) {
+                                  withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                                      replyToMessage = nil
+                                  }
+                              }
+                          }
                           ComposerBar(
                               draft: draftBinding,
                               accent: thread.accent,
                               isSending: isSending,
                               sendAction: {
+                                  let capturedReply = replyToMessage
+                                  replyToMessage = nil
                                   Task {
                                       isSending = true
-                                      await appState.sendMessage(appState.draft(for: thread.id), to: thread.id)
+                                      let draft = appState.draft(for: thread.id)
+                                      if let reply = capturedReply {
+                                          await appState.sendReply(
+                                              text: draft,
+                                              replyToMessageID: reply.id,
+                                              in: thread.id
+                                          )
+                                      } else {
+                                          await appState.sendMessage(draft, to: thread.id)
+                                      }
                                       isSending = false
                                   }
                               },
@@ -1302,6 +1333,11 @@ private struct ConversationDetailView: View {
             reactAction: { emoji in
                 Task {
                     await appState.toggleReaction(emoji, on: message.id, in: thread.id)
+                }
+            },
+            replyAction: {
+                withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                    replyToMessage = message
                 }
             },
             forwardAction: {
@@ -1481,6 +1517,8 @@ private struct ThreadProfileSheet: View {
     let threadID: String
     @State private var localTitle = ""
     @State private var localSpaceSelection = ""
+    @State private var showingInviteSheet = false
+    @State private var showLeaveConfirm = false
 
     private var thread: ChatThread? { appState.thread(withID: threadID) }
     private var sourceSpace: ChatSpace? {
@@ -1552,12 +1590,45 @@ private struct ThreadProfileSheet: View {
                                     appState.assignThread(thread.id, to: selectedValue)
                                 }
                             }
+                        }
 
+                        Section("Aktionen") {
+                            Button {
+                                showingInviteSheet = true
+                            } label: {
+                                Label("Person einladen", systemImage: "person.badge.plus")
+                            }
+
+                            Button(role: .destructive) {
+                                showLeaveConfirm = true
+                            } label: {
+                                Label("Chat verlassen", systemImage: "rectangle.portrait.and.arrow.right")
+                                    .foregroundColor(.red)
+                            }
                         }
                     }
                     .onAppear {
                         localTitle = thread.title
                         localSpaceSelection = appState.threadSpaceOverrides[thread.id] ?? ""
+                    }
+                    .sheet(isPresented: $showingInviteSheet) {
+                        InviteUserSheet(threadID: thread.id)
+                            .environmentObject(appState)
+                    }
+                    .confirmationDialog(
+                        "Chat verlassen?",
+                        isPresented: $showLeaveConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Verlassen", role: .destructive) {
+                            Task {
+                                await appState.leaveThread(thread.id)
+                                dismiss()
+                            }
+                        }
+                        Button("Abbrechen", role: .cancel) {}
+                    } message: {
+                        Text("Du verlässt den Chat. Du kannst ihn später erneut beitreten, falls du eingeladen wirst.")
                     }
                 } else {
                     Text("Profil konnte nicht geladen werden.")
@@ -1590,6 +1661,7 @@ private struct MessageBubble: View {
     let accent: SpaceAccent
     let attachmentAction: () -> Void
     let reactAction: (String) -> Void
+    let replyAction: () -> Void
     let forwardAction: () -> Void
     let editAction: () -> Void
     let retryAction: () -> Void
@@ -1643,6 +1715,12 @@ private struct MessageBubble: View {
                     }
 
                       Divider()
+
+                      Button {
+                          replyAction()
+                      } label: {
+                          Label("Antworten", systemImage: "arrowshape.turn.up.left")
+                      }
 
                       Button {
                           forwardAction()
@@ -3710,50 +3788,61 @@ private struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @State private var showingRecoverySheet = false
     @State private var showingVerifySheet = false
+    @State private var showingProfileEditSheet = false
 
     var body: some View {
         Form {
             // Profile header (inspired by Element X)
             Section {
-                VStack(spacing: 14) {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color(red: 0.55, green: 0.30, blue: 0.95), Color.indigo],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 80, height: 80)
-                            .shadow(color: Color.purple.opacity(0.3), radius: 12, y: 4)
-
-                        Text(String((appState.currentUserID ?? "?").prefix(1)).uppercased())
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .foregroundColor(.white)
-                    }
-
-                    VStack(spacing: 4) {
-                        Text(appState.currentUserID ?? "Nicht angemeldet")
-                            .font(.headline)
-
-                        Text(appState.homeserver)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        HStack(spacing: 4) {
+                Button {
+                    showingProfileEditSheet = true
+                } label: {
+                    VStack(spacing: 14) {
+                        ZStack {
                             Circle()
-                                .fill(Color.green)
-                                .frame(width: 8, height: 8)
-                            Text("Session aktiv")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(red: 0.55, green: 0.30, blue: 0.95), Color.indigo],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 80, height: 80)
+                                .shadow(color: Color.purple.opacity(0.3), radius: 12, y: 4)
+
+                            Text(String((appState.currentUserID ?? "?").prefix(1)).uppercased())
+                                .font(.system(size: 32, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
                         }
-                        .padding(.top, 2)
+
+                        VStack(spacing: 4) {
+                            Text(appState.currentUserID ?? "Nicht angemeldet")
+                                .font(.headline)
+                                .foregroundColor(.primary)
+
+                            Text(appState.homeserver)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 8, height: 8)
+                                Text("Profil bearbeiten")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.top, 2)
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
+                .buttonStyle(.plain)
+            }
+            .sheet(isPresented: $showingProfileEditSheet) {
+                UserProfileEditSheet()
+                    .environmentObject(appState)
             }
 
             // Sign out button
@@ -4409,4 +4498,247 @@ private func formattedTimestamp(_ date: Date) -> String {
     }
 
     return date.formatted(date: .abbreviated, time: .omitted)
+}
+
+private struct ReplyBanner: View {
+    let message: ChatMessage
+    let accent: SpaceAccent
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(accent.tint)
+                .frame(width: 3)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Antwort an \(message.senderDisplayName)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(accent.tint)
+                    .lineLimit(1)
+                Text(message.body)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: dismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .secondarySystemGroupedBackground))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+}
+
+private struct NewChatSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    @State private var chatName = ""
+    @State private var inviteUserID = ""
+    @State private var isDirect = true
+    @State private var isCreating = false
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Picker("Typ", selection: $isDirect) {
+                        Text("Direktnachricht").tag(true)
+                        Text("Gruppe").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                if !isDirect {
+                    Section("Gruppenname") {
+                        TextField("z. B. Projektteam", text: $chatName)
+                            .textInputAutocapitalization(.words)
+                    }
+                }
+
+                Section("Einladen (optional)") {
+                    TextField("@name:server.de", text: $inviteUserID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                    Text("Matrix-ID des Kontakts eingeben.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Neuer Chat")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        isCreating = true
+                        Task {
+                            await appState.createRoom(
+                                name: isDirect ? nil : chatName,
+                                isDirect: isDirect,
+                                inviteUserID: inviteUserID.isEmpty ? nil : inviteUserID
+                            )
+                            isCreating = false
+                            dismiss()
+                        }
+                    } label: {
+                        if isCreating {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Text("Erstellen")
+                        }
+                    }
+                    .disabled(isCreating || (!isDirect && chatName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                }
+            }
+        }
+    }
+}
+
+private struct InviteUserSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    let threadID: String
+    @State private var userID = ""
+    @State private var isInviting = false
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Matrix-ID des Kontakts") {
+                    TextField("@name:server.de", text: $userID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                }
+
+                if let errorMessage = appState.errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("Einladen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        isInviting = true
+                        Task {
+                            await appState.inviteUser(userID, to: threadID)
+                            isInviting = false
+                            if appState.errorMessage == nil {
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        if isInviting {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Text("Einladen")
+                        }
+                    }
+                    .disabled(userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isInviting)
+                }
+            }
+        }
+    }
+}
+
+private struct UserProfileEditSheet: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var displayName: String = ""
+    @State private var matrixID: String = ""
+    @State private var isSaving = false
+    @State private var isLoading = true
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    if isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                    } else {
+                        HStack {
+                            Text("Matrix-ID")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(matrixID)
+                                .foregroundColor(.secondary)
+                                .font(.footnote)
+                        }
+                        HStack {
+                            Text("Anzeigename")
+                            TextField("Dein Name", text: $displayName)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+
+                if let error = appState.errorMessage {
+                    Section {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("Profil bearbeiten")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        isSaving = true
+                        Task {
+                            await appState.updateDisplayName(displayName)
+                            isSaving = false
+                            if appState.errorMessage == nil {
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        if isSaving {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Text("Speichern")
+                        }
+                    }
+                    .disabled(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving || isLoading)
+                }
+            }
+            .task {
+                matrixID = appState.currentUserID ?? ""
+                let profile = await appState.fetchCurrentUserProfile()
+                displayName = profile.displayName ?? ""
+                isLoading = false
+            }
+        }
+    }
 }

@@ -1943,22 +1943,207 @@ final class AppState: ObservableObject {
 
     func forwardMessage(_ messageID: UUID, from sourceThreadID: String, to targetThreadID: String) {
         guard let sourceThread = thread(withID: sourceThreadID),
-              var message = messagesByThreadID[sourceThreadID]?.first(where: { $0.id == messageID }) else {
+              let originalMessage = messagesByThreadID[sourceThreadID]?.first(where: { $0.id == messageID }) else {
             return
         }
 
-        message.senderDisplayName = "Du"
-        message.timestamp = .now
-        message.isOutgoing = true
-        message.forwardedFrom = sourceThread.title
-        message.reactions = []
-
-        appendMessage(
-            message,
-            to: targetThreadID,
-            preview: "Weitergeleitet: \(previewLabel(for: message))"
+        let forwarded = ChatMessage(
+            id: UUID(),
+            matrixEventID: nil,
+            senderDisplayName: "Du",
+            body: originalMessage.body,
+            timestamp: .now,
+            isOutgoing: true,
+            kind: originalMessage.kind,
+            sendStatus: .sending,
+            attachment: originalMessage.attachment,
+            forwardedFrom: sourceThread.title,
+            reactions: [],
+            isEdited: false,
+            isPending: true
         )
+
+        appendMessage(forwarded, to: targetThreadID, preview: "Weitergeleitet: \(previewLabel(for: originalMessage))")
         persistSnapshotIfPossible()
+
+        Task { [weak self] in
+            guard let self, let currentSession else { return }
+            let isEncrypted = self.thread(withID: targetThreadID)?.isEncrypted ?? false
+            let sendText = originalMessage.body.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard originalMessage.kind == .text, !sendText.isEmpty else { return }
+
+            do {
+                let sentEventID = try await self.matrixService.sendMessage(
+                    sendText,
+                    roomID: targetThreadID,
+                    session: currentSession,
+                    isEncrypted: isEncrypted
+                )
+                if var messages = self.messagesByThreadID[targetThreadID],
+                   let index = messages.firstIndex(where: { $0.id == forwarded.id }) {
+                    if let sentEventID {
+                        messages[index].matrixEventID = sentEventID
+                    }
+                    messages[index].sendStatus = sentEventID != nil ? .sent : .sending
+                    messages[index].isPending = sentEventID == nil
+                    self.messagesByThreadID[targetThreadID] = messages
+                    self.persistSnapshotIfPossible()
+                }
+            } catch {
+                self.errorMessage = error.localizedDescription
+                if var messages = self.messagesByThreadID[targetThreadID],
+                   let index = messages.firstIndex(where: { $0.id == forwarded.id }) {
+                    messages[index].sendStatus = .failed
+                    messages[index].isPending = false
+                    self.messagesByThreadID[targetThreadID] = messages
+                    self.persistSnapshotIfPossible()
+                }
+            }
+        }
+    }
+
+    func sendReply(text: String, replyToMessageID: UUID, in threadID: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        guard let currentSession,
+              let thread = thread(withID: threadID),
+              let replyTo = messagesByThreadID[threadID]?.first(where: { $0.id == replyToMessageID }),
+              let replyToEventID = replyTo.matrixEventID else {
+            await sendMessage(text, to: threadID)
+            return
+        }
+
+        let messageID = UUID()
+        appendMessage(
+            ChatMessage(
+                id: messageID,
+                senderDisplayName: "Du",
+                body: trimmed,
+                timestamp: .now,
+                isOutgoing: true,
+                sendStatus: .sending,
+                isPending: true
+            ),
+            to: threadID,
+            preview: trimmed
+        )
+
+        do {
+            let sentEventID = try await matrixService.sendReplyMessage(
+                trimmed,
+                roomID: threadID,
+                replyToEventID: replyToEventID,
+                replyToBody: replyTo.body,
+                session: currentSession,
+                isEncrypted: thread.isEncrypted
+            )
+            if var messages = messagesByThreadID[threadID],
+               let index = messages.firstIndex(where: { $0.id == messageID }) {
+                if let sentEventID {
+                    messages[index].matrixEventID = sentEventID
+                }
+                messages[index].sendStatus = sentEventID != nil ? .sent : .sending
+                messages[index].isPending = sentEventID == nil
+                messagesByThreadID[threadID] = messages
+            }
+            persistSnapshotIfPossible()
+            if thread.isEncrypted || sentEventID == nil {
+                scheduleDeferredMatrixRefresh()
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            if var messages = messagesByThreadID[threadID],
+               let index = messages.firstIndex(where: { $0.id == messageID }) {
+                messages[index].sendStatus = .failed
+                messages[index].isPending = false
+                messagesByThreadID[threadID] = messages
+            }
+            persistSnapshotIfPossible()
+        }
+    }
+
+    func createRoom(name: String?, isDirect: Bool, inviteUserID: String?) async {
+        guard let currentSession else { return }
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let inviteIDs: [String]
+        if let id = inviteUserID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+            inviteIDs = [id]
+        } else {
+            inviteIDs = []
+        }
+        do {
+            _ = try await matrixService.createRoom(
+                name: trimmedName?.isEmpty == false ? trimmedName : nil,
+                isDirect: isDirect,
+                inviteUserIDs: inviteIDs,
+                session: currentSession
+            )
+            await refreshMatrixData(forceFullSync: false)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func leaveThread(_ threadID: String) async {
+        guard let currentSession else { return }
+        do {
+            try await matrixService.leaveRoom(roomID: threadID, session: currentSession)
+            threadsByID.removeValue(forKey: threadID)
+            messagesByThreadID.removeValue(forKey: threadID)
+            mainPinnedThreadIDs.removeAll { $0 == threadID }
+            draftsByThreadID.removeValue(forKey: threadID)
+            if selectedThreadID == threadID {
+                selectedThreadID = nil
+            }
+            rebuildVisibleSpaces()
+            persistSnapshotIfPossible()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func inviteUser(_ userID: String, to threadID: String) async {
+        guard let currentSession else { return }
+        let trimmed = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "Bitte gib eine gueltige Matrix-ID an (z. B. @name:server.de)."
+            return
+        }
+        do {
+            try await matrixService.inviteUser(trimmed, to: threadID, session: currentSession)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func fetchCurrentUserProfile() async -> (displayName: String?, avatarURL: String?) {
+        guard let currentSession else { return (nil, nil) }
+        do {
+            let profile = try await matrixService.fetchUserProfile(
+                userID: currentSession.userID,
+                session: currentSession
+            )
+            return (profile.displayname, profile.avatarURL)
+        } catch {
+            AppLogger.error("Profil konnte nicht geladen werden: \(error.localizedDescription)")
+            return (nil, nil)
+        }
+    }
+
+    func updateDisplayName(_ newName: String) async {
+        guard let currentSession else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "Bitte gib einen gueltigen Anzeigenamen ein."
+            return
+        }
+        do {
+            try await matrixService.updateUserDisplayName(trimmed, session: currentSession)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func createScheduledEvent(

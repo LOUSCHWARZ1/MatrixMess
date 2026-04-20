@@ -357,6 +357,86 @@ struct MatrixSendMediaMessageRequest: Encodable {
     let info: Info
 }
 
+struct MatrixCreateRoomRequest: Encodable {
+    let name: String?
+    let topic: String?
+    let visibility: String?
+    let inviteUserIDs: [String]?
+    let isDirect: Bool?
+    let preset: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case topic
+        case visibility
+        case inviteUserIDs = "invite"
+        case isDirect = "is_direct"
+        case preset
+    }
+}
+
+struct MatrixCreateRoomResponse: Decodable {
+    let roomID: String
+
+    enum CodingKeys: String, CodingKey {
+        case roomID = "room_id"
+    }
+}
+
+struct MatrixInviteUserRequest: Encodable {
+    let userID: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+    }
+}
+
+struct MatrixReplyMessageRequest: Encodable {
+    struct RelatesTo: Encodable {
+        struct InReplyTo: Encodable {
+            let eventID: String
+
+            enum CodingKeys: String, CodingKey {
+                case eventID = "event_id"
+            }
+        }
+
+        let inReplyTo: InReplyTo
+
+        enum CodingKeys: String, CodingKey {
+            case inReplyTo = "m.in_reply_to"
+        }
+    }
+
+    let msgtype = "m.text"
+    let body: String
+    let format: String?
+    let formattedBody: String?
+    let mRelatesTo: RelatesTo
+
+    enum CodingKeys: String, CodingKey {
+        case msgtype
+        case body
+        case format
+        case formattedBody = "formatted_body"
+        case mRelatesTo = "m.relates_to"
+    }
+}
+
+struct MatrixUserProfileResponse: Decodable {
+    let displayname: String?
+    let avatarURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case displayname
+        case avatarURL = "avatar_url"
+    }
+}
+
+struct MatrixUpdateDisplayNameRequest: Encodable {
+    let displayname: String
+}
+
 struct MatrixWorkspace {
     let session: MatrixSession
     let spaces: [ChatSpace]
