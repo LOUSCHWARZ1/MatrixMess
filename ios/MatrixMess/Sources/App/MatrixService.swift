@@ -370,10 +370,23 @@ final class MatrixService {
     func markRead(
         roomID: String,
         eventID: String,
-        session storedSession: MatrixSession
+        session storedSession: MatrixSession,
+        asPrivate: Bool = false
     ) async throws {
         let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
         let encodedRoomID = encodedPathSegment(roomID)
+
+        if asPrivate {
+            // Andere sollen kein oeffentliches Read-Receipt sehen: m.read.private (Matrix v1.4).
+            let _: EmptyMatrixResponse = try await performRequest(
+                homeserver: homeserver,
+                path: "/_matrix/client/v3/rooms/\(encodedRoomID)/read_markers",
+                method: "POST",
+                body: MatrixReadMarkersPrivateRequest(fullyRead: eventID, readPrivate: eventID),
+                accessToken: storedSession.accessToken
+            )
+            return
+        }
 
         let _: EmptyMatrixResponse = try await performRequest(
             homeserver: homeserver,
@@ -541,6 +554,235 @@ final class MatrixService {
             body: MatrixUpdateDisplayNameRequest(displayname: displayName),
             accessToken: storedSession.accessToken
         )
+    }
+
+    // MARK: - Blockierte Kontakte (m.ignored_user_list)
+
+    func fetchIgnoredUsers(session storedSession: MatrixSession) async throws -> [String] {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedUserID = encodedPathSegment(storedSession.userID)
+        do {
+            let content: MatrixIgnoredUserListContent = try await performRequest(
+                homeserver: homeserver,
+                path: "/_matrix/client/v3/user/\(encodedUserID)/account_data/m.ignored_user_list",
+                method: "GET",
+                body: Optional<String>.none,
+                accessToken: storedSession.accessToken
+            )
+            return content.ignoredUsers.keys.sorted()
+        } catch {
+            // Account-Data existiert noch nicht: leere Liste statt Fehler.
+            if case MatrixServiceError.serverError(let message) = error,
+               message.contains("M_NOT_FOUND") {
+                return []
+            }
+            throw error
+        }
+    }
+
+    func setIgnoredUsers(_ userIDs: [String], session storedSession: MatrixSession) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedUserID = encodedPathSegment(storedSession.userID)
+        let _: EmptyMatrixResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/user/\(encodedUserID)/account_data/m.ignored_user_list",
+            method: "PUT",
+            body: MatrixIgnoredUserListContent(userIDs: userIDs),
+            accessToken: storedSession.accessToken
+        )
+    }
+
+    // MARK: - Geraeteverwaltung
+
+    func fetchDevices(session storedSession: MatrixSession) async throws -> [MatrixDeviceInfo] {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let response: MatrixDevicesResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/devices",
+            method: "GET",
+            body: Optional<String>.none,
+            accessToken: storedSession.accessToken
+        )
+        return response.devices.sorted { ($0.lastSeenTimestampMs ?? 0) > ($1.lastSeenTimestampMs ?? 0) }
+    }
+
+    func renameDevice(deviceID: String, displayName: String, session storedSession: MatrixSession) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedDeviceID = encodedPathSegment(deviceID)
+        let _: EmptyMatrixResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/devices/\(encodedDeviceID)",
+            method: "PUT",
+            body: MatrixUpdateDeviceRequest(displayName: displayName),
+            accessToken: storedSession.accessToken
+        )
+    }
+
+    /// Loescht ein Geraet ueber den User-Interactive-Auth-Flow mit Passwort.
+    func deleteDevice(deviceID: String, password: String, session storedSession: MatrixSession) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedDeviceID = encodedPathSegment(deviceID)
+        let path = "/_matrix/client/v3/devices/\(encodedDeviceID)"
+
+        var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
+        components?.path = combinedPath(basePath: homeserver.path, endpointPath: path)
+        guard let url = components?.url else {
+            throw MatrixServiceError.invalidHomeserver
+        }
+
+        func makeRequest(authBody: Data?) -> URLRequest {
+            var request = URLRequest(url: url)
+            request.httpMethod = "DELETE"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("Bearer \(storedSession.accessToken)", forHTTPHeaderField: "Authorization")
+            if let authBody {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = authBody
+            }
+            return request
+        }
+
+        // Schritt 1: ohne Auth anfragen, um die UIA-Session zu erhalten.
+        let (firstData, firstResponse) = try await session.data(for: makeRequest(authBody: nil))
+        if let httpResponse = firstResponse as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) {
+            return
+        }
+
+        let uiaSession = (try? jsonDecoder.decode(MatrixUIARequiredResponse.self, from: firstData))?.session
+
+        struct DeleteDeviceAuthBody: Encodable {
+            struct Auth: Encodable {
+                struct Identifier: Encodable {
+                    let type = "m.id.user"
+                    let user: String
+                }
+
+                let type = "m.login.password"
+                let identifier: Identifier
+                let password: String
+                let session: String?
+            }
+
+            let auth: Auth
+        }
+
+        let body = try jsonEncoder.encode(
+            DeleteDeviceAuthBody(
+                auth: .init(
+                    identifier: .init(user: storedSession.userID),
+                    password: password,
+                    session: uiaSession
+                )
+            )
+        )
+
+        let (secondData, secondResponse) = try await session.data(for: makeRequest(authBody: body))
+        guard let httpResponse = secondResponse as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            if let matrixError = try? jsonDecoder.decode(MatrixErrorResponse.self, from: secondData),
+               let message = matrixError.error {
+                throw MatrixServiceError.serverError(message)
+            }
+            throw MatrixServiceError.serverError("Geraet konnte nicht abgemeldet werden.")
+        }
+    }
+
+    // MARK: - Benachrichtigungsmodus pro Raum (Push Rules)
+
+    /// Setzt den Benachrichtigungsmodus eines Raums serverseitig:
+    /// - Mute: Override-Regel mit dont_notify (unterdrueckt alles, auf allen Geraeten).
+    /// - Mentions: Room-Regel mit dont_notify (Content-/Mention-Regeln greifen weiterhin).
+    /// - All: beide Regeln entfernen.
+    func setRoomNotificationMode(
+        _ mode: RoomNotificationMode,
+        roomID: String,
+        session storedSession: MatrixSession
+    ) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let encodedRoomID = encodedPathSegment(roomID)
+
+        func putRule(scope: String, body: MatrixSetPushRuleRequest) async throws {
+            let _: EmptyMatrixResponse = try await performRequest(
+                homeserver: homeserver,
+                path: "/_matrix/client/v3/pushrules/global/\(scope)/\(encodedRoomID)",
+                method: "PUT",
+                body: body,
+                accessToken: storedSession.accessToken
+            )
+        }
+
+        func deleteRule(scope: String) async {
+            do {
+                let _: EmptyMatrixResponse = try await performRequest(
+                    homeserver: homeserver,
+                    path: "/_matrix/client/v3/pushrules/global/\(scope)/\(encodedRoomID)",
+                    method: "DELETE",
+                    body: Optional<String>.none,
+                    accessToken: storedSession.accessToken
+                )
+            } catch {
+                // Regel existiert nicht: kein Fehler.
+            }
+        }
+
+        switch mode {
+        case .all:
+            await deleteRule(scope: "override")
+            await deleteRule(scope: "room")
+        case .mentions:
+            await deleteRule(scope: "override")
+            try await putRule(scope: "room", body: .init(conditions: nil, actions: ["dont_notify"]))
+        case .mute:
+            await deleteRule(scope: "room")
+            try await putRule(
+                scope: "override",
+                body: .init(
+                    conditions: [.init(kind: "event_match", key: "room_id", pattern: roomID)],
+                    actions: ["dont_notify"]
+                )
+            )
+        }
+    }
+
+    // MARK: - Serverseitige Nachrichtensuche
+
+    func searchMessages(
+        query: String,
+        session storedSession: MatrixSession
+    ) async throws -> [MatrixServerSearchResult] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let response: MatrixSearchResponse = try await performRequest(
+            homeserver: homeserver,
+            path: "/_matrix/client/v3/search",
+            method: "POST",
+            body: MatrixSearchRequest(searchTerm: trimmed),
+            accessToken: storedSession.accessToken
+        )
+
+        let results = response.searchCategories.roomEvents?.results ?? []
+        return results.compactMap { item in
+            guard let event = item.result,
+                  let eventID = event.eventID,
+                  let roomID = event.roomID,
+                  let body = event.content?["body"]?.stringValue,
+                  !body.isEmpty else {
+                return nil
+            }
+
+            let timestamp = event.originServerTs.map {
+                Date(timeIntervalSince1970: TimeInterval($0) / 1000)
+            } ?? .now
+
+            return MatrixServerSearchResult(
+                id: eventID,
+                roomID: roomID,
+                sender: event.sender ?? "Unbekannt",
+                body: body,
+                timestamp: timestamp
+            )
+        }
     }
 
     func logout(session storedSession: MatrixSession) async {

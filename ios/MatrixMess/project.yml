@@ -11,8 +11,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: 5.10
-    CURRENT_PROJECT_VERSION: 2
-    MARKETING_VERSION: 0.3.1
+    CURRENT_PROJECT_VERSION: 3
+    MARKETING_VERSION: 0.4.0
 
 targets:
   MatrixMess:
@@ -44,6 +44,7 @@ targets:
         INFOPLIST_KEY_NSMicrophoneUsageDescription: MatrixMess nutzt das Mikrofon fuer Calls und Sprachnachrichten.
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: MatrixMess nutzt die Fotomediathek, damit du Bilder und Videos auswaehlen kannst.
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: MatrixMess kann Medien lokal sichern, wenn du das in den Einstellungen aktivierst.
+        INFOPLIST_KEY_NSFaceIDUsageDescription: MatrixMess nutzt Face ID, um die App und gesperrte Chats zu schuetzen.
         INFOPLIST_KEY_UIBackgroundModes:
           - fetch
           - processing
