@@ -571,7 +571,7 @@ actor MatrixSDKContext {
         timelineStatesByRoomID[roomID] = state
     }
 
-    private func updatePaginationStatus(_ status: RoomPaginationStatus, roomID: String) {
+    private func updatePaginationStatus(_ status: PaginationStatus, roomID: String) {
         guard var state = timelineStatesByRoomID[roomID] else { return }
         switch status {
         case .idle(let hitTimelineStart):
@@ -1143,7 +1143,7 @@ actor MatrixSDKContext {
             userId: session.userID,
             deviceId: session.deviceID,
             homeserverUrl: session.homeserver,
-            oidcData: session.oidcData,
+            oauthData: session.oidcData,
             slidingSyncVersion: .native
         )
     }
@@ -1157,7 +1157,7 @@ actor MatrixSDKContext {
             signedInAt: .now,
             syncToken: nil,
             refreshToken: session.refreshToken,
-            oidcData: session.oidcData,
+            oidcData: session.oauthData,
             sdkStoreID: storeID
         )
     }
@@ -1371,13 +1371,13 @@ private final class MatrixSDKTimelineListener: TimelineListener, @unchecked Send
 }
 
 private final class MatrixSDKPaginationStatusListener: PaginationStatusListener, @unchecked Sendable {
-    private let onStatus: @Sendable (RoomPaginationStatus) -> Void
+    private let onStatus: @Sendable (PaginationStatus) -> Void
 
-    init(onStatus: @escaping @Sendable (RoomPaginationStatus) -> Void) {
+    init(onStatus: @escaping @Sendable (PaginationStatus) -> Void) {
         self.onStatus = onStatus
     }
 
-    func onUpdate(status: RoomPaginationStatus) {
+    func onUpdate(status: PaginationStatus) {
         onStatus(status)
     }
 }
