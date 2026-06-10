@@ -7,7 +7,7 @@ import QuickLook
 import SafariServices
 import WebKit
 
-private let appBuildLabel = "v0.4.0 - 2026-06-10"
+private let appBuildLabel = "v0.4.1 - 2026-06-10"
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
