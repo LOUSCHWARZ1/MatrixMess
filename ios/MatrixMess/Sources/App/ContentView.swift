@@ -7,7 +7,7 @@ import QuickLook
 import SafariServices
 import WebKit
 
-private let appBuildLabel = "v0.3.2 - 2026-03-20"
+private let appBuildLabel = "v0.4.0 - 2026-06-10"
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
@@ -285,8 +285,115 @@ private struct LoginField: View {
     }
 }
 
+private struct MessageTextSizeModifier: ViewModifier {
+    let size: MessageTextSize
+
+    func body(content: Content) -> some View {
+        if let dynamicSize = size.dynamicTypeSize {
+            content.dynamicTypeSize(dynamicSize)
+        } else {
+            content
+        }
+    }
+}
+
+private struct LockedChatView: View {
+    @EnvironmentObject private var appState: AppState
+    let thread: ChatThread
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Spacer()
+
+            ZStack {
+                Circle()
+                    .fill(appState.appAccent.tint.opacity(0.14))
+                    .frame(width: 96, height: 96)
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundColor(appState.appAccent.tint)
+            }
+
+            VStack(spacing: 6) {
+                Text(thread.title)
+                    .font(.title3.weight(.semibold))
+                Text("Dieser Chat ist gesperrt.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+
+            Button {
+                Task { await appState.unlockChat(thread.id) }
+            } label: {
+                Label("Mit Face ID entsperren", systemImage: "faceid")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 12)
+                    .background(appState.appAccent.tint)
+                    .clipShape(Capsule())
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
+        .navigationTitle(thread.title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct AppLockOverlayView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                ZStack {
+                    Circle()
+                        .fill(appState.appAccent.gradient)
+                        .frame(width: 84, height: 84)
+                        .shadow(color: appState.appAccent.tint.opacity(0.4), radius: 18, y: 6)
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 32, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+
+                VStack(spacing: 6) {
+                    Text("MatrixMess ist gesperrt")
+                        .font(.title3.weight(.bold))
+                    Text("Entsperre die App, um deine Chats zu sehen.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+
+                Button {
+                    Task { await appState.unlockApp() }
+                } label: {
+                    Label("Entsperren", systemImage: "faceid")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 26)
+                        .padding(.vertical, 13)
+                        .background(appState.appAccent.tint)
+                        .clipShape(Capsule())
+                }
+                .disabled(appState.isUnlockingApp)
+            }
+        }
+        .task {
+            await appState.unlockApp()
+        }
+    }
+}
+
 private struct MessengerShellView: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingPostLoginSetup = false
     @State private var postLoginShowRecovery = false
     @State private var postLoginShowVerify = false
@@ -309,8 +416,18 @@ private struct MessengerShellView: View {
                 .tabItem { Label(AppTab.settings.title, systemImage: AppTab.settings.systemImage) }
                 .tag(AppTab.settings)
         }
-        .accentColor(Color(red: 0.55, green: 0.30, blue: 0.95))
+        .accentColor(appState.appAccent.tint)
         .preferredColorScheme(appState.preferredColorScheme)
+        .overlay {
+            if appState.isAppLocked {
+                AppLockOverlayView()
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                appState.lockAppForBackgroundIfNeeded()
+            }
+        }
         .sheet(isPresented: $showingPostLoginSetup) {
             PostLoginSetupSheet(
                 onRecovery: { postLoginShowRecovery = true },
@@ -380,9 +497,13 @@ private struct SettingsRootView: View {
 private struct ConversationListView: View {
     @EnvironmentObject private var appState: AppState
     @State private var showingNewChatSheet = false
+    @State private var showingServerSearch = false
 
     private var activeSpace: ChatSpace? { appState.selectedSpace }
     private var visibleThreads: [ChatThread] { appState.visibleThreads() }
+    private var trimmedSearchText: String {
+        appState.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         List {
@@ -393,8 +514,23 @@ private struct ConversationListView: View {
                         .listRowBackground(Color.clear)
 
                     SpaceTabStrip()
+                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
+                        .listRowBackground(Color.clear)
+
+                    ChatFilterBar()
                         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 10, trailing: 0))
                         .listRowBackground(Color.clear)
+                }
+
+                if !trimmedSearchText.isEmpty {
+                    Section {
+                        Button {
+                            showingServerSearch = true
+                        } label: {
+                            Label("\u{201E}\(trimmedSearchText)\u{201C} auf dem Server suchen", systemImage: "magnifyingglass.circle.fill")
+                                .font(.subheadline.weight(.medium))
+                        }
+                    }
                 }
 
                 if visibleThreads.isEmpty {
@@ -411,12 +547,19 @@ private struct ConversationListView: View {
                                 ConversationRow(thread: thread)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
+                                Button {
+                                    appState.toggleArchive(for: thread.id)
+                                } label: {
+                                    Label("Archiv", systemImage: "archivebox.fill")
+                                }
+                                .tint(.gray)
+
+                                Button {
                                     appState.toggleMute(for: thread.id)
                                 } label: {
                                     Label(thread.isMuted ? "Laut" : "Stumm", systemImage: thread.isMuted ? "bell.fill" : "bell.slash.fill")
                                 }
-                                .tint(thread.isMuted ? .green : .gray)
+                                .tint(thread.isMuted ? .green : .orange)
 
                                 Button {
                                     appState.toggleMainPin(for: thread.id)
@@ -432,6 +575,24 @@ private struct ConversationListView: View {
                                     Label("Gelesen", systemImage: "checkmark.circle.fill")
                                 }
                                 .tint(.green)
+                            }
+                        }
+                    }
+                }
+
+                if appState.archivedThreadCount() > 0 {
+                    Section {
+                        NavigationLink {
+                            ArchivedChatsView()
+                        } label: {
+                            Label {
+                                Text("Archivierte Chats")
+                                Spacer()
+                                Text("\(appState.archivedThreadCount())")
+                                    .foregroundColor(.secondary)
+                            } icon: {
+                                Image(systemName: "archivebox")
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }
@@ -490,8 +651,190 @@ private struct ConversationListView: View {
             NewChatSheet()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $showingServerSearch) {
+            ServerSearchSheet(initialQuery: trimmedSearchText)
+                .environmentObject(appState)
+        }
         .refreshable {
             await appState.refreshMatrixData()
+        }
+    }
+}
+
+private struct ChatFilterBar: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(ChatListFilterMode.allCases, id: \.self) { filter in
+                    Button {
+                        appState.chatListFilter = filter
+                    } label: {
+                        Text(filter.title)
+                            .font(.footnote.weight(.medium))
+                            .foregroundColor(appState.chatListFilter == filter ? .white : .primary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(
+                                        appState.chatListFilter == filter
+                                            ? AnyShapeStyle(appState.appAccent.tint)
+                                            : AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+private struct ArchivedChatsView: View {
+    @EnvironmentObject private var appState: AppState
+
+    private var archivedThreads: [ChatThread] { appState.archivedThreads() }
+
+    var body: some View {
+        List {
+            if archivedThreads.isEmpty {
+                Text("Keine archivierten Chats.")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(archivedThreads) { thread in
+                    NavigationLink {
+                        ConversationDetailView(threadID: thread.id)
+                    } label: {
+                        ConversationRow(thread: thread)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        if appState.isArchived(thread.id) {
+                            Button {
+                                appState.toggleArchive(for: thread.id)
+                            } label: {
+                                Label("Wiederherstellen", systemImage: "tray.and.arrow.up.fill")
+                            }
+                            .tint(.indigo)
+                        } else {
+                            Button {
+                                appState.toggleMute(for: thread.id)
+                            } label: {
+                                Label("Laut schalten", systemImage: "bell.fill")
+                            }
+                            .tint(.green)
+                        }
+                    }
+                }
+            }
+
+            if appState.autoArchiveMutedChats {
+                Section {
+                    Label("Stummgeschaltete Chats werden automatisch archiviert.", systemImage: "info.circle")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Archiv")
+    }
+}
+
+private struct ServerSearchSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    let initialQuery: String
+
+    @State private var query = ""
+    @State private var results: [MatrixServerSearchResult] = []
+    @State private var isSearching = false
+    @State private var hasSearched = false
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField("Nachrichten auf dem Server suchen", text: $query)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .submitLabel(.search)
+                            .onSubmit { runSearch() }
+                        if isSearching {
+                            ProgressView()
+                        }
+                    }
+                }
+
+                if hasSearched && results.isEmpty && !isSearching {
+                    Section {
+                        Text("Keine Treffer auf dem Homeserver.")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if !results.isEmpty {
+                    Section("\(results.count) Treffer") {
+                        ForEach(results) { result in
+                            Button {
+                                appState.openThread(result.roomID)
+                                dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(appState.thread(withID: result.roomID)?.title ?? result.roomID)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundColor(.primary)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text(result.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Text(result.sender)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(result.body)
+                                        .font(.subheadline)
+                                        .foregroundColor(.primary)
+                                        .lineLimit(3)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Serversuche")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+            .onAppear {
+                if query.isEmpty {
+                    query = initialQuery
+                    runSearch()
+                }
+            }
+        }
+    }
+
+    private func runSearch() {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isSearching else { return }
+        isSearching = true
+        Task {
+            results = await appState.searchMessagesOnServer(trimmed)
+            isSearching = false
+            hasSearched = true
         }
     }
 }
@@ -598,9 +941,11 @@ private struct ConversationRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ThreadAvatarView(thread: thread, size: 52)
+            if appState.showAvatarsInChatList {
+                ThreadAvatarView(thread: thread, size: appState.chatListDensity.avatarSize)
+            }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: appState.chatListDensity == .compact ? 1 : 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(thread.title)
                         .font(.body.weight(.semibold))
@@ -626,19 +971,27 @@ private struct ConversationRow: View {
                     .foregroundColor(draftPreview == nil ? .secondary : .orange)
                     .lineLimit(1)
 
-                HStack(spacing: 10) {
-                    if let sourceSpace {
-                        SourceBadge(space: sourceSpace)
-                    } else {
-                        Text(thread.subtitle)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                if appState.chatListDensity == .comfortable {
+                    HStack(spacing: 10) {
+                        if let sourceSpace {
+                            SourceBadge(space: sourceSpace)
+                        } else {
+                            Text(thread.subtitle)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
 
-                    if thread.isEncrypted {
-                        Label("E2EE", systemImage: "lock.fill")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(.secondary)
+                        if thread.isEncrypted {
+                            Label("E2EE", systemImage: "lock.fill")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundColor(.secondary)
+                        }
+
+                        if appState.isChatLocked(thread.id) {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 
@@ -663,7 +1016,7 @@ private struct ConversationRow: View {
                     .shadow(color: thread.accent.tint.opacity(0.3), radius: 4, y: 2)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, appState.chatListDensity.rowVerticalPadding)
     }
 }
 
@@ -1052,7 +1405,9 @@ private struct ConversationDetailView: View {
 
     var body: some View {
         Group {
-            if let thread {
+            if let thread, appState.isChatLocked(thread.id) && !appState.isChatUnlockedForSession(thread.id) {
+                LockedChatView(thread: thread)
+            } else if let thread {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 12) {
@@ -1083,6 +1438,7 @@ private struct ConversationDetailView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 16)
                         .padding(.bottom, 28)
+                        .modifier(MessageTextSizeModifier(size: appState.messageTextSize))
                     }
                     .background(Color(uiColor: .systemGroupedBackground))
                     .task(id: threadID) {
@@ -1565,6 +1921,35 @@ private struct ThreadProfileSheet: View {
                                 Text(topic)
                                     .font(.footnote)
                                     .foregroundColor(.secondary)
+                            }
+                        }
+
+                        Section("Mitteilungen und Schutz") {
+                            Picker(selection: Binding(
+                                get: { appState.notificationMode(for: thread.id) },
+                                set: { appState.setNotificationMode($0, for: thread.id) }
+                            )) {
+                                ForEach(RoomNotificationMode.allCases, id: \.self) { mode in
+                                    Label(mode.title, systemImage: mode.systemImage).tag(mode)
+                                }
+                            } label: {
+                                Label("Benachrichtigungen", systemImage: "bell.badge")
+                            }
+
+                            Toggle(isOn: Binding(
+                                get: { appState.isChatLocked(thread.id) },
+                                set: { _ in appState.toggleChatLock(for: thread.id) }
+                            )) {
+                                Label("Chat mit Face ID sperren", systemImage: "lock.shield")
+                            }
+
+                            Button {
+                                appState.toggleArchive(for: thread.id)
+                            } label: {
+                                Label(
+                                    appState.isArchived(thread.id) ? "Aus dem Archiv holen" : "Chat archivieren",
+                                    systemImage: appState.isArchived(thread.id) ? "tray.and.arrow.up" : "archivebox"
+                                )
                             }
                         }
 
@@ -2337,7 +2722,7 @@ private struct MessageBody: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(message.body)
                     .fixedSize(horizontal: false, vertical: true)
-                if let url = firstURL {
+                if appState.linkPreviewsEnabled, let url = firstURL {
                     if let socialVideo = SocialVideoLink.detect(in: url) {
                         SocialVideoCard(link: socialVideo, originalURL: url, isOutgoing: isOutgoing, accent: accent)
                     } else {
@@ -3786,13 +4171,12 @@ private struct MediaLibraryPicker: UIViewControllerRepresentable {
 
 private struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
-    @State private var showingRecoverySheet = false
     @State private var showingVerifySheet = false
     @State private var showingProfileEditSheet = false
 
     var body: some View {
         Form {
-            // Profile header (inspired by Element X)
+            // Profilkopf
             Section {
                 Button {
                     showingProfileEditSheet = true
@@ -3800,15 +4184,9 @@ private struct SettingsView: View {
                     VStack(spacing: 14) {
                         ZStack {
                             Circle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color(red: 0.55, green: 0.30, blue: 0.95), Color.indigo],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
+                                .fill(appState.appAccent.gradient)
                                 .frame(width: 80, height: 80)
-                                .shadow(color: Color.purple.opacity(0.3), radius: 12, y: 4)
+                                .shadow(color: appState.appAccent.tint.opacity(0.3), radius: 12, y: 4)
 
                             Text(String((appState.currentUserID ?? "?").prefix(1)).uppercased())
                                 .font(.system(size: 32, weight: .bold, design: .rounded))
@@ -3845,7 +4223,70 @@ private struct SettingsView: View {
                     .environmentObject(appState)
             }
 
-            // Sign out button
+            Section {
+                NavigationLink {
+                    AppearanceSettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "paintbrush.fill", tint: appState.appAccent.tint, title: "Darstellung")
+                }
+
+                NavigationLink {
+                    ChatOrganizationSettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "bubble.left.and.bubble.right.fill", tint: .blue, title: "Chats und Organisation")
+                }
+
+                NavigationLink {
+                    NotificationsSettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "bell.badge.fill", tint: .red, title: "Mitteilungen")
+                }
+
+                NavigationLink {
+                    PrivacySettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "hand.raised.fill", tint: .indigo, title: "Privatsphaere und Sicherheit")
+                }
+
+                NavigationLink {
+                    DataStorageSettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "internaldrive.fill", tint: .gray, title: "Daten und Speicher")
+                }
+            }
+
+            Section {
+                NavigationLink {
+                    CalendarSettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "calendar", tint: .green, title: "Kalender")
+                }
+
+                NavigationLink {
+                    DevicesSettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "laptopcomputer.and.iphone", tint: .teal, title: "Geraete")
+                }
+
+                NavigationLink {
+                    SecuritySettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "lock.shield.fill", tint: .orange, title: "Verschluesselung und Sync")
+                }
+
+                NavigationLink {
+                    DiagnosticsSettingsView()
+                } label: {
+                    SettingsHubLabel(icon: "waveform.path.ecg", tint: .pink, title: "Diagnose")
+                }
+            }
+
+            Section("App-Info") {
+                SettingsValueRow(label: "Version", value: appBuildLabel)
+                SettingsValueRow(label: "Homeserver", value: appState.homeserver)
+                SettingsValueRow(label: "User-ID", value: appState.currentUserID ?? "\u{2013}")
+            }
+
             Section {
                 Button(role: .destructive) {
                     appState.signOut()
@@ -3858,8 +4299,62 @@ private struct SettingsView: View {
                     }
                 }
             }
+        }
+        .navigationTitle("Einstellungen")
+        .sheet(isPresented: $showingVerifySheet) {
+            E2EEVerifySheet()
+                .environmentObject(appState)
+        }
+        .onChange(of: appState.verificationFlowState.isActive) { isActive in
+            if isActive {
+                showingVerifySheet = true
+            }
+        }
+    }
+}
 
-            Section("Darstellung") {
+private struct SettingsHubLabel: View {
+    let icon: String
+    let tint: Color
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(width: 29, height: 29)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(tint)
+                )
+
+            Text(title)
+        }
+    }
+}
+
+private struct SettingsValueRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top) {
+            Text(label)
+            Spacer(minLength: 16)
+            Text(value)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct AppearanceSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        Form {
+            Section("Theme") {
                 Picker("Theme", selection: Binding(
                     get: { appState.themeMode },
                     set: { appState.themeMode = $0 }
@@ -3868,29 +4363,162 @@ private struct SettingsView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
+                .pickerStyle(.segmented)
+            }
+
+            Section("Akzentfarbe") {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
+                    ForEach(AppAccentColor.allCases, id: \.self) { accent in
+                        Button {
+                            appState.appAccent = accent
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle()
+                                        .fill(accent.tint)
+                                        .frame(width: 34, height: 34)
+                                    if appState.appAccent == accent {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                                Text(accent.title)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+
+            Section("Chatliste") {
+                Picker("Chat-Dichte", selection: Binding(
+                    get: { appState.chatListDensity },
+                    set: { appState.chatListDensity = $0 }
+                )) {
+                    ForEach(ChatListDensity.allCases, id: \.self) { density in
+                        Text(density.title).tag(density)
+                    }
+                }
+
+                Toggle("Avatare anzeigen", isOn: Binding(
+                    get: { appState.showAvatarsInChatList },
+                    set: { appState.showAvatarsInChatList = $0 }
+                ))
+            }
+
+            Section("Nachrichten") {
+                Picker("Textgroesse", selection: Binding(
+                    get: { appState.messageTextSize },
+                    set: { appState.messageTextSize = $0 }
+                )) {
+                    ForEach(MessageTextSize.allCases, id: \.self) { size in
+                        Text(size.title).tag(size)
+                    }
+                }
 
                 Toggle("Inline-Medien im Chat", isOn: Binding(
                     get: { appState.inlineMediaEnabled },
                     set: { appState.inlineMediaEnabled = $0 }
                 ))
+
+                Toggle("Link-Vorschauen", isOn: Binding(
+                    get: { appState.linkPreviewsEnabled },
+                    set: { appState.linkPreviewsEnabled = $0 }
+                ))
             }
 
-            Section("Mitteilungen") {
+            Section {
+                Toggle("Bewegungen reduzieren", isOn: Binding(
+                    get: { appState.reduceMotionEnabled },
+                    set: { appState.reduceMotionEnabled = $0 }
+                ))
+            } footer: {
+                Text("Reduziert Feder- und Uebergangsanimationen in der App.")
+            }
+        }
+        .navigationTitle("Darstellung")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct ChatOrganizationSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var showingManageSpaces = false
+
+    var body: some View {
+        Form {
+            Section("Filter") {
+                Picker("Standard-Filter", selection: Binding(
+                    get: { appState.chatListFilter },
+                    set: { appState.chatListFilter = $0 }
+                )) {
+                    ForEach(ChatListFilterMode.allCases, id: \.self) { filter in
+                        Label(filter.title, systemImage: filter.systemImage).tag(filter)
+                    }
+                }
+            }
+
+            Section("Archiv") {
+                NavigationLink {
+                    ArchivedChatsView()
+                } label: {
+                    HStack {
+                        Label("Archivierte Chats", systemImage: "archivebox")
+                        Spacer()
+                        Text("\(appState.archivedThreadCount())")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Toggle("Stummgeschaltete automatisch archivieren", isOn: Binding(
+                    get: { appState.autoArchiveMutedChats },
+                    set: { appState.autoArchiveMutedChats = $0 }
+                ))
+            }
+
+            Section("Spaces") {
+                Button {
+                    showingManageSpaces = true
+                } label: {
+                    Label("Spaces verwalten", systemImage: "square.grid.2x2")
+                }
+
+                SettingsValueRow(label: "Main-Favoriten", value: "\(appState.mainPinnedThreadIDs.count)")
+                SettingsValueRow(label: "Eigene Spaces", value: "\(appState.customSpaces.count)")
+            }
+
+            Section("Entwuerfe") {
+                SettingsValueRow(label: "Offene Entwuerfe", value: "\(appState.draftsByThreadID.count)")
+            }
+        }
+        .navigationTitle("Chats und Organisation")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingManageSpaces) {
+            SpaceManagementSheet()
+                .environmentObject(appState)
+        }
+    }
+}
+
+private struct NotificationsSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        Form {
+            Section {
                 Toggle("Mitteilungen", isOn: Binding(
                     get: { appState.notificationsEnabled },
                     set: { appState.notificationsEnabled = $0 }
                 ))
+            } footer: {
+                Text("Den Benachrichtigungsmodus pro Chat (Alle, nur Erwaehnungen, stumm) stellst du direkt im Chatprofil ein. Er gilt serverseitig fuer alle Geraete.")
+            }
 
-                Toggle("Lesebestaetigungen", isOn: Binding(
-                    get: { appState.readReceiptsEnabled },
-                    set: { appState.readReceiptsEnabled = $0 }
-                ))
-
-                Toggle("Tippindikatoren", isOn: Binding(
-                    get: { appState.typingIndicatorsEnabled },
-                    set: { appState.typingIndicatorsEnabled = $0 }
-                ))
-
+            Section("Push-Infrastruktur") {
                 TextField("Push-Gateway URL", text: Binding(
                     get: { appState.pushGatewayURL },
                     set: { appState.pushGatewayURL = $0 }
@@ -3915,23 +4543,266 @@ private struct SettingsView: View {
                 }
             }
 
-            Section("Privacy und Daten") {
-                Toggle("App Lock", isOn: Binding(
+            Section("Status") {
+                SettingsValueRow(label: "APNs erlaubt", value: appState.pushNotificationsAuthorized ? "Ja" : "Nein")
+                SettingsValueRow(label: "APNs-Token", value: appState.remoteNotificationTokenAvailable ? "Vorhanden" : "Fehlt")
+                SettingsValueRow(
+                    label: "Pusher registriert",
+                    value: optionalBoolLabel(appState.pushHealthStatus.pusherRegisteredOnHomeserver)
+                )
+                SettingsValueRow(
+                    label: "Gateway erreichbar",
+                    value: gatewayReachabilityLabel(
+                        reachable: appState.pushHealthStatus.pushGatewayReachable,
+                        latencyMs: appState.pushHealthStatus.lastGatewayLatencyMs
+                    )
+                )
+                SettingsValueRow(label: "Pusher geprueft", value: optionalDateLabel(appState.pushHealthStatus.lastPusherVerificationAt))
+                SettingsValueRow(label: "Pusher zuletzt gesetzt", value: optionalDateLabel(appState.pushHealthStatus.lastPusherRegistrationAt))
+
+                if let pushError = appState.pushHealthStatus.lastErrorDescription, !pushError.isEmpty {
+                    Text(pushError)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .navigationTitle("Mitteilungen")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func gatewayReachabilityLabel(reachable: Bool?, latencyMs: Int?) -> String {
+        guard let reachable else { return "Noch nicht geprueft" }
+        if reachable {
+            if let latencyMs {
+                return "Ja (\(latencyMs) ms)"
+            }
+            return "Ja"
+        }
+        return "Nein"
+    }
+}
+
+private struct PrivacySettingsView: View {
+    @EnvironmentObject private var appState: AppState
+
+    private var lockedChats: [ChatThread] {
+        appState.lockedThreadIDs.compactMap { appState.thread(withID: $0) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: Binding(
                     get: { appState.appLockEnabled },
                     set: { appState.appLockEnabled = $0 }
+                )) {
+                    Label("App Lock (Face ID)", systemImage: "faceid")
+                }
+            } footer: {
+                Text("Sperrt MatrixMess beim Wechsel in den Hintergrund und beim App-Start.")
+            }
+
+            Section {
+                if lockedChats.isEmpty {
+                    Text("Keine gesperrten Chats. Du kannst einzelne Chats im Chatprofil mit Face ID sperren.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(lockedChats) { thread in
+                        HStack {
+                            Label(thread.title, systemImage: "lock.shield.fill")
+                            Spacer()
+                            Button("Entsperren") {
+                                appState.toggleChatLock(for: thread.id)
+                            }
+                            .font(.footnote.weight(.semibold))
+                        }
+                    }
+                }
+            } header: {
+                Text("Chat Lock")
+            }
+
+            Section("Sichtbarkeit") {
+                Toggle("Lesebestaetigungen", isOn: Binding(
+                    get: { appState.readReceiptsEnabled },
+                    set: { appState.readReceiptsEnabled = $0 }
                 ))
 
+                Toggle("Tippindikatoren senden", isOn: Binding(
+                    get: { appState.typingIndicatorsEnabled },
+                    set: { appState.typingIndicatorsEnabled = $0 }
+                ))
+            }
+
+            Section {
+                NavigationLink {
+                    BlockedUsersView()
+                } label: {
+                    HStack {
+                        Label("Blockierte Kontakte", systemImage: "person.crop.circle.badge.xmark")
+                        Spacer()
+                        Text("\(appState.blockedUserIDs.count)")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            } footer: {
+                Text("Blockierte Kontakte werden ueber die Matrix-Ignorierliste auf allen Geraeten ausgeblendet. Bei deaktivierten Lesebestaetigungen sendet MatrixMess nur private Read-Receipts.")
+            }
+        }
+        .navigationTitle("Privatsphaere")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct BlockedUsersView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var newUserID = ""
+    @State private var isWorking = false
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 10) {
+                    TextField("@name:server.org", text: $newUserID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+
+                    Button {
+                        blockEnteredUser()
+                    } label: {
+                        if isWorking {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                        }
+                    }
+                    .disabled(newUserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
+                }
+            } header: {
+                Text("Kontakt blockieren")
+            }
+
+            Section("Blockiert (\(appState.blockedUserIDs.count))") {
+                if appState.blockedUserIDs.isEmpty {
+                    Text("Keine blockierten Kontakte.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(appState.blockedUserIDs, id: \.self) { userID in
+                        HStack {
+                            Text(userID)
+                                .font(.subheadline)
+                            Spacer()
+                            Button("Freigeben") {
+                                Task { await appState.unblockUser(userID) }
+                            }
+                            .font(.footnote.weight(.semibold))
+                            .foregroundColor(.red)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Blockierte Kontakte")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await appState.refreshBlockedUsers()
+        }
+    }
+
+    private func blockEnteredUser() {
+        let target = newUserID
+        isWorking = true
+        Task {
+            await appState.blockUser(target)
+            newUserID = ""
+            isWorking = false
+        }
+    }
+}
+
+private struct DataStorageSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var showingClearCacheConfirm = false
+
+    var body: some View {
+        Form {
+            Section("Auto-Download") {
+                Picker("Medien automatisch laden", selection: Binding(
+                    get: { appState.mediaAutoDownloadPolicy },
+                    set: { appState.mediaAutoDownloadPolicy = $0 }
+                )) {
+                    ForEach(MediaAutoDownloadPolicy.allCases, id: \.self) { policy in
+                        Text(policy.title).tag(policy)
+                    }
+                }
+            }
+
+            Section {
+                Picker("Upload-Qualitaet", selection: Binding(
+                    get: { appState.mediaUploadQuality },
+                    set: { appState.mediaUploadQuality = $0 }
+                )) {
+                    ForEach(MediaUploadQuality.allCases, id: \.self) { quality in
+                        Text(quality.title).tag(quality)
+                    }
+                }
+            } footer: {
+                Text(appState.mediaUploadQuality.subtitle)
+            }
+
+            Section("Fotos") {
                 Toggle("Medien in Fotos sichern", isOn: Binding(
                     get: { appState.saveMediaToPhotos },
                     set: { appState.saveMediaToPhotos = $0 }
                 ))
-
-                Toggle("Auto-Download nur im WLAN", isOn: Binding(
-                    get: { appState.autoDownloadOnWiFi },
-                    set: { appState.autoDownloadOnWiFi = $0 }
-                ))
             }
 
+            Section {
+                SettingsValueRow(label: "Medien-Cache", value: formattedCacheSize)
+
+                Button(role: .destructive) {
+                    showingClearCacheConfirm = true
+                } label: {
+                    Label("Cache leeren", systemImage: "trash")
+                }
+            } header: {
+                Text("Speicher")
+            } footer: {
+                Text("Entfernt lokal zwischengespeicherte Bilder, Videos und Dateien. Nachrichten bleiben erhalten.")
+            }
+        }
+        .navigationTitle("Daten und Speicher")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await appState.refreshMediaCacheSize()
+        }
+        .confirmationDialog(
+            "Medien-Cache leeren?",
+            isPresented: $showingClearCacheConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Cache leeren", role: .destructive) {
+                Task { await appState.clearMediaCache() }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        }
+    }
+
+    private var formattedCacheSize: String {
+        ByteCountFormatter.string(fromByteCount: appState.mediaCacheSizeBytes, countStyle: .file)
+    }
+}
+
+private struct CalendarSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        Form {
             Section("Kalender-Sync") {
                 Toggle("Neue Termine automatisch syncen", isOn: Binding(
                     get: { appState.calendarAutoSyncEnabled },
@@ -3942,7 +4813,9 @@ private struct SettingsView: View {
                     get: { appState.defaultMeetingDurationMinutes },
                     set: { appState.defaultMeetingDurationMinutes = $0 }
                 ), in: 15...180, step: 15)
+            }
 
+            Section("OAuth-Verbindungen") {
                 TextField("Google OAuth Client ID", text: Binding(
                     get: { appState.googleCalendarClientID },
                     set: { appState.googleCalendarClientID = $0 }
@@ -3975,37 +4848,211 @@ private struct SettingsView: View {
                     }
                 }
             }
+        }
+        .navigationTitle("Kalender")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
 
-            Section("Crypto und Sync") {
-                settingsValueRow(label: "E2EE verfuegbar", value: appState.cryptoStatus.encryptionAvailable ? "Ja" : "Noch nicht aktiv")
-                settingsValueRow(label: "Recovery", value: appState.cryptoStatus.recoveryStateLabel)
-                settingsValueRow(label: "Key Backup", value: appState.cryptoStatus.backupStateLabel)
-                settingsValueRow(label: "Device Verify", value: appState.cryptoStatus.verificationStateLabel)
-                settingsValueRow(label: "Sync-Loop", value: appState.syncEngineState.isRunning ? "Laeuft" : "Gestoppt")
-                settingsValueRow(label: "Sync-Fehler", value: "\(appState.syncEngineState.consecutiveFailures)")
-                settingsValueRow(label: "Letzter Sync", value: diagnosticsText(appState.diagnostics.lastSuccessfulSyncAt))
-                settingsValueRow(label: "APNs erlaubt", value: appState.pushNotificationsAuthorized ? "Ja" : "Nein")
-                settingsValueRow(label: "APNs-Token", value: appState.remoteNotificationTokenAvailable ? "Vorhanden" : "Fehlt")
-                settingsValueRow(
-                    label: "Pusher registriert",
-                    value: pushRegistrationLabel(appState.pushHealthStatus.pusherRegisteredOnHomeserver)
-                )
-                settingsValueRow(
-                    label: "Gateway erreichbar",
-                    value: gatewayReachabilityLabel(
-                        reachable: appState.pushHealthStatus.pushGatewayReachable,
-                        latencyMs: appState.pushHealthStatus.lastGatewayLatencyMs
-                    )
-                )
-                settingsValueRow(label: "Pusher geprueft", value: diagnosticsText(appState.pushHealthStatus.lastPusherVerificationAt))
-                settingsValueRow(label: "Pusher zuletzt gesetzt", value: diagnosticsText(appState.pushHealthStatus.lastPusherRegistrationAt))
+private struct DevicesSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var selectedDevice: MatrixDeviceInfo?
 
-                if let pushError = appState.pushHealthStatus.lastErrorDescription, !pushError.isEmpty {
-                    Text(pushError)
-                        .font(.footnote)
+    private var currentDeviceID: String? { appState.currentSession?.deviceID }
+
+    var body: some View {
+        Form {
+            Section {
+                if appState.isLoadingDevices && appState.sessionDevices.isEmpty {
+                    HStack {
+                        ProgressView()
+                        Text("Geraete werden geladen ...")
+                            .foregroundColor(.secondary)
+                    }
+                } else if appState.sessionDevices.isEmpty {
+                    Text("Keine Geraete gefunden.")
                         .foregroundColor(.secondary)
+                } else {
+                    ForEach(appState.sessionDevices) { device in
+                        Button {
+                            selectedDevice = device
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: device.deviceID == currentDeviceID ? "iphone" : "desktopcomputer")
+                                    .foregroundColor(device.deviceID == currentDeviceID ? .green : .secondary)
+                                    .frame(width: 24)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(device.displayName?.isEmpty == false ? device.displayName! : device.deviceID)
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundColor(.primary)
+                                        if device.deviceID == currentDeviceID {
+                                            Text("Dieses Geraet")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundColor(.green)
+                                        }
+                                    }
+
+                                    Text(deviceSubtitle(device))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(Color(uiColor: .tertiaryLabel))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } header: {
+                Text("Verknuepfte Geraete (\(appState.sessionDevices.count))")
+            } footer: {
+                Text("Alle Sessions deines Matrix-Accounts. Du kannst Geraete umbenennen oder mit deinem Passwort abmelden.")
+            }
+
+            Section {
+                Button {
+                    Task { await appState.refreshDevices() }
+                } label: {
+                    Label("Aktualisieren", systemImage: "arrow.clockwise")
+                }
+            }
+        }
+        .navigationTitle("Geraete")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await appState.refreshDevices()
+        }
+        .sheet(item: $selectedDevice) { device in
+            DeviceDetailSheet(device: device, isCurrentDevice: device.deviceID == currentDeviceID)
+                .environmentObject(appState)
+        }
+    }
+
+    private func deviceSubtitle(_ device: MatrixDeviceInfo) -> String {
+        var parts: [String] = [device.deviceID]
+        if let lastSeen = device.lastSeenDate {
+            parts.append("Aktiv: \(lastSeen.formatted(date: .abbreviated, time: .shortened))")
+        }
+        if let ip = device.lastSeenIP, !ip.isEmpty {
+            parts.append(ip)
+        }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+}
+
+private struct DeviceDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
+
+    let device: MatrixDeviceInfo
+    let isCurrentDevice: Bool
+
+    @State private var displayName = ""
+    @State private var password = ""
+    @State private var isWorking = false
+    @State private var showSignOutConfirm = false
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Geraet") {
+                    SettingsValueRow(label: "Device-ID", value: device.deviceID)
+                    if let lastSeen = device.lastSeenDate {
+                        SettingsValueRow(label: "Zuletzt aktiv", value: lastSeen.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    if let ip = device.lastSeenIP, !ip.isEmpty {
+                        SettingsValueRow(label: "Letzte IP", value: ip)
+                    }
                 }
 
+                Section("Anzeigename") {
+                    TextField("Geraetename", text: $displayName)
+
+                    Button("Namen speichern") {
+                        isWorking = true
+                        Task {
+                            await appState.renameDevice(device.deviceID, to: displayName)
+                            isWorking = false
+                        }
+                    }
+                    .disabled(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
+                }
+
+                if !isCurrentDevice {
+                    Section {
+                        SecureField("Account-Passwort", text: $password)
+
+                        Button(role: .destructive) {
+                            showSignOutConfirm = true
+                        } label: {
+                            if isWorking {
+                                ProgressView()
+                            } else {
+                                Label("Geraet abmelden", systemImage: "xmark.shield")
+                            }
+                        }
+                        .disabled(password.isEmpty || isWorking)
+                    } header: {
+                        Text("Geraet abmelden")
+                    } footer: {
+                        Text("Meldet die Session auf diesem Geraet ab. Der Homeserver verlangt dafuer dein Passwort.")
+                    }
+                }
+            }
+            .navigationTitle(device.displayName?.isEmpty == false ? device.displayName! : device.deviceID)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+            .onAppear {
+                displayName = device.displayName ?? ""
+            }
+            .confirmationDialog(
+                "Geraet wirklich abmelden?",
+                isPresented: $showSignOutConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Abmelden", role: .destructive) {
+                    isWorking = true
+                    Task {
+                        let success = await appState.signOutDevice(device.deviceID, password: password)
+                        isWorking = false
+                        if success {
+                            dismiss()
+                        }
+                    }
+                }
+                Button("Abbrechen", role: .cancel) {}
+            }
+        }
+    }
+}
+
+private struct SecuritySettingsView: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var showingRecoverySheet = false
+    @State private var showingVerifySheet = false
+
+    var body: some View {
+        Form {
+            Section("Status") {
+                SettingsValueRow(label: "E2EE verfuegbar", value: appState.cryptoStatus.encryptionAvailable ? "Ja" : "Noch nicht aktiv")
+                SettingsValueRow(label: "Recovery", value: appState.cryptoStatus.recoveryStateLabel)
+                SettingsValueRow(label: "Key Backup", value: appState.cryptoStatus.backupStateLabel)
+                SettingsValueRow(label: "Device Verify", value: appState.cryptoStatus.verificationStateLabel)
+                SettingsValueRow(label: "Sync-Loop", value: appState.syncEngineState.isRunning ? "Laeuft" : "Gestoppt")
+                SettingsValueRow(label: "Sync-Fehler", value: "\(appState.syncEngineState.consecutiveFailures)")
+                SettingsValueRow(label: "Letzter Sync", value: optionalDateLabel(appState.diagnostics.lastSuccessfulSyncAt))
+            }
+
+            Section("Aktionen") {
                 if appState.verificationFlowState.isActive || appState.verificationFlowState.isVerified {
                     Button("Verifizierung anzeigen") {
                         showingVerifySheet = true
@@ -4028,42 +5075,9 @@ private struct SettingsView: View {
                     }
                 }
             }
-
-            Section("App-Info") {
-                settingsValueRow(label: "Version", value: appBuildLabel)
-                settingsValueRow(label: "Build", value: "2026-03-20")
-                settingsValueRow(label: "Homeserver", value: appState.homeserver)
-                settingsValueRow(label: "User-ID", value: appState.currentUserID ?? "–")
-            }
-
-            Section("Diagnose") {
-                settingsValueRow(label: "Status", value: appState.diagnostics.statusNote)
-                settingsValueRow(label: "Threads", value: "\(appState.diagnostics.cachedThreadCount)")
-                settingsValueRow(label: "Messages", value: "\(appState.diagnostics.cachedMessageCount)")
-                settingsValueRow(label: "Drafts", value: "\(appState.draftsByThreadID.count)")
-                settingsValueRow(label: "Sync-Loop", value: appState.diagnostics.isSyncLoopRunning ? "Laeuft" : "Gestoppt")
-                settingsValueRow(label: "Sync-Fehler", value: "\(appState.diagnostics.syncFailureCount)")
-                settingsValueRow(label: "Snapshot geladen", value: diagnosticsText(appState.diagnostics.lastSnapshotLoadAt))
-                settingsValueRow(label: "Snapshot gespeichert", value: diagnosticsText(appState.diagnostics.lastSnapshotSaveAt))
-                settingsValueRow(label: "Session gespeichert", value: diagnosticsText(appState.diagnostics.lastSessionSaveAt))
-                settingsValueRow(label: "Session restored", value: diagnosticsText(appState.diagnostics.lastSessionRestoreAt))
-
-                if let errorText = appState.diagnostics.lastErrorDescription {
-                    Text(errorText)
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                }
-
-                Button("Matrix-Daten neu laden") {
-                    Task { await appState.refreshMatrixData(forceFullSync: true) }
-                }
-
-                Button("Persistierten Snapshot loeschen", role: .destructive) {
-                    appState.clearStoredSnapshot()
-                }
-            }
         }
-        .navigationTitle("Settings")
+        .navigationTitle("Verschluesselung")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingRecoverySheet) {
             RecoveryKeySheet {
                 await appState.recoverEncryption(with: $0)
@@ -4073,44 +5087,56 @@ private struct SettingsView: View {
             E2EEVerifySheet()
                 .environmentObject(appState)
         }
-        .onChange(of: appState.verificationFlowState.isActive) { isActive in
-            if isActive {
-                showingVerifySheet = true
+    }
+}
+
+private struct DiagnosticsSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        Form {
+            Section("Lokaler Zustand") {
+                SettingsValueRow(label: "Status", value: appState.diagnostics.statusNote)
+                SettingsValueRow(label: "Threads", value: "\(appState.diagnostics.cachedThreadCount)")
+                SettingsValueRow(label: "Messages", value: "\(appState.diagnostics.cachedMessageCount)")
+                SettingsValueRow(label: "Drafts", value: "\(appState.draftsByThreadID.count)")
+                SettingsValueRow(label: "Sync-Loop", value: appState.diagnostics.isSyncLoopRunning ? "Laeuft" : "Gestoppt")
+                SettingsValueRow(label: "Sync-Fehler", value: "\(appState.diagnostics.syncFailureCount)")
+                SettingsValueRow(label: "Snapshot geladen", value: optionalDateLabel(appState.diagnostics.lastSnapshotLoadAt))
+                SettingsValueRow(label: "Snapshot gespeichert", value: optionalDateLabel(appState.diagnostics.lastSnapshotSaveAt))
+                SettingsValueRow(label: "Session gespeichert", value: optionalDateLabel(appState.diagnostics.lastSessionSaveAt))
+                SettingsValueRow(label: "Session restored", value: optionalDateLabel(appState.diagnostics.lastSessionRestoreAt))
+
+                if let errorText = appState.diagnostics.lastErrorDescription {
+                    Text(errorText)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section("Aktionen") {
+                Button("Matrix-Daten neu laden") {
+                    Task { await appState.refreshMatrixData(forceFullSync: true) }
+                }
+
+                Button("Persistierten Snapshot loeschen", role: .destructive) {
+                    appState.clearStoredSnapshot()
+                }
             }
         }
+        .navigationTitle("Diagnose")
+        .navigationBarTitleDisplayMode(.inline)
     }
+}
 
-    private func diagnosticsText(_ date: Date?) -> String {
-        guard let date else { return "Noch nicht" }
-        return date.formatted(date: .abbreviated, time: .shortened)
-    }
+private func optionalDateLabel(_ date: Date?) -> String {
+    guard let date else { return "Noch nicht" }
+    return date.formatted(date: .abbreviated, time: .shortened)
+}
 
-    private func pushRegistrationLabel(_ value: Bool?) -> String {
-        guard let value else { return "Noch nicht geprueft" }
-        return value ? "Ja" : "Nein"
-    }
-
-    private func gatewayReachabilityLabel(reachable: Bool?, latencyMs: Int?) -> String {
-        guard let reachable else { return "Noch nicht geprueft" }
-        if reachable {
-            if let latencyMs {
-                return "Ja (\(latencyMs) ms)"
-            }
-            return "Ja"
-        }
-        return "Nein"
-    }
-
-    @ViewBuilder
-    private func settingsValueRow(label: String, value: String) -> some View {
-        HStack(alignment: .top) {
-            Text(label)
-            Spacer(minLength: 16)
-            Text(value)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.trailing)
-        }
-    }
+private func optionalBoolLabel(_ value: Bool?) -> String {
+    guard let value else { return "Noch nicht geprueft" }
+    return value ? "Ja" : "Nein"
 }
 
 private struct PostLoginSetupSheet: View {

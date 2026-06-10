@@ -1,5 +1,8 @@
 import Foundation
+import LocalAuthentication
+import Network
 import SwiftUI
+import UIKit
 
 enum AppTab: String, CaseIterable, Hashable, Codable {
     case chats
@@ -39,6 +42,229 @@ enum ThemeMode: String, CaseIterable, Hashable, Codable {
         case .light: return .light
         case .dark: return .dark
         }
+    }
+}
+
+enum AppAccentColor: String, CaseIterable, Hashable, Codable {
+    case violet
+    case blue
+    case teal
+    case green
+    case orange
+    case pink
+    case red
+    case graphite
+
+    var title: String {
+        switch self {
+        case .violet: return "Violett"
+        case .blue: return "Blau"
+        case .teal: return "Tuerkis"
+        case .green: return "Gruen"
+        case .orange: return "Orange"
+        case .pink: return "Pink"
+        case .red: return "Rot"
+        case .graphite: return "Graphit"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .violet: return Color(red: 0.55, green: 0.30, blue: 0.95)
+        case .blue: return .blue
+        case .teal: return .teal
+        case .green: return .green
+        case .orange: return .orange
+        case .pink: return .pink
+        case .red: return .red
+        case .graphite: return Color(uiColor: .systemGray)
+        }
+    }
+
+    var gradient: LinearGradient {
+        LinearGradient(
+            colors: [tint, tint.opacity(0.72)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
+enum ChatListDensity: String, CaseIterable, Hashable, Codable {
+    case comfortable
+    case compact
+
+    var title: String {
+        switch self {
+        case .comfortable: return "Komfortabel"
+        case .compact: return "Kompakt"
+        }
+    }
+
+    var avatarSize: CGFloat {
+        switch self {
+        case .comfortable: return 52
+        case .compact: return 40
+        }
+    }
+
+    var rowVerticalPadding: CGFloat {
+        switch self {
+        case .comfortable: return 4
+        case .compact: return 1
+        }
+    }
+}
+
+enum MessageTextSize: String, CaseIterable, Hashable, Codable {
+    case small
+    case standard
+    case large
+    case extraLarge
+
+    var title: String {
+        switch self {
+        case .small: return "Klein"
+        case .standard: return "Standard"
+        case .large: return "Gross"
+        case .extraLarge: return "Sehr gross"
+        }
+    }
+
+    var dynamicTypeSize: DynamicTypeSize? {
+        switch self {
+        case .small: return .small
+        case .standard: return nil
+        case .large: return .xLarge
+        case .extraLarge: return .xxxLarge
+        }
+    }
+}
+
+enum MediaAutoDownloadPolicy: String, CaseIterable, Hashable, Codable {
+    case always
+    case wifiOnly
+    case never
+
+    var title: String {
+        switch self {
+        case .always: return "Immer"
+        case .wifiOnly: return "Nur im WLAN"
+        case .never: return "Nie"
+        }
+    }
+}
+
+enum MediaUploadQuality: String, CaseIterable, Hashable, Codable {
+    case dataSaver
+    case balanced
+    case original
+
+    var title: String {
+        switch self {
+        case .dataSaver: return "Datensparend"
+        case .balanced: return "Ausgewogen"
+        case .original: return "Original"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .dataSaver: return "Bilder auf 1280 px verkleinert"
+        case .balanced: return "Bilder auf 2048 px verkleinert"
+        case .original: return "Unveraendert hochladen"
+        }
+    }
+
+    var maxImageDimension: CGFloat? {
+        switch self {
+        case .dataSaver: return 1280
+        case .balanced: return 2048
+        case .original: return nil
+        }
+    }
+
+    var jpegQuality: CGFloat {
+        switch self {
+        case .dataSaver: return 0.68
+        case .balanced: return 0.82
+        case .original: return 1.0
+        }
+    }
+}
+
+enum ChatListFilterMode: String, CaseIterable, Hashable, Codable {
+    case all
+    case unread
+    case direct
+    case groups
+
+    var title: String {
+        switch self {
+        case .all: return "Alle"
+        case .unread: return "Ungelesen"
+        case .direct: return "Direkt"
+        case .groups: return "Gruppen"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "tray.full"
+        case .unread: return "circle.badge.fill"
+        case .direct: return "person"
+        case .groups: return "person.3"
+        }
+    }
+}
+
+enum RoomNotificationMode: String, CaseIterable, Hashable, Codable {
+    case all
+    case mentions
+    case mute
+
+    var title: String {
+        switch self {
+        case .all: return "Alle Nachrichten"
+        case .mentions: return "Nur Erwaehnungen"
+        case .mute: return "Stumm"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "bell.fill"
+        case .mentions: return "at"
+        case .mute: return "bell.slash.fill"
+        }
+    }
+}
+
+/// Beobachtet den Netzwerkpfad, damit Auto-Downloads die WLAN-Richtlinie respektieren koennen.
+final class NetworkPathObserver: @unchecked Sendable {
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "dev.matrixmess.network-path")
+    private let lock = NSLock()
+    private var _isCellular = false
+
+    var isCellular: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isCellular
+    }
+
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.lock.lock()
+            self._isCellular = path.usesInterfaceType(.cellular)
+            self.lock.unlock()
+        }
+        monitor.start(queue: queue)
+    }
+
+    deinit {
+        monitor.cancel()
     }
 }
 
@@ -465,7 +691,43 @@ final class AppState: ObservableObject {
         didSet { persistSnapshotIfPossible() }
     }
 
-    @Published var autoDownloadOnWiFi = true {
+    @Published var mediaAutoDownloadPolicy: MediaAutoDownloadPolicy = .wifiOnly {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var mediaUploadQuality: MediaUploadQuality = .balanced {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var appAccent: AppAccentColor = .violet {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var chatListDensity: ChatListDensity = .comfortable {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var showAvatarsInChatList = true {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var messageTextSize: MessageTextSize = .standard {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var reduceMotionEnabled = false {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var chatListFilter: ChatListFilterMode = .all {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var autoArchiveMutedChats = false {
+        didSet { persistSnapshotIfPossible() }
+    }
+
+    @Published var linkPreviewsEnabled = true {
         didSet { persistSnapshotIfPossible() }
     }
 
@@ -491,6 +753,18 @@ final class AppState: ObservableObject {
     @Published private(set) var typingUsersByThreadID: [String: [String]] = [:]
     @Published private(set) var historyLoadingThreadIDs: Set<String> = []
     @Published private(set) var historyExhaustedThreadIDs: Set<String> = []
+    @Published private(set) var archivedThreadIDs: Set<String> = []
+    @Published private(set) var lockedThreadIDs: Set<String> = []
+    @Published private(set) var notificationModesByThreadID: [String: RoomNotificationMode] = [:]
+    @Published private(set) var blockedUserIDs: [String] = []
+    @Published private(set) var sessionDevices: [MatrixDeviceInfo] = []
+    @Published private(set) var isLoadingDevices = false
+    @Published private(set) var mediaCacheSizeBytes: Int64 = 0
+    /// Laufzeit-Zustand des App-Locks (nicht persistiert).
+    @Published private(set) var isAppLocked = false
+    @Published private(set) var isUnlockingApp = false
+    /// Chats, die der Nutzer in dieser Sitzung per Face ID freigeschaltet hat.
+    @Published private(set) var unlockedChatIDs: Set<String> = []
 
     private let matrixService: MatrixService
     private let mediaService: MatrixMediaService
@@ -505,6 +779,8 @@ final class AppState: ObservableObject {
     private let googleCalendarProvider = GoogleCalendarProvider()
     private let outlookCalendarProvider = OutlookCalendarProvider()
     private let calendarTokenStore = CalendarProviderTokenStore()
+
+    private let networkPathObserver = NetworkPathObserver()
 
     private var hasBootstrapped = false
     private var isHydratingState = false
@@ -537,7 +813,7 @@ final class AppState: ObservableObject {
     }
 
     var isLoggedIn: Bool { currentUserID != nil }
-    var buildVersionLabel: String { "v0.3.2 - 2026-03-20" }
+    var buildVersionLabel: String { "v0.4.0 - 2026-06-10" }
     var preferredColorScheme: ColorScheme? { themeMode.preferredColorScheme }
     var selectedSpace: ChatSpace? { spaces.first(where: { $0.id == selectedSpaceID }) ?? spaces.first }
 
@@ -555,6 +831,14 @@ final class AppState: ObservableObject {
         }
 
         await restoreSession(using: snapshot)
+
+        if isLoggedIn && appLockEnabled {
+            isAppLocked = true
+        }
+        if isLoggedIn {
+            Task { await refreshBlockedUsers() }
+        }
+        await refreshMediaCacheSize()
 
         var updatedDiagnostics = diagnostics
         updatedDiagnostics.bootstrappedAt = .now
@@ -593,6 +877,7 @@ final class AppState: ObservableObject {
             await startSyncLoopIfPossible()
             await refreshCryptoStatus()
             await refreshPushHealthStatus()
+            await refreshBlockedUsers()
 
             if cryptoStatus.encryptionAvailable && !cryptoStatus.keyBackupConfigured {
                 showRecoveryPrompt = true
@@ -630,6 +915,10 @@ final class AppState: ObservableObject {
         syncEngineState = .init()
         verificationFlowState = MatrixVerificationFlowState()
         needsPostLoginSetup = false
+        isAppLocked = false
+        unlockedChatIDs = []
+        sessionDevices = []
+        blockedUserIDs = []
         stopVerificationPolling()
         typingDebounceTask?.cancel()
         typingDebounceTask = nil
@@ -934,14 +1223,19 @@ final class AppState: ObservableObject {
     }
 
     func uploadMedia(
-        data: Data,
-        mimeType: String,
-        fileName: String,
+        data rawData: Data,
+        mimeType rawMimeType: String,
+        fileName rawFileName: String,
         kind: ChatMessageKind,
         durationSeconds: TimeInterval? = nil,
         to threadID: String
     ) async {
         guard let currentSession, let thread = thread(withID: threadID) else { return }
+
+        let prepared = preparedUploadPayload(data: rawData, mimeType: rawMimeType, fileName: rawFileName, kind: kind)
+        let data = prepared.data
+        let mimeType = prepared.mimeType
+        let fileName = prepared.fileName
 
         do {
             do {
@@ -1023,6 +1317,52 @@ final class AppState: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Skaliert Bilder gemaess der eingestellten Upload-Qualitaet herunter, bevor sie hochgeladen werden.
+    private func preparedUploadPayload(
+        data: Data,
+        mimeType: String,
+        fileName: String,
+        kind: ChatMessageKind
+    ) -> (data: Data, mimeType: String, fileName: String) {
+        guard kind == .image,
+              let maxDimension = mediaUploadQuality.maxImageDimension,
+              let image = UIImage(data: data) else {
+            return (data, mimeType, fileName)
+        }
+
+        let largestSide = max(image.size.width, image.size.height)
+        let needsResize = largestSide > maxDimension
+        // GIFs nicht neu codieren, sonst geht die Animation verloren.
+        guard mimeType.lowercased() != "image/gif" else {
+            return (data, mimeType, fileName)
+        }
+        guard needsResize || mediaUploadQuality.jpegQuality < 1.0 else {
+            return (data, mimeType, fileName)
+        }
+
+        let scale = needsResize ? maxDimension / largestSide : 1.0
+        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+
+        guard let jpegData = resized.jpegData(compressionQuality: mediaUploadQuality.jpegQuality),
+              jpegData.count < data.count else {
+            return (data, mimeType, fileName)
+        }
+
+        var newFileName = fileName
+        if let dotIndex = newFileName.lastIndex(of: ".") {
+            newFileName = String(newFileName[..<dotIndex])
+        }
+        newFileName += ".jpg"
+        return (jpegData, "image/jpeg", newFileName)
     }
 
     func downloadAttachment(messageID: UUID, in threadID: String) async {
@@ -1240,8 +1580,17 @@ final class AppState: ObservableObject {
         selectedTab = tab
     }
 
+    /// Fuehrt Aenderungen animiert aus, ausser der Nutzer hat Bewegungen reduziert.
+    private func withMotion(_ animation: Animation, _ changes: () -> Void) {
+        if reduceMotionEnabled {
+            changes()
+        } else {
+            withAnimation(animation, changes)
+        }
+    }
+
     func selectSpace(_ spaceID: String) {
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
+        withMotion(.spring(response: 0.32, dampingFraction: 0.84)) {
             selectedTab = .chats
             selectedSpaceID = spaceID
             selectedThreadID = nil
@@ -1430,6 +1779,8 @@ final class AppState: ObservableObject {
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = baseThreads.filter { thread in
+            guard !isEffectivelyArchived(thread) else { return false }
+            guard matchesChatListFilter(thread) else { return false }
             guard !query.isEmpty else { return true }
 
             let sourceTitle = sourceSpace(for: thread)?.title ?? ""
@@ -1444,6 +1795,271 @@ final class AppState: ObservableObject {
             }
 
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+
+    private func isEffectivelyArchived(_ thread: ChatThread) -> Bool {
+        if archivedThreadIDs.contains(thread.id) { return true }
+        if autoArchiveMutedChats && thread.isMuted { return true }
+        return false
+    }
+
+    private func matchesChatListFilter(_ thread: ChatThread) -> Bool {
+        switch chatListFilter {
+        case .all:
+            return true
+        case .unread:
+            return thread.unreadCount > 0
+        case .direct:
+            return thread.isDirect
+        case .groups:
+            return !thread.isDirect
+        }
+    }
+
+    // MARK: - Archiv
+
+    func isArchived(_ threadID: String) -> Bool {
+        archivedThreadIDs.contains(threadID)
+    }
+
+    func archivedThreads() -> [ChatThread] {
+        threadsByID.values
+            .filter { isEffectivelyArchived($0) }
+            .sorted { $0.lastActivity > $1.lastActivity }
+    }
+
+    func archivedThreadCount() -> Int {
+        threadsByID.values.lazy.filter { self.isEffectivelyArchived($0) }.count
+    }
+
+    func toggleArchive(for threadID: String) {
+        guard threadsByID[threadID] != nil else { return }
+        if archivedThreadIDs.contains(threadID) {
+            archivedThreadIDs.remove(threadID)
+        } else {
+            archivedThreadIDs.insert(threadID)
+            if selectedThreadID == threadID {
+                selectedThreadID = nil
+            }
+        }
+        persistSnapshotIfPossible()
+    }
+
+    // MARK: - Chat Lock
+
+    func isChatLocked(_ threadID: String) -> Bool {
+        lockedThreadIDs.contains(threadID)
+    }
+
+    func isChatUnlockedForSession(_ threadID: String) -> Bool {
+        unlockedChatIDs.contains(threadID)
+    }
+
+    func toggleChatLock(for threadID: String) {
+        guard threadsByID[threadID] != nil else { return }
+        if lockedThreadIDs.contains(threadID) {
+            lockedThreadIDs.remove(threadID)
+            unlockedChatIDs.remove(threadID)
+        } else {
+            lockedThreadIDs.insert(threadID)
+        }
+        persistSnapshotIfPossible()
+    }
+
+    func unlockChat(_ threadID: String) async {
+        guard isChatLocked(threadID) else { return }
+        if await evaluateDeviceAuthentication(reason: "Gesperrten Chat oeffnen") {
+            unlockedChatIDs.insert(threadID)
+        }
+    }
+
+    // MARK: - App Lock
+
+    func lockAppForBackgroundIfNeeded() {
+        unlockedChatIDs = []
+        guard appLockEnabled, isLoggedIn else { return }
+        isAppLocked = true
+    }
+
+    func unlockApp() async {
+        guard isAppLocked, !isUnlockingApp else { return }
+        isUnlockingApp = true
+        defer { isUnlockingApp = false }
+        if await evaluateDeviceAuthentication(reason: "MatrixMess entsperren") {
+            isAppLocked = false
+        }
+    }
+
+    private func evaluateDeviceAuthentication(reason: String) async -> Bool {
+        let context = LAContext()
+        var policyError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError) else {
+            // Kein Code/Face ID eingerichtet: fail-open statt Aussperren.
+            AppLogger.error("App Lock nicht auswertbar: \(policyError?.localizedDescription ?? "unbekannt")")
+            return true
+        }
+
+        do {
+            return try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+        } catch {
+            AppLogger.error("Authentifizierung fehlgeschlagen: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    // MARK: - Benachrichtigungsmodus pro Chat
+
+    func notificationMode(for threadID: String) -> RoomNotificationMode {
+        if let mode = notificationModesByThreadID[threadID] {
+            return mode
+        }
+        return (threadsByID[threadID]?.isMuted ?? false) ? .mute : .all
+    }
+
+    func setNotificationMode(_ mode: RoomNotificationMode, for threadID: String) {
+        guard var thread = threadsByID[threadID] else { return }
+
+        notificationModesByThreadID[threadID] = mode
+        thread.isMuted = (mode == .mute)
+        threadsByID[threadID] = thread
+        persistSnapshotIfPossible()
+
+        guard let currentSession else { return }
+        Task {
+            do {
+                try await matrixService.setRoomNotificationMode(mode, roomID: threadID, session: currentSession)
+            } catch {
+                AppLogger.error("Push-Regel fuer \(threadID) konnte nicht gesetzt werden: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Blockierte Kontakte
+
+    func isUserBlocked(_ userID: String) -> Bool {
+        blockedUserIDs.contains(userID)
+    }
+
+    func refreshBlockedUsers() async {
+        guard let currentSession else { return }
+        do {
+            blockedUserIDs = try await matrixService.fetchIgnoredUsers(session: currentSession)
+            persistSnapshotIfPossible()
+        } catch {
+            AppLogger.error("Blockierte Kontakte konnten nicht geladen werden: \(error.localizedDescription)")
+        }
+    }
+
+    func blockUser(_ userID: String) async {
+        let trimmed = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("@"), trimmed.contains(":") else {
+            errorMessage = "Bitte gib eine vollstaendige Matrix-ID an, z. B. @name:server.org."
+            return
+        }
+        guard let currentSession, !blockedUserIDs.contains(trimmed) else { return }
+
+        let updated = (blockedUserIDs + [trimmed]).sorted()
+        do {
+            try await matrixService.setIgnoredUsers(updated, session: currentSession)
+            blockedUserIDs = updated
+            persistSnapshotIfPossible()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func unblockUser(_ userID: String) async {
+        guard let currentSession, blockedUserIDs.contains(userID) else { return }
+
+        let updated = blockedUserIDs.filter { $0 != userID }
+        do {
+            try await matrixService.setIgnoredUsers(updated, session: currentSession)
+            blockedUserIDs = updated
+            persistSnapshotIfPossible()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Geraeteverwaltung
+
+    func refreshDevices() async {
+        guard let currentSession else { return }
+        isLoadingDevices = true
+        defer { isLoadingDevices = false }
+        do {
+            sessionDevices = try await matrixService.fetchDevices(session: currentSession)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func renameDevice(_ deviceID: String, to displayName: String) async {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let currentSession, !trimmed.isEmpty else { return }
+        do {
+            try await matrixService.renameDevice(deviceID: deviceID, displayName: trimmed, session: currentSession)
+            await refreshDevices()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func signOutDevice(_ deviceID: String, password: String) async -> Bool {
+        guard let currentSession, !password.isEmpty else {
+            errorMessage = "Zum Abmelden eines Geraets wird das Account-Passwort benoetigt."
+            return false
+        }
+        do {
+            try await matrixService.deleteDevice(deviceID: deviceID, password: password, session: currentSession)
+            await refreshDevices()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    // MARK: - Serverseitige Suche
+
+    func searchMessagesOnServer(_ query: String) async -> [MatrixServerSearchResult] {
+        guard let currentSession else { return [] }
+        do {
+            return try await matrixService.searchMessages(query: query, session: currentSession)
+        } catch {
+            errorMessage = error.localizedDescription
+            return []
+        }
+    }
+
+    // MARK: - Speicherverwaltung
+
+    func refreshMediaCacheSize() async {
+        mediaCacheSizeBytes = await mediaService.cacheSizeBytes()
+    }
+
+    func clearMediaCache() async {
+        do {
+            try await mediaService.clearCache()
+            // Lokale Cache-Pfade in den Nachrichten entfernen, damit keine toten Verweise bleiben.
+            for (threadID, messages) in messagesByThreadID {
+                var updatedMessages = messages
+                var didChange = false
+                for index in updatedMessages.indices {
+                    if updatedMessages[index].attachment?.localCachePath != nil {
+                        updatedMessages[index].attachment?.localCachePath = nil
+                        didChange = true
+                    }
+                }
+                if didChange {
+                    messagesByThreadID[threadID] = updatedMessages
+                }
+            }
+            persistSnapshotIfPossible()
+            await refreshMediaCacheSize()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -1533,7 +2149,7 @@ final class AppState: ObservableObject {
     func addToMain(_ threadID: String) {
         guard threadsByID[threadID] != nil, !mainPinnedThreadIDs.contains(threadID) else { return }
 
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+        withMotion(.spring(response: 0.34, dampingFraction: 0.86)) {
             mainPinnedThreadIDs.insert(threadID, at: 0)
         }
 
@@ -1543,7 +2159,7 @@ final class AppState: ObservableObject {
     func removeFromMain(_ threadID: String) {
         guard let index = mainPinnedThreadIDs.firstIndex(of: threadID) else { return }
 
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+        withMotion(.spring(response: 0.34, dampingFraction: 0.86)) {
             mainPinnedThreadIDs.remove(at: index)
         }
 
@@ -1559,11 +2175,8 @@ final class AppState: ObservableObject {
     }
 
     func toggleMute(for threadID: String) {
-        guard var thread = threadsByID[threadID] else { return }
-
-        thread.isMuted.toggle()
-        threadsByID[threadID] = thread
-        persistSnapshotIfPossible()
+        guard let thread = threadsByID[threadID] else { return }
+        setNotificationMode(thread.isMuted ? .all : .mute, for: threadID)
     }
 
     func sendMessage(_ text: String, to threadID: String) async {
@@ -1769,7 +2382,13 @@ final class AppState: ObservableObject {
         }
 
         do {
-            try await matrixService.markRead(roomID: threadID, eventID: latestEventID, session: currentSession)
+            // Bei deaktivierten Lesebestaetigungen nur ein privates Receipt senden.
+            try await matrixService.markRead(
+                roomID: threadID,
+                eventID: latestEventID,
+                session: currentSession,
+                asPrivate: !readReceiptsEnabled
+            )
         } catch {
             AppLogger.error("Read marker konnte nicht gesetzt werden: \(error.localizedDescription)")
         }
@@ -1875,6 +2494,15 @@ final class AppState: ObservableObject {
     }
 
     private func prefetchInlineMedia(for session: MatrixSession) async {
+        switch mediaAutoDownloadPolicy {
+        case .never:
+            return
+        case .wifiOnly:
+            if networkPathObserver.isCellular { return }
+        case .always:
+            break
+        }
+
         let targets = messagesByThreadID.flatMap { threadID, messages in
             messages.compactMap { message -> (threadID: String, messageID: UUID, contentURI: String, mediaSourceJSON: String?, title: String, mimeType: String?, timestamp: Date)? in
                 guard message.kind == .image || message.kind == .video else { return nil }
@@ -2884,11 +3512,22 @@ final class AppState: ObservableObject {
             typingIndicatorsEnabled = snapshot.typingIndicatorsEnabled
             inlineMediaEnabled = snapshot.inlineMediaEnabled
             saveMediaToPhotos = snapshot.saveMediaToPhotos
-            autoDownloadOnWiFi = snapshot.autoDownloadOnWiFi
+            mediaAutoDownloadPolicy = snapshot.mediaAutoDownloadPolicy
+                ?? (snapshot.autoDownloadOnWiFi ? .wifiOnly : .always)
+            mediaUploadQuality = snapshot.mediaUploadQuality ?? .balanced
+            appAccent = snapshot.appAccent ?? .violet
+            chatListDensity = snapshot.chatListDensity ?? .comfortable
+            showAvatarsInChatList = snapshot.showAvatarsInChatList ?? true
+            messageTextSize = snapshot.messageTextSize ?? .standard
+            reduceMotionEnabled = snapshot.reduceMotionEnabled ?? false
+            chatListFilter = snapshot.chatListFilter ?? .all
+            autoArchiveMutedChats = snapshot.autoArchiveMutedChats ?? false
+            linkPreviewsEnabled = snapshot.linkPreviewsEnabled ?? true
             calendarAutoSyncEnabled = snapshot.calendarAutoSyncEnabled
             defaultMeetingDurationMinutes = snapshot.defaultMeetingDurationMinutes
             customSpaces = snapshot.customSpaces
             threadSpaceOverrides = snapshot.threadSpaceOverrides
+            blockedUserIDs = snapshot.blockedUserIDs ?? []
 
             if includeWorkspace {
                 syncedSpaces = snapshot.spaces.filter { $0.kind != .custom }
@@ -2907,6 +3546,9 @@ final class AppState: ObservableObject {
                 draftsByThreadID = snapshot.draftsByThreadID
                 historyLoadingThreadIDs = []
                 historyExhaustedThreadIDs = []
+                archivedThreadIDs = snapshot.archivedThreadIDs ?? []
+                lockedThreadIDs = snapshot.lockedThreadIDs ?? []
+                notificationModesByThreadID = snapshot.notificationModesByThreadID ?? [:]
                 applyThreadSpaceOverrides()
                 rebuildVisibleSpaces()
             }
@@ -2933,7 +3575,21 @@ final class AppState: ObservableObject {
             typingIndicatorsEnabled: typingIndicatorsEnabled,
             inlineMediaEnabled: inlineMediaEnabled,
             saveMediaToPhotos: saveMediaToPhotos,
-            autoDownloadOnWiFi: autoDownloadOnWiFi,
+            autoDownloadOnWiFi: mediaAutoDownloadPolicy != .always,
+            mediaAutoDownloadPolicy: mediaAutoDownloadPolicy,
+            mediaUploadQuality: mediaUploadQuality,
+            appAccent: appAccent,
+            chatListDensity: chatListDensity,
+            showAvatarsInChatList: showAvatarsInChatList,
+            messageTextSize: messageTextSize,
+            reduceMotionEnabled: reduceMotionEnabled,
+            chatListFilter: chatListFilter,
+            autoArchiveMutedChats: autoArchiveMutedChats,
+            linkPreviewsEnabled: linkPreviewsEnabled,
+            archivedThreadIDs: archivedThreadIDs,
+            lockedThreadIDs: lockedThreadIDs,
+            notificationModesByThreadID: notificationModesByThreadID,
+            blockedUserIDs: blockedUserIDs,
             calendarAutoSyncEnabled: calendarAutoSyncEnabled,
             defaultMeetingDurationMinutes: defaultMeetingDurationMinutes,
             spaces: spaces,
@@ -3008,6 +3664,9 @@ final class AppState: ObservableObject {
             typingUsersByThreadID = [:]
             historyLoadingThreadIDs = []
             historyExhaustedThreadIDs = []
+            archivedThreadIDs = []
+            lockedThreadIDs = []
+            notificationModesByThreadID = [:]
             threadSpaceOverrides = threadSpaceOverrides.filter { _, spaceID in
                 customSpaces.contains(where: { $0.id == spaceID })
             }

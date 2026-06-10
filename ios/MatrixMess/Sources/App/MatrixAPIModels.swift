@@ -448,3 +448,158 @@ struct MatrixWorkspace {
     /// Rooms where the SDK timeline reported that the start of history was reached.
     let timelineStartReachedThreadIDs: Set<String>
 }
+
+struct MatrixReadMarkersPrivateRequest: Encodable {
+    let fullyRead: String
+    let readPrivate: String
+
+    enum CodingKeys: String, CodingKey {
+        case fullyRead = "m.fully_read"
+        case readPrivate = "m.read.private"
+    }
+}
+
+struct MatrixIgnoredUserListContent: Codable {
+    struct Empty: Codable {}
+
+    let ignoredUsers: [String: Empty]
+
+    enum CodingKeys: String, CodingKey {
+        case ignoredUsers = "ignored_users"
+    }
+
+    init(userIDs: [String]) {
+        ignoredUsers = Dictionary(uniqueKeysWithValues: userIDs.map { ($0, Empty()) })
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ignoredUsers = try container.decodeIfPresent([String: Empty].self, forKey: .ignoredUsers) ?? [:]
+    }
+}
+
+struct MatrixDeviceInfo: Identifiable, Hashable, Decodable {
+    var id: String { deviceID }
+    let deviceID: String
+    let displayName: String?
+    let lastSeenIP: String?
+    let lastSeenTimestampMs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case deviceID = "device_id"
+        case displayName = "display_name"
+        case lastSeenIP = "last_seen_ip"
+        case lastSeenTimestampMs = "last_seen_ts"
+    }
+
+    var lastSeenDate: Date? {
+        guard let lastSeenTimestampMs else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(lastSeenTimestampMs) / 1000)
+    }
+}
+
+struct MatrixDevicesResponse: Decodable {
+    let devices: [MatrixDeviceInfo]
+}
+
+struct MatrixUpdateDeviceRequest: Encodable {
+    let displayName: String
+
+    enum CodingKeys: String, CodingKey {
+        case displayName = "display_name"
+    }
+}
+
+struct MatrixUIARequiredResponse: Decodable {
+    let session: String?
+}
+
+struct MatrixPushRuleCondition: Encodable {
+    let kind: String
+    let key: String
+    let pattern: String
+}
+
+struct MatrixSetPushRuleRequest: Encodable {
+    let conditions: [MatrixPushRuleCondition]?
+    let actions: [String]
+}
+
+struct MatrixSearchRequest: Encodable {
+    struct Categories: Encodable {
+        let roomEvents: RoomEvents
+
+        enum CodingKeys: String, CodingKey {
+            case roomEvents = "room_events"
+        }
+    }
+
+    struct RoomEvents: Encodable {
+        let searchTerm: String
+        let orderBy: String
+
+        enum CodingKeys: String, CodingKey {
+            case searchTerm = "search_term"
+            case orderBy = "order_by"
+        }
+    }
+
+    let searchCategories: Categories
+
+    enum CodingKeys: String, CodingKey {
+        case searchCategories = "search_categories"
+    }
+
+    init(searchTerm: String) {
+        searchCategories = .init(roomEvents: .init(searchTerm: searchTerm, orderBy: "recent"))
+    }
+}
+
+struct MatrixSearchResponse: Decodable {
+    struct Categories: Decodable {
+        let roomEvents: RoomEvents?
+
+        enum CodingKeys: String, CodingKey {
+            case roomEvents = "room_events"
+        }
+    }
+
+    struct RoomEvents: Decodable {
+        let count: Int?
+        let results: [Result]?
+    }
+
+    struct Result: Decodable {
+        let result: Event?
+    }
+
+    struct Event: Decodable {
+        let eventID: String?
+        let roomID: String?
+        let sender: String?
+        let originServerTs: Int?
+        let content: [String: MatrixJSONValue]?
+
+        enum CodingKeys: String, CodingKey {
+            case eventID = "event_id"
+            case roomID = "room_id"
+            case sender
+            case originServerTs = "origin_server_ts"
+            case content
+        }
+    }
+
+    let searchCategories: Categories
+
+    enum CodingKeys: String, CodingKey {
+        case searchCategories = "search_categories"
+    }
+}
+
+struct MatrixServerSearchResult: Identifiable, Hashable {
+    let id: String
+    let roomID: String
+    let sender: String
+    let body: String
+    let timestamp: Date
+}

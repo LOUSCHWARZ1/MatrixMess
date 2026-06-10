@@ -270,6 +270,31 @@ actor MatrixMediaService {
         return "/" + cleanBase + "/" + cleanEndpoint
     }
 
+    /// Groesse des lokalen Medien-Caches in Bytes (best effort).
+    func cacheSizeBytes() -> Int64 {
+        guard let directory = try? mediaCacheDirectory(),
+              let enumerator = fileManager.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]
+              ) else {
+            return 0
+        }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey])
+            total += Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
+        }
+        return total
+    }
+
+    /// Entfernt alle lokal gecachten Medien.
+    func clearCache() throws {
+        let directory = try mediaCacheDirectory()
+        guard fileManager.fileExists(atPath: directory.path) else { return }
+        try fileManager.removeItem(at: directory)
+    }
+
     private func mediaCacheDirectory() throws -> URL {
         try fileManager.url(
             for: .cachesDirectory,

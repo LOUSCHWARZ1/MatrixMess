@@ -18,6 +18,20 @@ struct PersistedAppSnapshot: Codable {
     var inlineMediaEnabled: Bool
     var saveMediaToPhotos: Bool
     var autoDownloadOnWiFi: Bool
+    var mediaAutoDownloadPolicy: MediaAutoDownloadPolicy?
+    var mediaUploadQuality: MediaUploadQuality?
+    var appAccent: AppAccentColor?
+    var chatListDensity: ChatListDensity?
+    var showAvatarsInChatList: Bool?
+    var messageTextSize: MessageTextSize?
+    var reduceMotionEnabled: Bool?
+    var chatListFilter: ChatListFilterMode?
+    var autoArchiveMutedChats: Bool?
+    var linkPreviewsEnabled: Bool?
+    var archivedThreadIDs: Set<String>?
+    var lockedThreadIDs: Set<String>?
+    var notificationModesByThreadID: [String: RoomNotificationMode]?
+    var blockedUserIDs: [String]?
     var calendarAutoSyncEnabled: Bool
     var defaultMeetingDurationMinutes: Int
     var spaces: [ChatSpace]
@@ -51,6 +65,20 @@ struct PersistedAppSnapshot: Codable {
         case inlineMediaEnabled
         case saveMediaToPhotos
         case autoDownloadOnWiFi
+        case mediaAutoDownloadPolicy
+        case mediaUploadQuality
+        case appAccent
+        case chatListDensity
+        case showAvatarsInChatList
+        case messageTextSize
+        case reduceMotionEnabled
+        case chatListFilter
+        case autoArchiveMutedChats
+        case linkPreviewsEnabled
+        case archivedThreadIDs
+        case lockedThreadIDs
+        case notificationModesByThreadID
+        case blockedUserIDs
         case calendarAutoSyncEnabled
         case defaultMeetingDurationMinutes
         case spaces
@@ -85,6 +113,20 @@ struct PersistedAppSnapshot: Codable {
         inlineMediaEnabled: Bool,
         saveMediaToPhotos: Bool,
         autoDownloadOnWiFi: Bool,
+        mediaAutoDownloadPolicy: MediaAutoDownloadPolicy?,
+        mediaUploadQuality: MediaUploadQuality?,
+        appAccent: AppAccentColor?,
+        chatListDensity: ChatListDensity?,
+        showAvatarsInChatList: Bool?,
+        messageTextSize: MessageTextSize?,
+        reduceMotionEnabled: Bool?,
+        chatListFilter: ChatListFilterMode?,
+        autoArchiveMutedChats: Bool?,
+        linkPreviewsEnabled: Bool?,
+        archivedThreadIDs: Set<String>?,
+        lockedThreadIDs: Set<String>?,
+        notificationModesByThreadID: [String: RoomNotificationMode]?,
+        blockedUserIDs: [String]?,
         calendarAutoSyncEnabled: Bool,
         defaultMeetingDurationMinutes: Int,
         spaces: [ChatSpace],
@@ -117,6 +159,20 @@ struct PersistedAppSnapshot: Codable {
         self.inlineMediaEnabled = inlineMediaEnabled
         self.saveMediaToPhotos = saveMediaToPhotos
         self.autoDownloadOnWiFi = autoDownloadOnWiFi
+        self.mediaAutoDownloadPolicy = mediaAutoDownloadPolicy
+        self.mediaUploadQuality = mediaUploadQuality
+        self.appAccent = appAccent
+        self.chatListDensity = chatListDensity
+        self.showAvatarsInChatList = showAvatarsInChatList
+        self.messageTextSize = messageTextSize
+        self.reduceMotionEnabled = reduceMotionEnabled
+        self.chatListFilter = chatListFilter
+        self.autoArchiveMutedChats = autoArchiveMutedChats
+        self.linkPreviewsEnabled = linkPreviewsEnabled
+        self.archivedThreadIDs = archivedThreadIDs
+        self.lockedThreadIDs = lockedThreadIDs
+        self.notificationModesByThreadID = notificationModesByThreadID
+        self.blockedUserIDs = blockedUserIDs
         self.calendarAutoSyncEnabled = calendarAutoSyncEnabled
         self.defaultMeetingDurationMinutes = defaultMeetingDurationMinutes
         self.spaces = spaces
@@ -151,7 +207,21 @@ struct PersistedAppSnapshot: Codable {
         typingIndicatorsEnabled = try container.decode(Bool.self, forKey: .typingIndicatorsEnabled)
         inlineMediaEnabled = try container.decode(Bool.self, forKey: .inlineMediaEnabled)
         saveMediaToPhotos = try container.decode(Bool.self, forKey: .saveMediaToPhotos)
-        autoDownloadOnWiFi = try container.decode(Bool.self, forKey: .autoDownloadOnWiFi)
+        autoDownloadOnWiFi = try container.decodeIfPresent(Bool.self, forKey: .autoDownloadOnWiFi) ?? true
+        mediaAutoDownloadPolicy = try container.decodeIfPresent(MediaAutoDownloadPolicy.self, forKey: .mediaAutoDownloadPolicy)
+        mediaUploadQuality = try container.decodeIfPresent(MediaUploadQuality.self, forKey: .mediaUploadQuality)
+        appAccent = try container.decodeIfPresent(AppAccentColor.self, forKey: .appAccent)
+        chatListDensity = try container.decodeIfPresent(ChatListDensity.self, forKey: .chatListDensity)
+        showAvatarsInChatList = try container.decodeIfPresent(Bool.self, forKey: .showAvatarsInChatList)
+        messageTextSize = try container.decodeIfPresent(MessageTextSize.self, forKey: .messageTextSize)
+        reduceMotionEnabled = try container.decodeIfPresent(Bool.self, forKey: .reduceMotionEnabled)
+        chatListFilter = try container.decodeIfPresent(ChatListFilterMode.self, forKey: .chatListFilter)
+        autoArchiveMutedChats = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveMutedChats)
+        linkPreviewsEnabled = try container.decodeIfPresent(Bool.self, forKey: .linkPreviewsEnabled)
+        archivedThreadIDs = try container.decodeIfPresent(Set<String>.self, forKey: .archivedThreadIDs)
+        lockedThreadIDs = try container.decodeIfPresent(Set<String>.self, forKey: .lockedThreadIDs)
+        notificationModesByThreadID = try container.decodeIfPresent([String: RoomNotificationMode].self, forKey: .notificationModesByThreadID)
+        blockedUserIDs = try container.decodeIfPresent([String].self, forKey: .blockedUserIDs)
         calendarAutoSyncEnabled = try container.decode(Bool.self, forKey: .calendarAutoSyncEnabled)
         defaultMeetingDurationMinutes = try container.decode(Int.self, forKey: .defaultMeetingDurationMinutes)
         spaces = try container.decode([ChatSpace].self, forKey: .spaces)
