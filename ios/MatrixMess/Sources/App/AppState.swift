@@ -606,6 +606,32 @@ struct AppDiagnostics: Hashable {
     var lastErrorDescription: String?
 }
 
+private struct SessionRestoreTimeoutError: LocalizedError {
+    var errorDescription: String? {
+        "Zeitueberschreitung beim Wiederherstellen der SDK-Session."
+    }
+}
+
+private func withRestoreTimeout<T: Sendable>(
+    seconds: UInt64,
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            throw SessionRestoreTimeoutError()
+        }
+        guard let result = try await group.next() else {
+            throw SessionRestoreTimeoutError()
+        }
+        group.cancelAll()
+        return result
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var homeserver = "https://matrix.org" {
@@ -813,7 +839,7 @@ final class AppState: ObservableObject {
     }
 
     var isLoggedIn: Bool { currentUserID != nil }
-    var buildVersionLabel: String { "v0.4.0 - 2026-06-10" }
+    var buildVersionLabel: String { "v0.4.1 - 2026-06-10" }
     var preferredColorScheme: ColorScheme? { themeMode.preferredColorScheme }
     var selectedSpace: ChatSpace? { spaces.first(where: { $0.id == selectedSpaceID }) ?? spaces.first }
 
@@ -830,23 +856,100 @@ final class AppState: ObservableObject {
             applySnapshot(snapshot, includeWorkspace: false)
         }
 
-        await restoreSession(using: snapshot)
+        let storedSession = try? sessionStore.load()
 
-        if isLoggedIn && appLockEnabled {
-            isAppLocked = true
+        if let storedSession {
+            // Sofort mit gecachten Daten starten; SDK-Restore und Sync laufen im Hintergrund,
+            // damit der Ladescreen nie an Netzwerk oder Store-Migration haengt.
+            currentSession = storedSession
+            currentUserID = storedSession.userID
+            performHydratingChanges {
+                homeserver = storedSession.homeserver
+            }
+
+            if let snapshot, !snapshot.threadsByID.isEmpty {
+                applySnapshot(snapshot, includeWorkspace: true)
+            } else {
+                ensureLocalUtilityDefaults()
+            }
+
+            if appLockEnabled {
+                isAppLocked = true
+            }
+        } else {
+            currentSession = nil
+            currentUserID = nil
+            clearWorkspaceData()
+            persistSnapshotIfPossible(force: true)
         }
-        if isLoggedIn {
-            Task { await refreshBlockedUsers() }
-        }
-        await refreshMediaCacheSize()
 
         var updatedDiagnostics = diagnostics
         updatedDiagnostics.bootstrappedAt = .now
+        updatedDiagnostics.statusNote = storedSession == nil
+            ? "Keine gespeicherte Session gefunden."
+            : "Cache geladen, Verbindung wird im Hintergrund aufgebaut."
         diagnostics = updatedDiagnostics
 
+        isBootstrapping = false
+        AppLogger.info("Bootstrap-UI freigegeben.")
+
+        guard let storedSession else {
+            await refreshMediaCacheSize()
+            return
+        }
+
+        Task { [weak self] in
+            await self?.finishSessionRestore(storedSession: storedSession)
+        }
+    }
+
+    /// Stellt die SDK-Session im Hintergrund her und startet danach Sync, Crypto- und Push-Checks.
+    /// Haengt oder scheitert der SDK-Restore, laeuft die App im REST-Modus weiter statt auszuloggen.
+    private func finishSessionRestore(storedSession: MatrixSession) async {
+        let restoreService = matrixService
+        do {
+            let restoredSession = try await withRestoreTimeout(seconds: 25) {
+                try await restoreService.restoreSession(storedSession)
+            }
+            currentSession = restoredSession
+            currentUserID = restoredSession.userID
+            performHydratingChanges {
+                homeserver = restoredSession.homeserver
+            }
+
+            var updatedDiagnostics = diagnostics
+            updatedDiagnostics.lastSessionRestoreAt = .now
+            updatedDiagnostics.statusNote = "Session wiederhergestellt, Daten werden synchronisiert."
+            updatedDiagnostics.lastErrorDescription = nil
+            diagnostics = updatedDiagnostics
+
+            AppLogger.info("Session wurde lokal wiederhergestellt.")
+        } catch {
+            if case MatrixServiceError.invalidStoredSession = error {
+                AppLogger.error("Gespeicherte Session ist unvollstaendig, Abmeldung: \(error.localizedDescription)")
+                signOut()
+                return
+            }
+
+            // SDK-Restore haengt oder schlaegt fehl (z. B. offline oder Store-Migration):
+            // mit der gespeicherten Session im REST-Modus weiterarbeiten.
+            AppLogger.error("SDK-Restore uebersprungen, REST-Modus aktiv: \(error.localizedDescription)")
+            var updatedDiagnostics = diagnostics
+            updatedDiagnostics.lastSessionRestoreAt = .now
+            updatedDiagnostics.statusNote = "SDK-Restore uebersprungen, REST-Modus aktiv."
+            updatedDiagnostics.lastErrorDescription = error.localizedDescription
+            diagnostics = updatedDiagnostics
+        }
+
+        guard let activeSession = currentSession else { return }
+
+        // Voller Sync nach Restore, damit Raumliste und Timelines vollstaendig sind.
+        await refreshMatrixData(using: activeSession, forceFullSync: true)
+        await startSyncLoopIfPossible()
         await refreshCryptoStatus()
         await refreshPushHealthStatus()
-        isBootstrapping = false
+        await refreshBlockedUsers()
+        await refreshMediaCacheSize()
         AppLogger.info("Bootstrap abgeschlossen.")
     }
 
@@ -3166,76 +3269,6 @@ final class AppState: ObservableObject {
         case .video: return "Video"
         case .file: return "Datei"
         case .event: return message.attachment?.title ?? "Termin"
-        }
-    }
-
-    private func restoreSession(using snapshot: PersistedAppSnapshot?) async {
-        do {
-            guard let storedSession = try sessionStore.load() else {
-                currentSession = nil
-                currentUserID = nil
-                clearWorkspaceData()
-                persistSnapshotIfPossible(force: true)
-                await syncEngine.stop()
-                await refreshSyncDiagnostics()
-
-                var updatedDiagnostics = diagnostics
-                updatedDiagnostics.statusNote = "Keine gespeicherte Session gefunden."
-                updatedDiagnostics.lastErrorDescription = nil
-                diagnostics = updatedDiagnostics
-                return
-            }
-
-            let restoredSession = try await matrixService.restoreSession(storedSession)
-            currentSession = restoredSession
-            currentUserID = restoredSession.userID
-            performHydratingChanges {
-                homeserver = restoredSession.homeserver
-            }
-
-            if let snapshot, !snapshot.threadsByID.isEmpty {
-                applySnapshot(snapshot, includeWorkspace: true)
-            } else {
-                ensureLocalUtilityDefaults()
-                persistSnapshotIfPossible(force: true)
-            }
-
-            var updatedDiagnostics = diagnostics
-            updatedDiagnostics.statusNote = snapshot?.threadsByID.isEmpty == false
-                ? "Session und lokaler Workspace wurden wiederhergestellt."
-                : "Session wiederhergestellt, Live-Daten werden geladen."
-            updatedDiagnostics.lastSessionRestoreAt = .now
-            updatedDiagnostics.lastErrorDescription = nil
-            diagnostics = updatedDiagnostics
-
-            AppLogger.info("Session wurde lokal wiederhergestellt.")
-
-            // Force one full sync after restoring a session so room lists and
-            // timelines are complete even when an old local snapshot existed.
-            await refreshMatrixData(using: restoredSession, forceFullSync: true)
-            await startSyncLoopIfPossible()
-        } catch {
-            currentSession = nil
-            currentUserID = nil
-            clearWorkspaceData()
-            errorMessage = error.localizedDescription
-            await syncEngine.stop()
-            await refreshSyncDiagnostics()
-
-            do {
-                try sessionStore.clear()
-            } catch {
-                AppLogger.error("Gespeicherte Session konnte nicht geloescht werden: \(error.localizedDescription)")
-            }
-
-            persistSnapshotIfPossible(force: true)
-
-            var updatedDiagnostics = diagnostics
-            updatedDiagnostics.statusNote = "Gespeicherte Session war ungueltig und wurde verworfen."
-            updatedDiagnostics.lastErrorDescription = error.localizedDescription
-            diagnostics = updatedDiagnostics
-
-            AppLogger.error("Session-Restore fehlgeschlagen: \(error.localizedDescription)")
         }
     }
 
