@@ -808,6 +808,9 @@ actor MatrixSDKContext {
         case .other(eventType: let eventType):
             message.kind = .text
             message.body = "Event: \(eventType)"
+        case .liveLocation(content: _):
+            message.kind = .text
+            message.body = "Live-Standort geteilt."
         }
     }
 
