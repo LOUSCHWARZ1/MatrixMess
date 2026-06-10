@@ -831,7 +831,7 @@ private struct ServerSearchSheet: View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isSearching else { return }
         isSearching = true
-        Task {
+        Task { @MainActor in
             results = await appState.searchMessagesOnServer(trimmed)
             isSearching = false
             hasSearched = true
@@ -4717,7 +4717,7 @@ private struct BlockedUsersView: View {
     private func blockEnteredUser() {
         let target = newUserID
         isWorking = true
-        Task {
+        Task { @MainActor in
             await appState.blockUser(target)
             newUserID = ""
             isWorking = false
@@ -5021,7 +5021,7 @@ private struct DeviceDetailSheet: View {
             ) {
                 Button("Abmelden", role: .destructive) {
                     isWorking = true
-                    Task {
+                    Task { @MainActor in
                         let success = await appState.signOutDevice(device.deviceID, password: password)
                         isWorking = false
                         if success {
