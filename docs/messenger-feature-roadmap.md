@@ -1,6 +1,31 @@
 # Messenger Feature Roadmap
 
-Stand: 2026-03-16
+Stand: 2026-06-10 (v0.4.0)
+
+## Umsetzungsstand v0.4.0
+
+Mit Version 0.4.0 sind aus dieser Roadmap umgesetzt:
+
+- App Lock mit Face ID/Code, erzwungen bei App-Start und Hintergrund-Wechsel
+- Chat Lock pro Unterhaltung (Face ID, im Chatprofil aktivierbar)
+- Archiv inklusive Auto-Archivierung stummgeschalteter Chats
+- Chatlisten-Filter (Alle, Ungelesen, Direkt, Gruppen) als Chip-Leiste
+- Benachrichtigungsmodus pro Raum (Alle / nur Erwaehnungen / stumm) ueber
+  serverseitige Matrix-Push-Rules, synchron auf allen Geraeten
+- Private Read-Receipts (m.read.private), wenn Lesebestaetigungen deaktiviert sind
+- Blockierte Kontakte ueber m.ignored_user_list (Account Data)
+- Verknuepfte Geraete: anzeigen, umbenennen, per Passwort (UIA) abmelden
+- Serverseitige Nachrichtensuche ueber /_matrix/client/v3/search
+- Auto-Download-Richtlinie (Immer / nur WLAN / Nie) mit echter Netzwerkerkennung
+- Upload-Qualitaet fuer Bilder (Datensparend / Ausgewogen / Original)
+- Speicherverwaltung: Cache-Groesse anzeigen und leeren
+- Darstellung: Akzentfarbe, Chat-Dichte, Avatare ein/aus, Textgroesse,
+  Link-Vorschauen, Bewegungen reduzieren
+- Settings neu strukturiert in gruppierte Unterseiten (Apple-Settings-Stil)
+
+Noch offen aus dieser Roadmap: Polls, verschwindende Nachrichten,
+echte WebRTC-Calls, Quiet Hours/Notification-Previews (benoetigt
+Notification Service Extension) und Chat-Folders ueber die Filter hinaus.
 
 ## Zielbild
 
