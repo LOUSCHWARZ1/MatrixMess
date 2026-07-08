@@ -25,7 +25,7 @@ actor MatrixSyncEngine {
                     state.consecutiveFailures = 0
                     state.lastSuccessfulSyncAt = .now
                     state.lastFailureDescription = nil
-                    try await Task.sleep(nanoseconds: UInt64(max(minimumInterval, 5) * 1_000_000_000))
+                    try await Task.sleep(nanoseconds: UInt64(max(minimumInterval, 1) * 1_000_000_000))
                 } catch {
                     state.consecutiveFailures += 1
                     state.lastFailureDescription = error.localizedDescription

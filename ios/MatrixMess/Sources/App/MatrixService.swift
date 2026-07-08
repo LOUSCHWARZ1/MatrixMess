@@ -1180,8 +1180,10 @@ final class MatrixService {
             $0.matrixEventID == nil && ($0.isPending || $0.sendStatus == .failed)
         }
         for pending in pendingMessages {
+            // Ein pending Echo gilt auch dann als bestaetigt, wenn der Server das
+            // Event bereits mit echter Event-ID geliefert hat - sonst erscheint die
+            // Nachricht doppelt (bestaetigte Kopie + haengendes "sending"-Echo).
             if merged.contains(where: { message in
-                guard message.matrixEventID == nil else { return false }
                 guard message.isOutgoing == pending.isOutgoing else { return false }
                 guard message.kind == pending.kind else { return false }
                 if !pending.body.isEmpty && message.body != pending.body {

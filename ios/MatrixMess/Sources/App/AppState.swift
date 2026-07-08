@@ -681,9 +681,9 @@ final class AppState: ObservableObject {
         didSet { persistSnapshotIfPossible() }
     }
 
-    @Published var searchText = "" {
-        didSet { persistSnapshotIfPossible() }
-    }
+    // Bewusst ohne Persistenz: transienter UI-Zustand, sonst wird bei jedem
+    // Tastendruck der komplette Snapshot serialisiert.
+    @Published var searchText = ""
 
     @Published var selectedThreadID: String? {
         didSet { persistSnapshotIfPossible() }
@@ -810,6 +810,12 @@ final class AppState: ObservableObject {
 
     private var hasBootstrapped = false
     private var isHydratingState = false
+    private var isRefreshingMatrixData = false
+    private var pendingMatrixRefreshRequested = false
+    /// Threads, deren Unread-Zaehler lokal genullt wurde: verhindert, dass ein
+    /// noch nicht propagiertes Read-Receipt den Badge beim naechsten Sync zurueckbringt.
+    private var locallyReadThreadIDs: [String: Date] = [:]
+    private var snapshotPersistTask: Task<Void, Never>?
     private var verificationPollingTask: Task<Void, Never>?
     private var typingDebounceTask: Task<Void, Never>?
     private var syncedSpaces: [ChatSpace] = []
@@ -943,8 +949,9 @@ final class AppState: ObservableObject {
 
         guard let activeSession = currentSession else { return }
 
-        // Voller Sync nach Restore, damit Raumliste und Timelines vollstaendig sind.
-        await refreshMatrixData(using: activeSession, forceFullSync: true)
+        // Mit vorhandenem Sync-Token inkrementell weitermachen; ein voller
+        // full_state-Sync ist nur noetig, wenn noch kein Token existiert.
+        await refreshMatrixData(using: activeSession, forceFullSync: activeSession.syncToken == nil)
         await startSyncLoopIfPossible()
         await refreshCryptoStatus()
         await refreshPushHealthStatus()
@@ -2274,6 +2281,7 @@ final class AppState: ObservableObject {
 
         thread.unreadCount = 0
         threadsByID[threadID] = thread
+        locallyReadThreadIDs[threadID] = .now
         persistSnapshotIfPossible()
     }
 
@@ -2477,9 +2485,12 @@ final class AppState: ObservableObject {
     }
 
     private func markThreadReadRemotely(_ threadID: String) async {
+        // Auf die letzte Nachricht MIT Event-ID zurueckfallen: direkt nach dem eigenen
+        // Senden ist die letzte Nachricht ein pending Echo ohne ID und das Receipt
+        // wuerde sonst still ausfallen.
         guard let currentSession,
               let latestEventID = messagesByThreadID[threadID]?
-                .last?
+                .last(where: { $0.matrixEventID != nil })?
                 .matrixEventID else {
             return
         }
@@ -3273,6 +3284,30 @@ final class AppState: ObservableObject {
     }
 
     private func refreshMatrixData(using session: MatrixSession, forceFullSync: Bool) async {
+        try? await refreshMatrixDataReportingErrors(using: session, forceFullSync: forceFullSync)
+    }
+
+    /// Serialisiert alle Sync-Laeufe: Laeuft bereits ein Sync, wird nur ein Folgesync
+    /// vorgemerkt. Damit koennen parallele Aufrufer (Sync-Loop, Pull-to-Refresh,
+    /// Nach-Sende-Refresh) den lokalen Zustand nicht mit veralteten Snapshots ueberschreiben.
+    private func refreshMatrixDataReportingErrors(using session: MatrixSession, forceFullSync: Bool) async throws {
+        if isRefreshingMatrixData {
+            pendingMatrixRefreshRequested = true
+            return
+        }
+
+        isRefreshingMatrixData = true
+        defer { isRefreshingMatrixData = false }
+
+        var force = forceFullSync
+        repeat {
+            pendingMatrixRefreshRequested = false
+            try await performMatrixRefresh(using: currentSession ?? session, forceFullSync: force)
+            force = false
+        } while pendingMatrixRefreshRequested
+    }
+
+    private func performMatrixRefresh(using session: MatrixSession, forceFullSync: Bool) async throws {
         isSyncing = true
         let effectiveSession = forceFullSync
             ? MatrixSession(
@@ -3334,6 +3369,11 @@ final class AppState: ObservableObject {
             diagnostics = updatedDiagnostics
 
             AppLogger.error("Matrix-Sync fehlgeschlagen: \(error.localizedDescription)")
+
+            isSyncing = false
+            await refreshSyncDiagnostics()
+            // Fehler weiterreichen, damit die Sync-Loop Backoff statt Dauerfeuer faehrt.
+            throw error
         }
 
         isSyncing = false
@@ -3347,9 +3387,12 @@ final class AppState: ObservableObject {
             return
         }
 
-        await syncEngine.start(minimumInterval: 20) { [weak self] in
+        // Kurzes Intervall: das eigentliche Warten uebernimmt der Long-Poll des
+        // /sync-Endpunkts (timeout=30000). Neue Nachrichten kommen so nahezu sofort an.
+        await syncEngine.start(minimumInterval: 2) { [weak self] in
             guard let self else { return }
-            await self.refreshMatrixData(forceFullSync: false)
+            guard let session = await self.currentSession else { return }
+            try await self.refreshMatrixDataReportingErrors(using: session, forceFullSync: false)
         }
 
         await refreshSyncDiagnostics()
@@ -3382,6 +3425,23 @@ final class AppState: ObservableObject {
                 messages.sorted { $0.timestamp < $1.timestamp }
             }
             mainPinnedThreadIDs = workspace.mainPinnedThreadIDs
+
+            // Lokal als gelesen markierte Threads nicht durch einen noch nicht
+            // propagierten Server-Unread-Count zurueckflackern lassen.
+            for (threadID, readAt) in locallyReadThreadIDs {
+                guard var thread = threadsByID[threadID] else {
+                    locallyReadThreadIDs.removeValue(forKey: threadID)
+                    continue
+                }
+                if thread.lastActivity <= readAt {
+                    if thread.unreadCount > 0 {
+                        thread.unreadCount = 0
+                        threadsByID[threadID] = thread
+                    }
+                } else {
+                    locallyReadThreadIDs.removeValue(forKey: threadID)
+                }
+            }
             historyExhaustedThreadIDs = historyExhaustedThreadIDs
                 .intersection(Set(workspace.threadsByID.keys))
                 .union(workspace.timelineStartReachedThreadIDs)
@@ -3640,29 +3700,48 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// Debounced Snapshot-Persistenz: viele aufeinanderfolgende State-Aenderungen werden
+    /// zu einem Schreibvorgang zusammengefasst; das Encoding/IO laeuft abseits des Main-Threads.
     private func persistSnapshotIfPossible(force: Bool = false) {
         guard !isHydratingState else { return }
         guard hasBootstrapped || force else { return }
 
-        do {
-            try snapshotStore.save(makeSnapshot())
-
-            var updatedDiagnostics = diagnostics
-            updatedDiagnostics.lastSnapshotSaveAt = .now
-            updatedDiagnostics.cachedThreadCount = threadsByID.count
-            updatedDiagnostics.cachedMessageCount = messagesByThreadID.values.reduce(0) { $0 + $1.count }
-            if updatedDiagnostics.statusNote == "Noch kein Restore ausgefuehrt." {
-                updatedDiagnostics.statusNote = "Lokaler Snapshot geschrieben."
-            }
-            diagnostics = updatedDiagnostics
-        } catch {
-            var updatedDiagnostics = diagnostics
-            updatedDiagnostics.lastErrorDescription = error.localizedDescription
-            updatedDiagnostics.statusNote = "Lokaler Snapshot konnte nicht gespeichert werden."
-            diagnostics = updatedDiagnostics
-
-            AppLogger.error("Snapshot konnte nicht gespeichert werden: \(error.localizedDescription)")
+        if force {
+            snapshotPersistTask?.cancel()
+            snapshotPersistTask = nil
+            writeSnapshotToDisk()
+            return
         }
+
+        guard snapshotPersistTask == nil else { return }
+        snapshotPersistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.snapshotPersistTask = nil
+            self.writeSnapshotToDisk()
+        }
+    }
+
+    private func writeSnapshotToDisk() {
+        let snapshot = makeSnapshot()
+        let store = snapshotStore
+
+        Task.detached(priority: .utility) {
+            do {
+                try store.save(snapshot)
+            } catch {
+                AppLogger.error("Snapshot konnte nicht gespeichert werden: \(error.localizedDescription)")
+            }
+        }
+
+        var updatedDiagnostics = diagnostics
+        updatedDiagnostics.lastSnapshotSaveAt = .now
+        updatedDiagnostics.cachedThreadCount = threadsByID.count
+        updatedDiagnostics.cachedMessageCount = messagesByThreadID.values.reduce(0) { $0 + $1.count }
+        if updatedDiagnostics.statusNote == "Noch kein Restore ausgefuehrt." {
+            updatedDiagnostics.statusNote = "Lokaler Snapshot geschrieben."
+        }
+        diagnostics = updatedDiagnostics
     }
 
     private func refreshDiagnosticsStatus() {
