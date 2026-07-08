@@ -241,14 +241,9 @@ struct PersistedAppSnapshot: Codable {
 
 struct AppSnapshotStore {
     private let fileManager: FileManager
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        decoder.dateDecodingStrategy = .iso8601
     }
 
     func load() throws -> PersistedAppSnapshot? {
@@ -258,12 +253,18 @@ struct AppSnapshotStore {
         }
 
         let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(PersistedAppSnapshot.self, from: data)
     }
 
+    /// Encoder pro Aufruf, damit Speichern thread-sicher auch aus Hintergrund-Tasks
+    /// moeglich ist. Kompaktes JSON statt prettyPrinted halbiert Encode-Zeit und Groesse.
     func save(_ snapshot: PersistedAppSnapshot) throws {
         let url = try snapshotURL()
         try createParentDirectoryIfNeeded(for: url)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(snapshot)
         try data.write(to: url, options: .atomic)
     }
