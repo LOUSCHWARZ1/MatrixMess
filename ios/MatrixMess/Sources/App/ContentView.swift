@@ -7,7 +7,7 @@ import QuickLook
 import SafariServices
 import WebKit
 
-private let appBuildLabel = "v0.4.1 - 2026-06-10"
+private let appBuildLabel = "v0.4.2 - 2026-06-10"
 
 private let quickReactionEmoji = [
     "\u{1F44D}",
@@ -26,6 +26,129 @@ private let customSpaceIconOptions = [
     "book.fill",
     "tag.fill"
 ]
+
+// MARK: - Timeline display model (Element-X-style grouping)
+
+private enum MessageGroupPosition {
+    case single
+    case first
+    case middle
+    case last
+}
+
+private enum TimelineDisplayItem: Identifiable {
+    case dateSeparator(id: String, date: Date)
+    case message(ChatMessage, position: MessageGroupPosition)
+
+    var id: String {
+        switch self {
+        case .dateSeparator(let id, _):
+            return id
+        case .message(let message, _):
+            return message.id.uuidString
+        }
+    }
+}
+
+/// Element-X-Regel: gleiche Gruppe nur bei gleichem Sender, gleicher Richtung,
+/// < 5 Minuten Abstand, vorherige Nachricht ohne Reaktionen, beide kein Event
+/// und gleicher Kalendertag (ein Datums-Separator bricht die Gruppe).
+private func messagesFormGroup(_ previous: ChatMessage, _ next: ChatMessage) -> Bool {
+    guard previous.senderDisplayName == next.senderDisplayName,
+          previous.isOutgoing == next.isOutgoing,
+          previous.kind != .event,
+          next.kind != .event,
+          previous.reactions.isEmpty,
+          next.timestamp.timeIntervalSince(previous.timestamp) < 5 * 60,
+          Calendar.current.isDate(previous.timestamp, inSameDayAs: next.timestamp)
+    else { return false }
+    return true
+}
+
+private func buildTimelineItems(from messages: [ChatMessage]) -> [TimelineDisplayItem] {
+    var items: [TimelineDisplayItem] = []
+    items.reserveCapacity(messages.count + 8)
+
+    for (index, message) in messages.enumerated() {
+        let previous = index > 0 ? messages[index - 1] : nil
+        let next = index + 1 < messages.count ? messages[index + 1] : nil
+
+        if previous == nil || !Calendar.current.isDate(previous!.timestamp, inSameDayAs: message.timestamp) {
+            let components = Calendar.current.dateComponents([.year, .month, .day], from: message.timestamp)
+            let dayID = "day-\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
+            items.append(.dateSeparator(id: dayID, date: message.timestamp))
+        }
+
+        let groupsWithPrevious = previous.map { messagesFormGroup($0, message) } ?? false
+        let groupsWithNext = next.map { messagesFormGroup(message, $0) } ?? false
+
+        let position: MessageGroupPosition
+        switch (groupsWithPrevious, groupsWithNext) {
+        case (false, false): position = .single
+        case (false, true): position = .first
+        case (true, true): position = .middle
+        case (true, false): position = .last
+        }
+        items.append(.message(message, position: position))
+    }
+
+    return items
+}
+
+private struct DateSeparatorView: View {
+    let date: Date
+
+    private var label: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return "Heute"
+        }
+        if calendar.isDateInYesterday(date) {
+            return "Gestern"
+        }
+        let daysAgo = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: date),
+            to: calendar.startOfDay(for: Date())
+        ).day ?? Int.max
+        if daysAgo >= 0 && daysAgo < 7 {
+            return date.formatted(.dateTime.weekday(.wide))
+        }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    var body: some View {
+        Text(label)
+            .font(.caption2.weight(.semibold))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(Color(uiColor: .secondarySystemBackground))
+            )
+            .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Haptics
+
+private enum Haptics {
+    static func selection() {
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    static func lightImpact() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    static func mediumImpact() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    static func error() {
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
+    }
+}
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
@@ -938,6 +1061,17 @@ private struct ConversationRow: View {
         let value = appState.draft(for: thread.id).trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }
+    private var lastMessagePreviewText: String {
+        if let lastMessage = appState.messages(for: thread.id).last,
+           lastMessage.isOutgoing,
+           lastMessage.kind == .text {
+            return "Du: \(thread.lastMessagePreview)"
+        }
+        return thread.lastMessagePreview
+    }
+    private var unreadBadgeColor: Color {
+        thread.isMuted ? Color.gray : thread.accent.tint
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -966,7 +1100,7 @@ private struct ConversationRow: View {
                 }
 
                 // U+270E = ✎ pencil (draft indicator)
-                Text(draftPreview.map { "\u{270E} \($0)" } ?? thread.lastMessagePreview)
+                Text(draftPreview.map { "\u{270E} \($0)" } ?? lastMessagePreviewText)
                     .font(.subheadline)
                     .foregroundColor(draftPreview == nil ? .secondary : .orange)
                     .lineLimit(1)
@@ -1007,13 +1141,13 @@ private struct ConversationRow: View {
                         Capsule()
                             .fill(
                                 LinearGradient(
-                                    colors: [thread.accent.tint, thread.accent.tint.opacity(0.78)],
+                                    colors: [unreadBadgeColor, unreadBadgeColor.opacity(0.78)],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 )
                             )
                     )
-                    .shadow(color: thread.accent.tint.opacity(0.3), radius: 4, y: 2)
+                    .shadow(color: unreadBadgeColor.opacity(0.3), radius: 4, y: 2)
             }
         }
         .padding(.vertical, appState.chatListDensity.rowVerticalPadding)
@@ -1386,6 +1520,8 @@ private struct ConversationDetailView: View {
     @State private var quickLookItem: QuickLookItem?
     @State private var isSending = false
     @State private var replyToMessage: ChatMessage?
+    @State private var isNearBottom = true
+    @State private var unseenCount = 0
 
     let threadID: String
 
@@ -1410,8 +1546,9 @@ private struct ConversationDetailView: View {
             } else if let thread {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 12) {
+                        LazyVStack(spacing: 2) {
                             ConversationHistoryHeader(threadID: thread.id)
+                                .padding(.bottom, 8)
 
                             if let sourceSpace {
                                 Button {
@@ -1425,30 +1562,104 @@ private struct ConversationDetailView: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+                                .padding(.bottom, 8)
                             }
 
-                              ForEach(appState.messages(for: thread.id)) { message in
-                                  conversationMessageRow(message, thread: thread)
+                              let messages = appState.messages(for: thread.id)
+                              let latestOwnMessageID = messages.last(where: { $0.isOutgoing })?.id
+                              ForEach(buildTimelineItems(from: messages)) { item in
+                                  switch item {
+                                  case .dateSeparator(_, let date):
+                                      DateSeparatorView(date: date)
+                                          .padding(.top, 10)
+                                  case .message(let message, let position):
+                                      conversationMessageRow(
+                                          message,
+                                          thread: thread,
+                                          position: position,
+                                          isLatestOwnMessage: message.id == latestOwnMessageID
+                                      )
+                                      .padding(.top, (position == .single || position == .first) ? 10 : 0)
+                                  }
                               }
 
                             Color.clear
                                 .frame(height: 1)
                                 .id(scrollAnchorID)
+                                .onAppear {
+                                    isNearBottom = true
+                                    unseenCount = 0
+                                }
+                                .onDisappear {
+                                    isNearBottom = false
+                                }
                         }
                         .padding(.horizontal, 16)
                         .padding(.top, 16)
                         .padding(.bottom, 28)
                         .modifier(MessageTextSizeModifier(size: appState.messageTextSize))
                     }
+                    .scrollDismissesKeyboard(.interactively)
                     .background(Color(uiColor: .systemGroupedBackground))
+                    .overlay(alignment: .bottomTrailing) {
+                        if !isNearBottom {
+                            Button {
+                                unseenCount = 0
+                                if appState.reduceMotionEnabled {
+                                    proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                                } else {
+                                    withAnimation(.easeOut(duration: 0.25)) {
+                                        proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "chevron.down")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundColor(.primary)
+                                    .frame(width: 40, height: 40)
+                                    .background(Circle().fill(.regularMaterial))
+                                    .overlay(alignment: .topTrailing) {
+                                        if unseenCount > 0 {
+                                            Text("\(unseenCount)")
+                                                .font(.caption2.weight(.bold))
+                                                .foregroundColor(.white)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Capsule().fill(appState.appAccent.tint))
+                                                .offset(x: 6, y: -6)
+                                        }
+                                    }
+                            }
+                            .padding(.trailing, 16)
+                            .padding(.bottom, 12)
+                        }
+                    }
                     .task(id: threadID) {
                         // Give the layout one runloop pass to settle before scrolling.
                         await Task.yield()
                         proxy.scrollTo(scrollAnchorID, anchor: .bottom)
                     }
                     .onChange(of: appState.messages(for: thread.id).last?.id) { _ in
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                        let latest = appState.messages(for: thread.id).last
+                        if isNearBottom || latest?.isOutgoing == true {
+                            unseenCount = 0
+                            if appState.reduceMotionEnabled {
+                                proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                            } else {
+                                withAnimation(.easeOut(duration: 0.25)) {
+                                    proxy.scrollTo(scrollAnchorID, anchor: .bottom)
+                                }
+                            }
+                        } else {
+                            unseenCount += 1
+                        }
+                        if latest?.isOutgoing == false, isNearBottom {
+                            // Read-Receipts auch bei bereits geoeffnetem Chat senden -
+                            // aber nur, wenn der Nutzer die Nachricht wirklich sieht.
+                            appState.markThreadRead(thread.id)
+                            Task {
+                                await appState.syncReadMarker(for: thread.id)
+                            }
                         }
                     }
                     .navigationTitle(thread.title)
@@ -1677,23 +1888,35 @@ private struct ConversationDetailView: View {
     }
 
     @ViewBuilder
-    private func conversationMessageRow(_ message: ChatMessage, thread: ChatThread) -> some View {
+    private func conversationMessageRow(
+        _ message: ChatMessage,
+        thread: ChatThread,
+        position: MessageGroupPosition,
+        isLatestOwnMessage: Bool
+    ) -> some View {
         MessageBubble(
             message: message,
             accent: thread.accent,
+            position: position,
+            isLatestOwnMessage: isLatestOwnMessage,
             attachmentAction: {
                 Task {
                     await handleAttachmentTap(message, in: thread.id)
                 }
             },
             reactAction: { emoji in
+                Haptics.selection()
                 Task {
                     await appState.toggleReaction(emoji, on: message.id, in: thread.id)
                 }
             },
             replyAction: {
-                withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                if appState.reduceMotionEnabled {
                     replyToMessage = message
+                } else {
+                    withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                        replyToMessage = message
+                    }
                 }
             },
             forwardAction: {
@@ -1705,6 +1928,7 @@ private struct ConversationDetailView: View {
                 editingText = message.body
             },
             retryAction: {
+                Haptics.error()
                 Task {
                     await appState.retryMessage(message.id, in: thread.id)
                 }
@@ -2042,8 +2266,12 @@ private struct ThreadProfileSheet: View {
 }
 
 private struct MessageBubble: View {
+    @EnvironmentObject private var appState: AppState
+
     let message: ChatMessage
     let accent: SpaceAccent
+    let position: MessageGroupPosition
+    let isLatestOwnMessage: Bool
     let attachmentAction: () -> Void
     let reactAction: (String) -> Void
     let replyAction: () -> Void
@@ -2052,18 +2280,85 @@ private struct MessageBubble: View {
     let retryAction: () -> Void
     let deleteAction: () -> Void
 
+    @State private var swipeOffset: CGFloat = 0
+    @State private var hasTriggeredSwipeHaptic = false
+
     private var bubbleAccent: SpaceAccent {
         message.isOutgoing ? accent : senderAccent(for: message.senderDisplayName)
+    }
+
+    private var showsSenderHeader: Bool {
+        !message.isOutgoing && (position == .single || position == .first)
+    }
+
+    private var showsTimestamp: Bool {
+        position == .single || position == .last
+    }
+
+    private var bubbleMaxWidth: CGFloat {
+        (UIScreen.main.bounds.width * 0.76).rounded()
+    }
+
+    /// Asymmetrische Ecken nach Element-X-Vorbild: die gruppeninnere Ecke auf
+    /// der Bubble-Seite (rechts fuer outgoing, links fuer incoming) wird enger.
+    private var bubbleShape: UnevenRoundedRectangle {
+        let large: CGFloat = 18
+        let small: CGFloat = 6
+        let topGrouped = position == .middle || position == .last
+        let bottomGrouped = position == .first || position == .middle
+
+        if message.isOutgoing {
+            return UnevenRoundedRectangle(
+                topLeadingRadius: large,
+                bottomLeadingRadius: large,
+                bottomTrailingRadius: bottomGrouped ? small : large,
+                topTrailingRadius: topGrouped ? small : large,
+                style: .continuous
+            )
+        }
+        return UnevenRoundedRectangle(
+            topLeadingRadius: topGrouped ? small : large,
+            bottomLeadingRadius: bottomGrouped ? small : large,
+            bottomTrailingRadius: large,
+            topTrailingRadius: large,
+            style: .continuous
+        )
+    }
+
+    /// Status-Diaet: sending/failed immer, sonst nur die letzte eigene Nachricht.
+    /// (.failed wird prominent neben der Bubble gerendert, nicht hier.)
+    private var deliveryStatusDisplay: (symbol: String, color: Color)? {
+        guard message.isOutgoing else { return nil }
+        if message.sendStatus == .failed { return nil }
+        if message.sendStatus == .sending || message.isPending {
+            return ("clock", .secondary)
+        }
+        if isLatestOwnMessage {
+            return ("checkmark", .secondary)
+        }
+        return nil
     }
 
     var body: some View {
         HStack {
             if message.isOutgoing {
                 Spacer(minLength: 44)
+
+                if message.sendStatus == .failed {
+                    Button {
+                        retryAction()
+                    } label: {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Senden fehlgeschlagen, erneut versuchen")
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                if !message.isOutgoing {
+                if showsSenderHeader {
                     Text(message.senderDisplayName)
                         .font(.caption.weight(.semibold))
                         .foregroundColor(bubbleAccent.tint)
@@ -2087,11 +2382,11 @@ private struct MessageBubble: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    bubbleShape
                         .fill(message.isOutgoing ? accent.tint : Color(uiColor: .secondarySystemGroupedBackground))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    bubbleShape
                         .stroke(message.isOutgoing ? Color.clear : bubbleAccent.softTint, lineWidth: 1)
                 )
                 .contextMenu {
@@ -2153,17 +2448,19 @@ private struct MessageBubble: View {
                     }
                 }
 
-                  Text(messageBubbleTimestamp(message.timestamp))
-                      .font(.caption2)
-                      .foregroundColor(.secondary)
-                      .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
+                  if showsTimestamp {
+                      Text(messageBubbleTimestamp(message.timestamp))
+                          .font(.caption2)
+                          .foregroundColor(.secondary)
+                          .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
+                  }
 
-                  if message.isOutgoing, let statusSymbol = deliveryStatusSymbol(for: message) {
+                  if let status = deliveryStatusDisplay {
                       HStack(spacing: 3) {
                           Spacer()
-                          Image(systemName: statusSymbol)
+                          Image(systemName: status.symbol)
                               .font(.caption2)
-                              .foregroundColor(deliveryStatusColor(for: message))
+                              .foregroundColor(status.color)
                       }
                   }
 
@@ -2174,13 +2471,60 @@ private struct MessageBubble: View {
                           .frame(maxWidth: .infinity, alignment: message.isOutgoing ? .trailing : .leading)
                   }
               }
-            .frame(maxWidth: 320, alignment: message.isOutgoing ? .trailing : .leading)
+            .frame(maxWidth: bubbleMaxWidth, alignment: message.isOutgoing ? .trailing : .leading)
 
             if !message.isOutgoing {
                 Spacer(minLength: 44)
             }
         }
         .frame(maxWidth: .infinity)
+        .offset(x: swipeOffset)
+        .background(alignment: .leading) {
+            if swipeOffset > 0 {
+                Image(systemName: "arrowshape.turn.up.left.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.secondary)
+                    .opacity(Double(min(swipeOffset / 50, 1)))
+            }
+        }
+        .gesture(swipeToReplyGesture)
+    }
+
+    /// Swipe-to-Reply: nur horizontale Drags nach rechts, deckelt bei 60pt mit
+    /// Daempfung und blockiert vertikales Scrollen nicht (.gesture, kein
+    /// highPriorityGesture; Offset erst wenn horizontal dominiert).
+    private var swipeToReplyGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onChanged { value in
+                guard message.matrixEventID != nil else { return }
+                let width = value.translation.width
+                let height = value.translation.height
+                guard width > 0, abs(width) > abs(height) else { return }
+
+                swipeOffset = width <= 60 ? width : 60 + (width - 60) * 0.2
+
+                if width >= 50, !hasTriggeredSwipeHaptic {
+                    hasTriggeredSwipeHaptic = true
+                    Haptics.mediumImpact()
+                }
+            }
+            .onEnded { _ in
+                guard message.matrixEventID != nil else { return }
+                let shouldReply = swipeOffset >= 50
+                hasTriggeredSwipeHaptic = false
+
+                if appState.reduceMotionEnabled {
+                    swipeOffset = 0
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.75)) {
+                        swipeOffset = 0
+                    }
+                }
+
+                if shouldReply {
+                    replyAction()
+                }
+            }
     }
 }
 
@@ -2669,24 +3013,6 @@ private struct VoiceRecorderSheet: View {
         let seconds = totalSeconds % 60
         return String(format: "%02d:%02d", minutes, seconds)
     }
-}
-
-private func deliveryStatusSymbol(for message: ChatMessage) -> String? {
-    if let sendStatus = message.sendStatus {
-        switch sendStatus {
-        case .sending: return "clock"
-        case .sent: return nil
-        case .failed: return "exclamationmark.triangle.fill"
-        }
-    }
-    return message.isPending ? "clock" : nil
-}
-
-private func deliveryStatusColor(for message: ChatMessage) -> Color {
-    if message.sendStatus == .failed {
-        return .red
-    }
-    return .secondary
 }
 
 private func senderAccent(for senderDisplayName: String) -> SpaceAccent {
@@ -3468,12 +3794,14 @@ private struct ComposerBar: View {
                     )
             }
 
-            HStack(spacing: 8) {
-                TextField("Nachricht", text: $draft)
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Nachricht", text: $draft, axis: .vertical)
+                    .lineLimit(1...5)
                     .textFieldStyle(.plain)
                     .font(.subheadline)
 
                 Button {
+                    Haptics.lightImpact()
                     sendAction()
                 } label: {
                     ZStack {

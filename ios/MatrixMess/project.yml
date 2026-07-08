@@ -11,8 +11,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: 5.10
-    CURRENT_PROJECT_VERSION: 4
-    MARKETING_VERSION: 0.4.1
+    CURRENT_PROJECT_VERSION: 5
+    MARKETING_VERSION: 0.4.2
 
 targets:
   MatrixMess:
