@@ -32,7 +32,10 @@ class MainActivity : ComponentActivity() {
         with(webView.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true // localStorage persistence for the Matrix session
-            allowFileAccess = true
+            // Assets werden ausschliesslich ueber den WebViewAssetLoader (https-Pseudo-
+            // Origin) ausgeliefert - direkter Datei-/Content-Zugriff bleibt gesperrt.
+            allowFileAccess = false
+            allowContentAccess = false
             mediaPlaybackRequiresUserGesture = false
             textZoom = 100
         }
@@ -54,11 +57,19 @@ class MainActivity : ComponentActivity() {
             ): WebResourceResponse? {
                 // Only serve requests for the virtual asset host from the APK.
                 // All other hosts (e.g. the Matrix homeserver API) load normally.
-                return if (request.url.host == ASSET_HOST) {
-                    assetLoader.shouldInterceptRequest(request.url)
-                } else {
-                    null
+                if (request.url.host != ASSET_HOST) {
+                    return null
                 }
+                val response = assetLoader.shouldInterceptRequest(request.url)
+                // Android kennt keinen MIME-Type fuer .wasm - ohne korrekten
+                // Content-Type schlaegt WebAssembly.instantiateStreaming fehl.
+                if (response != null && request.url.path?.endsWith(".wasm") == true) {
+                    response.mimeType = "application/wasm"
+                }
+                if (response != null && request.url.path?.endsWith(".mjs") == true) {
+                    response.mimeType = "text/javascript"
+                }
+                return response
             }
 
             override fun shouldOverrideUrlLoading(
