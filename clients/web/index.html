@@ -2,6 +2,8 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' https:; font-src 'self'; object-src 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>MatrixMess</title>
@@ -124,6 +126,19 @@
       </section>
 
       <section class="settings-section">
+        <h4>Verschlüsselung</h4>
+        <div id="crypto-status" class="settings-user"></div>
+        <button id="recovery-btn" class="primary-btn" type="button">Recovery Key eingeben</button>
+        <form id="recovery-form" class="hidden">
+          <label class="field">
+            <span>Recovery Key (Base64)</span>
+            <input id="recovery-input" type="password" autocomplete="off" spellcheck="false">
+          </label>
+          <button id="recovery-submit" class="primary-btn" type="submit">Schlüssel importieren</button>
+        </form>
+      </section>
+
+      <section class="settings-section">
         <h4>Konto</h4>
         <div id="settings-user" class="settings-user"></div>
         <button id="logout-btn" class="danger-btn">Abmelden</button>
@@ -134,6 +149,6 @@
   <div id="emoji-popover" class="hidden" role="menu" aria-label="Schnellreaktionen"></div>
   <div id="toast-container" aria-live="polite"></div>
 
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

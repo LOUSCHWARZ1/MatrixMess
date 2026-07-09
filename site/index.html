@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'">
+  <title>MatrixMess – Dein Messenger. Deine Server. Deine Schlüssel.</title>
+  <meta name="description" content="MatrixMess ist ein Matrix-Messenger mit Ende-zu-Ende-Verschlüsselung für iOS, Android, Windows und Web. Open Source, ohne Tracker, mit Bridges zu WhatsApp, Signal, Telegram und Instagram.">
+  <meta property="og:title" content="MatrixMess – Dein Messenger. Deine Server. Deine Schlüssel.">
+  <meta property="og:description" content="Matrix-Messenger mit Ende-zu-Ende-Verschlüsselung für iOS, Android, Windows und Web. Open Source, ohne Tracker.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./site.js" defer></script>
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="#top" class="brand">
+        <span class="logo" aria-hidden="true">💬</span>
+        <span class="brand-name">MatrixMess</span>
+      </a>
+      <nav class="main-nav" aria-label="Hauptnavigation">
+        <a href="#funktionen">Funktionen</a>
+        <a href="#plattformen">Plattformen</a>
+        <a href="#download">Download</a>
+      </nav>
+      <div class="header-actions">
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Design umschalten (hell/dunkel)">
+          <span class="icon-sun" aria-hidden="true">☀️</span>
+          <span class="icon-moon" aria-hidden="true">🌙</span>
+        </button>
+        <a href="./app/" class="btn btn-primary btn-header">Web-App öffnen</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="container hero-inner">
+        <div class="hero-copy">
+          <h1 id="hero-title">Dein Messenger.<br>Deine Server.<br>Deine Schlüssel.</h1>
+          <p class="hero-sub">MatrixMess ist ein Matrix-Messenger mit Ende-zu-Ende-Verschlüsselung – für iOS, Android, Windows und Web.</p>
+          <div class="hero-ctas">
+            <a href="./app/" class="btn btn-primary btn-lg">Web-App öffnen</a>
+            <a href="#download" class="btn btn-secondary btn-lg">Herunterladen</a>
+          </div>
+        </div>
+
+        <div class="hero-mockup" aria-hidden="true">
+          <div class="phone">
+            <div class="phone-notch"></div>
+            <div class="phone-screen">
+              <div class="chat-header">
+                <span class="chat-avatar">A</span>
+                <span class="chat-title">Anna</span>
+                <span class="chat-lock">🔒</span>
+              </div>
+              <div class="chat-body">
+                <div class="date-pill">Heute</div>
+                <div class="bubble bubble-in">Hey! Schon MatrixMess ausprobiert? 👀</div>
+                <div class="bubble bubble-out">Klar – alle Chats an einem Ort, komplett verschlüsselt. 🔐</div>
+                <div class="bubble bubble-in">Nice. Ich bin über die WhatsApp-Bridge dabei!</div>
+              </div>
+              <div class="chat-composer">
+                <span class="composer-plus">+</span>
+                <span class="composer-field">Nachricht…</span>
+                <span class="composer-send">➤</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="funktionen" class="section" aria-labelledby="funktionen-title">
+      <div class="container">
+        <h2 id="funktionen-title">Funktionen</h2>
+        <p class="section-sub">Alles, was ein moderner Messenger braucht – ohne Kompromisse bei der Privatsphäre.</p>
+        <div class="grid grid-3">
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🔐</div>
+            <h3>Ende-zu-Ende-Verschlüsselung</h3>
+            <p>Matrix-Rust-Crypto – dieselbe Engine wie Element. Deine Nachrichten kann nur lesen, wer sie lesen soll.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🌉</div>
+            <h3>Alle Chats an einem Ort</h3>
+            <p>WhatsApp, Signal, Telegram und Instagram über Matrix-Bridges einbinden – eine App für alles.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">⭐</div>
+            <h3>Main-Space</h3>
+            <p>Ein kuratierter Space bündelt deine wichtigsten Chats aus allen Spaces – immer griffbereit.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">💬</div>
+            <h3>Modernes Timeline-Design</h3>
+            <p>Nachrichten-Gruppierung im Element-X-Stil, Reaktionen, Antworten, Bearbeiten, Medien und Sprachnachrichten.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🛡️</div>
+            <h3>Privatsphäre</h3>
+            <p>App Lock &amp; Chat Lock mit Face ID, private Lesebestätigungen, blockierte Kontakte – keine Tracker, Open Source.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">📱</div>
+            <h3>Multi-Plattform</h3>
+            <p>Ein Konto, vier Plattformen: iOS, Android, Windows und Web – überall die gleichen Chats.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="plattformen" class="section section-alt" aria-labelledby="plattformen-title">
+      <div class="container">
+        <h2 id="plattformen-title">Plattformen &amp; Download</h2>
+        <p class="section-sub" id="download">Hol dir MatrixMess für dein Gerät – frisch aus der CI gebaut.</p>
+        <div class="grid grid-4">
+
+          <article class="card card-platform">
+            <div class="card-icon" aria-hidden="true">🌐</div>
+            <h3>Web</h3>
+            <p>Läuft direkt im Browser – nichts zu installieren, sofort loslegen.</p>
+            <a href="./app/" class="btn btn-primary btn-block">Im Browser öffnen</a>
+            <p class="card-note">Funktioniert auf Desktop und Mobilgeräten.</p>
+            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
+          </article>
+
+          <article class="card card-platform">
+            <div class="card-icon" aria-hidden="true">🤖</div>
+            <h3>Android</h3>
+            <p>APK herunterladen, installieren, anmelden – fertig.</p>
+            <a href="https://nightly.link/LOUSCHWARZ1/MatrixMess/workflows/android-build/claude%2Fgifted-sagan-kradma/MatrixMess-Android-APK.zip" class="btn btn-primary btn-block">APK herunterladen</a>
+            <p class="card-note">Neuester Build direkt aus der CI. Installation erfordert „Unbekannte Quellen“.</p>
+            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
+          </article>
+
+          <article class="card card-platform">
+            <div class="card-icon" aria-hidden="true">🪟</div>
+            <h3>Windows</h3>
+            <p>Electron-App mit NSIS-Installer – oder portabel ohne Installation.</p>
+            <a href="https://nightly.link/LOUSCHWARZ1/MatrixMess/workflows/desktop-windows-build/claude%2Fgifted-sagan-kradma/MatrixMess-Windows-Setup.zip" class="btn btn-primary btn-block">Setup herunterladen</a>
+            <p class="card-note">Installer + portable EXE im ZIP.</p>
+            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
+          </article>
+
+          <article class="card card-platform">
+            <div class="card-icon" aria-hidden="true">🍎</div>
+            <h3>iOS</h3>
+            <p>Native SwiftUI-App als unsignierte IPA zum Sideloaden.</p>
+            <a href="https://github.com/LOUSCHWARZ1/MatrixMess/actions/workflows/ios-cloud-build.yml" class="btn btn-primary btn-block">Neuesten Build holen</a>
+            <p class="card-note">Artefakt des neuesten grünen Runs herunterladen und per AltStore sideloaden (Anleitung im Repo).</p>
+            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="offen-title">
+      <div class="container narrow">
+        <h2 id="offen-title">Offen &amp; selbstbestimmt</h2>
+        <p>MatrixMess ist Open Source und baut auf dem offenen <strong>Matrix-Standard</strong> auf. Du entscheidest, wo deine Daten liegen: Nutze einen öffentlichen Homeserver wie matrix.org – oder betreibe deinen eigenen. Keine Tracker, keine Werbung, kein Vendor-Lock-in.</p>
+        <p><a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="btn btn-secondary">Zum Repository auf GitHub</a></p>
+      </div>
+    </section>
+
+    <section class="section section-alt" aria-labelledby="faq-title">
+      <div class="container narrow">
+        <h2 id="faq-title">Häufige Fragen</h2>
+
+        <details class="faq-item">
+          <summary>Was ist Matrix?</summary>
+          <p>Matrix ist ein offenes, dezentrales Protokoll für sichere Kommunikation. Statt einem zentralen Anbieter gibt es viele Server (Homeserver), die miteinander föderieren – ähnlich wie E-Mail, nur modern und verschlüsselt.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Brauche ich einen Account?</summary>
+          <p>Ja, aber jeder Matrix-Account funktioniert – zum Beispiel ein kostenloser Account auf matrix.org. Du kannst dich mit einem bestehenden Account einfach in MatrixMess anmelden.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Ist Ende-zu-Ende-Verschlüsselung überall verfügbar?</summary>
+          <p>Auf iOS vollständig, inklusive Geräte-Verifizierung. Web, Windows und Android nutzen die Verschlüsselung über dieselbe Rust-Engine; die Geräte-Verifizierung folgt dort in Kürze.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Warum Sideload auf iOS?</summary>
+          <p>MatrixMess ist (noch) nicht im App Store. Die iOS-App wird als unsignierte IPA aus der CI bereitgestellt und lässt sich z.&nbsp;B. mit AltStore sideloaden. Das hält den Prozess offen und nachvollziehbar – der komplette Build-Weg ist im Repo dokumentiert.</p>
+        </details>
+
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p><span class="logo logo-sm" aria-hidden="true">💬</span> MatrixMess</p>
+      <p><a href="https://github.com/LOUSCHWARZ1/MatrixMess">GitHub-Repository</a> · Open Source · Läuft auf GitHub Pages</p>
+    </div>
+  </footer>
+
+</body>
+</html>

@@ -9,6 +9,9 @@
 const LS_SESSION = 'mm.session';
 const LS_SYNC_TOKEN = 'mm.syncToken';
 const LS_SETTINGS = 'mm.settings';
+const LS_CRYPTO_PICKLE = 'mm.cryptoPickle';
+
+const MEMBER_CACHE_MS = 5 * 60 * 1000;
 
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '🔥'];
 
@@ -69,6 +72,11 @@ const notifToggle = $('#notif-toggle');
 const logoutBtn = $('#logout-btn');
 const emojiPopover = $('#emoji-popover');
 const toastContainer = $('#toast-container');
+const cryptoStatusEl = $('#crypto-status');
+const recoveryBtn = $('#recovery-btn');
+const recoveryForm = $('#recovery-form');
+const recoveryInput = $('#recovery-input');
+const recoverySubmit = $('#recovery-submit');
 
 /* ========================================================================
  * Zustand
@@ -91,6 +99,15 @@ let editTarget = null;       // eigenes Event-Objekt im Bearbeiten-Modus
 let unseenCount = 0;         // neue fremde Nachrichten, während nicht am Ende gescrollt
 let typingSent = false;
 let lastTypingSentAt = 0;
+
+/* ---------- E2EE-Zustand ---------- */
+
+let cryptoEngine = null;        // CryptoEngine-Instanz aus crypto.js
+let cryptoReady = false;        // true, sobald die Engine initialisiert ist
+let cryptoInitPromise = null;   // Promise der laufenden Initialisierung
+
+const pendingDecryption = new Map(); // roomId -> Map(eventId -> rohes m.room.encrypted-Event)
+const memberCache = new Map();       // roomId -> { ts, userIds } (für encryptEvent)
 
 /* ========================================================================
  * Hilfsfunktionen
@@ -226,6 +243,16 @@ function renderSettingsPanel() {
   notifToggle.checked = !!settings.notifications &&
     ('Notification' in window) && Notification.permission === 'granted';
   settingsUserEl.textContent = session ? `Angemeldet als ${session.userId}` : '';
+  renderCryptoSection();
+}
+
+function renderCryptoSection() {
+  if (!cryptoStatusEl) return;
+  cryptoStatusEl.textContent = cryptoReady
+    ? 'Ende-zu-Ende-Verschlüsselung: aktiv'
+    : 'Ende-zu-Ende-Verschlüsselung: nicht verfügbar';
+  recoveryBtn.disabled = !cryptoReady;
+  if (!cryptoReady) recoveryForm.classList.add('hidden');
 }
 
 /* ========================================================================
@@ -344,6 +371,7 @@ async function doLogout() {
 /** Session lokal verwerfen und Login zeigen (z. B. bei M_UNKNOWN_TOKEN). */
 function hardLogout() {
   stopSync();
+  clearCryptoState(session && session.userId);
   session = null;
   clearSessionStorage();
   rooms.clear();
@@ -358,6 +386,205 @@ function hardLogout() {
   createdObjectURLs.length = 0;
   mediaCache.clear();
   showLogin();
+}
+
+/* ========================================================================
+ * Ende-zu-Ende-Verschlüsselung (Olm/Megolm via crypto.js)
+ * ====================================================================== */
+
+/** Lädt und initialisiert die Crypto-Engine. Fehler sind nicht fatal:
+ *  der Client degradiert auf den bisherigen Platzhalter-Modus. */
+async function initCrypto() {
+  cryptoReady = false;
+  try {
+    if (!session || !session.deviceId) {
+      throw new Error('Session ohne deviceId (alte Anmeldung?) – bitte neu anmelden für E2EE');
+    }
+    const mod = await import('./crypto.js');
+    const engine = new mod.CryptoEngine();
+    await engine.init({
+      baseUrl: session.baseUrl,
+      userId: session.userId,
+      deviceId: session.deviceId,
+      accessToken: session.accessToken,
+      apiFetch: api,
+    });
+    cryptoEngine = engine;
+    cryptoReady = true;
+    renderCryptoSection();
+    if (activeRoomId) {
+      const room = rooms.get(activeRoomId);
+      if (room) renderChatHeader(room);
+    }
+  } catch (err) {
+    console.warn('Verschlüsselung konnte nicht initialisiert werden:', err);
+    cryptoEngine = null;
+    cryptoReady = false;
+    renderCryptoSection();
+    toast('Verschlüsselung konnte nicht geladen werden – E2EE-Räume bleiben schreibgeschützt');
+  }
+}
+
+/** Crypto-Zustand beim Logout verwerfen: Engine schließen, Pickle-Key und
+ *  IndexedDB-Store löschen. */
+function clearCryptoState(userId) {
+  if (cryptoEngine) {
+    try { cryptoEngine.close(); } catch (e) { /* */ }
+  }
+  cryptoEngine = null;
+  cryptoReady = false;
+  cryptoInitPromise = null;
+  pendingDecryption.clear();
+  memberCache.clear();
+  try { localStorage.removeItem(LS_CRYPTO_PICKLE); } catch (e) { /* */ }
+  if (userId && typeof indexedDB !== 'undefined') {
+    const base = 'mm-crypto-' + userId;
+    // matrix-sdk-crypto-wasm legt "<name>::matrix-sdk-crypto"(-meta) an.
+    for (const name of [base, base + '::matrix-sdk-crypto', base + '::matrix-sdk-crypto-meta']) {
+      try { indexedDB.deleteDatabase(name); } catch (e) { /* */ }
+    }
+  }
+  renderCryptoSection();
+}
+
+/** Merkt sich ein (noch) nicht entschlüsselbares Event für spätere Versuche. */
+function markPendingDecryption(roomId, rawEvent) {
+  if (!rawEvent || !rawEvent.event_id) return;
+  let byId = pendingDecryption.get(roomId);
+  if (!byId) {
+    byId = new Map();
+    pendingDecryption.set(roomId, byId);
+  }
+  byId.set(rawEvent.event_id, rawEvent);
+}
+
+/**
+ * Versucht, ein rohes m.room.encrypted-Event zu entschlüsseln.
+ * Erfolg: Rückgabe eines gemergten Klartext-Events (event_id/sender/ts/unsigned
+ * bleiben erhalten, damit Dedupe über transaction_id weiter funktioniert),
+ * markiert mit __mmEncrypted. Misserfolg: Original-Event zurück und in
+ * pendingDecryption vormerken.
+ */
+async function maybeDecryptRaw(roomId, ev) {
+  if (!cryptoReady || !cryptoEngine) return ev;
+  if (!ev || ev.type !== 'm.room.encrypted' || ev.state_key !== undefined) return ev;
+  let decrypted = null;
+  try {
+    decrypted = await cryptoEngine.decryptEvent(ev, roomId);
+  } catch (e) { /* wie "nicht entschlüsselbar" behandeln */ }
+  if (decrypted && decrypted.type) {
+    return Object.assign({}, ev, {
+      type: decrypted.type,
+      content: decrypted.content || {},
+      __mmEncrypted: true,
+    });
+  }
+  markPendingDecryption(roomId, ev);
+  return ev;
+}
+
+/** Entschlüsselt alle Timeline-Events einer /sync-Antwort in-place. */
+async function decryptSyncResponse(data) {
+  const joined = (data.rooms && data.rooms.join) || {};
+  for (const [roomId, jr] of Object.entries(joined)) {
+    const tl = jr.timeline;
+    if (!tl || !Array.isArray(tl.events)) continue;
+    for (let i = 0; i < tl.events.length; i++) {
+      tl.events[i] = await maybeDecryptRaw(roomId, tl.events[i]);
+    }
+  }
+}
+
+/** Entfernt ein Event-Objekt (Platzhalter) aus Timeline und Index. */
+function removeEventObject(room, eventId) {
+  const obj = room.eventIndex.get(eventId);
+  if (!obj) return;
+  room.eventIndex.delete(eventId);
+  const idx = room.events.indexOf(obj);
+  if (idx >= 0) room.events.splice(idx, 1);
+}
+
+/**
+ * Versucht alle vorgemerkten, bisher nicht entschlüsselbaren Events erneut
+ * (z. B. nachdem per to_device neue Room-Keys angekommen sind oder nach einem
+ * Backup-Import). Erfolgreiche Events ersetzen ihren Platzhalter.
+ */
+async function retryPendingDecryption() {
+  if (!cryptoReady || !cryptoEngine || pendingDecryption.size === 0) return;
+  const changedRooms = new Set();
+
+  for (const [roomId, byId] of [...pendingDecryption]) {
+    const room = rooms.get(roomId);
+    if (!room) {
+      pendingDecryption.delete(roomId);
+      continue;
+    }
+    for (const [eventId, raw] of [...byId]) {
+      let decrypted = null;
+      try {
+        decrypted = await cryptoEngine.decryptEvent(raw, roomId);
+      } catch (e) { /* bleibt pending */ }
+      if (!decrypted || !decrypted.type) continue;
+      byId.delete(eventId);
+      changedRooms.add(roomId);
+
+      const merged = Object.assign({}, raw, {
+        type: decrypted.type,
+        content: decrypted.content || {},
+      });
+      const rel = merged.content && merged.content['m.relates_to'];
+
+      if (merged.type === 'm.room.message' && rel && rel.rel_type === 'm.replace' &&
+          rel.event_id && merged.content['m.new_content']) {
+        // Spät entschlüsselter Edit: Platzhalter entfernen, Edit anwenden.
+        removeEventObject(room, eventId);
+        applyEditEvent(room, merged);
+      } else if (merged.type !== 'm.room.message') {
+        // Unerwarteter Typ (z. B. verschlüsselte Reaktion anderer Clients):
+        // Platzhalter entfernen und regulär verarbeiten.
+        removeEventObject(room, eventId);
+        applyTimelineEvent(room, Object.assign({ __mmEncrypted: true }, merged), false);
+      } else {
+        const obj = room.eventIndex.get(eventId);
+        if (obj) {
+          obj.type = merged.type;
+          obj.content = merged.content;
+          obj.encrypted = true;
+          updateRoomPreview(room, obj);
+        }
+      }
+    }
+    if (byId.size === 0) pendingDecryption.delete(roomId);
+  }
+
+  if (changedRooms.size) {
+    renderRoomList();
+    if (activeRoomId && changedRooms.has(activeRoomId)) {
+      renderTimeline(isNearBottom() ? 'bottom' : 'keep');
+    }
+  }
+}
+
+/** Liefert die (max. 5 Minuten gecachten) User-IDs aller Raum-Mitglieder. */
+async function getJoinedMembers(roomId) {
+  const cached = memberCache.get(roomId);
+  if (cached && Date.now() - cached.ts < MEMBER_CACHE_MS) return cached.userIds;
+  const res = await api('GET', `/_matrix/client/v3/rooms/${enc(roomId)}/joined_members`);
+  const userIds = Object.keys((res && res.joined) || {});
+  memberCache.set(roomId, { ts: Date.now(), userIds });
+  return userIds;
+}
+
+/** Verschlüsselt einen m.room.message-Content für einen Raum und liefert den
+ *  Content des m.room.encrypted-Events. Relationen gehören laut Spec
+ *  zusätzlich UNVERSCHLÜSSELT an den äußeren Content. */
+async function encryptForRoom(room, content) {
+  const members = await getJoinedMembers(room.roomId);
+  const encrypted = await cryptoEngine.encryptEvent(room.roomId, 'm.room.message', content, members);
+  if (content['m.relates_to']) {
+    encrypted['m.relates_to'] = content['m.relates_to'];
+  }
+  return encrypted;
 }
 
 /* ========================================================================
@@ -553,6 +780,7 @@ function makeEventObject(ev) {
     pending: false,
     failed: false,
     txnId: null,
+    encrypted: !!ev.__mmEncrypted, // wurde aus m.room.encrypted entschlüsselt
   };
 }
 
@@ -729,10 +957,41 @@ async function syncLoop() {
       });
       clearTimeout(abortTimer);
       if (generation !== syncGeneration || !session) return;
+
+      // E2EE: auf die (einmalige) Initialisierung warten, damit keine
+      // to_device-Events (Room-Keys) verloren gehen, dann die Sync-Antwort
+      // durch die OlmMachine schicken und Timeline-Events entschlüsseln.
+      if (cryptoInitPromise) {
+        try { await cryptoInitPromise; } catch (e) { /* degradiert */ }
+        if (generation !== syncGeneration || !session) return;
+      }
+      let toDeviceCount = 0;
+      if (cryptoReady && cryptoEngine) {
+        try {
+          toDeviceCount = await cryptoEngine.processSync(data);
+        } catch (err) {
+          console.warn('E2EE-Sync-Verarbeitung fehlgeschlagen:', err);
+        }
+        try {
+          await decryptSyncResponse(data);
+        } catch (err) {
+          console.warn('Entschlüsselung der Sync-Antwort fehlgeschlagen:', err);
+        }
+        if (generation !== syncGeneration || !session) return;
+      }
+
       processSync(data);
       syncToken = data.next_batch;
       try { localStorage.setItem(LS_SYNC_TOKEN, syncToken); } catch (e) { /* */ }
       backoff = 1000;
+
+      // Kamen to_device-Events (potenzielle Room-Keys), erneut versuchen,
+      // bislang unentschlüsselbare Events zu entschlüsseln.
+      if (cryptoReady && toDeviceCount > 0) {
+        retryPendingDecryption().catch((err) => {
+          console.warn('Retry der Entschlüsselung fehlgeschlagen:', err);
+        });
+      }
     } catch (err) {
       clearTimeout(abortTimer);
       if (generation !== syncGeneration || !session) return;
@@ -953,12 +1212,12 @@ function renderChatHeader(room) {
   chatSubEl.textContent = subParts.length ? subParts.join(' · ') : room.roomId;
   setAvatar(chatAvatarEl, room.roomId, name, roomAvatarMxc(room));
 
-  // In E2EE-Raeumen niemals unverschluesselt senden: Composer sperren,
-  // bis echte Verschluesselung unterstuetzt wird.
-  if (room.isEncrypted) {
+  // In E2EE-Raeumen niemals unverschluesselt senden: Composer nur sperren,
+  // solange die Verschluesselung nicht verfuegbar ist.
+  if (room.isEncrypted && !cryptoReady) {
     composerInput.disabled = true;
     composerInput.value = '';
-    composerInput.placeholder = 'Senden in verschlüsselte Räume wird in der Webversion noch nicht unterstützt';
+    composerInput.placeholder = 'Verschlüsselung nicht verfügbar – Senden in diesem Raum ist gesperrt';
     sendBtn.disabled = true;
   } else {
     composerInput.disabled = false;
@@ -1091,6 +1350,9 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
   if (ev.editedBody !== undefined && ev.editedBody !== null && !ev.redacted) {
     meta.insertBefore(el('span', 'edited-tag', '(bearbeitet)'), meta.firstChild);
   }
+  if (ev.encrypted && !ev.redacted) {
+    meta.appendChild(el('span', 'msg-lock', '🔒'));
+  }
   const hasMeta = meta.childNodes.length > 0;
 
   if (ev.redacted) {
@@ -1102,8 +1364,9 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
 
   if (ev.type === 'm.room.encrypted') {
     bubble.classList.add('encrypted-ph');
-    bubble.appendChild(el('span', null,
-      '🔒 Verschlüsselte Nachricht – E2EE wird in der Webversion noch nicht unterstützt'));
+    bubble.appendChild(el('span', null, cryptoReady
+      ? '🔒 Warten auf Schlüssel …'
+      : '🔒 Verschlüsselte Nachricht – E2EE wird in der Webversion noch nicht unterstützt'));
     if (hasMeta) bubble.appendChild(meta);
     return;
   }
@@ -1363,11 +1626,12 @@ async function loadOlderMessages(room) {
 
     const chunk = (res.chunk || []).slice().reverse(); // chronologisch
     const older = [];
-    for (const ev of chunk) {
+    for (let ev of chunk) {
       if (ev.state_key !== undefined) {
         applyStateEvent(room, ev);
         continue;
       }
+      ev = await maybeDecryptRaw(room.roomId, ev);
       const type = ev.type;
       if (type === 'm.room.message' || type === 'm.room.encrypted') {
         const rel = ev.content && ev.content['m.relates_to'];
@@ -1561,8 +1825,8 @@ function cancelBanner() {
 async function sendCurrentMessage() {
   const room = rooms.get(activeRoomId);
   if (!room) return;
-  if (room.isEncrypted) {
-    toast('Dieser Raum ist Ende-zu-Ende-verschlüsselt – Senden wird in der Webversion noch nicht unterstützt.');
+  if (room.isEncrypted && !cryptoReady) {
+    toast('Verschlüsselung nicht verfügbar – Senden in diesem Raum ist derzeit nicht möglich.');
     return;
   }
   const text = composerInput.value.replace(/\s+$/, '');
@@ -1586,9 +1850,17 @@ async function sendCurrentMessage() {
     updateRoomPreview(room, target);
     renderRoomList();
     try {
+      let sendType = 'm.room.message';
+      let sendContent = content;
+      if (room.isEncrypted) {
+        // m.relates_to wird in encryptForRoom zusätzlich unverschlüsselt
+        // an den äußeren Content gehängt (Spec: Relationen sind Klartext).
+        sendType = 'm.room.encrypted';
+        sendContent = await encryptForRoom(room, content);
+      }
       await api('PUT',
-        `/_matrix/client/v3/rooms/${enc(room.roomId)}/send/m.room.message/${enc(txnId())}`,
-        content);
+        `/_matrix/client/v3/rooms/${enc(room.roomId)}/send/${enc(sendType)}/${enc(txnId())}`,
+        sendContent);
     } catch (err) {
       toast('Bearbeiten fehlgeschlagen: ' + err.message);
     }
@@ -1624,6 +1896,7 @@ async function sendCurrentMessage() {
     pending: true,
     failed: false,
     txnId: txn,
+    encrypted: room.isEncrypted, // Klartext-Echo lokal, verschlüsselt gesendet
   };
   room.events.push(pending);
   room.pendingByTxn.set(txn, pending);
@@ -1636,9 +1909,15 @@ async function sendCurrentMessage() {
   composerInput.focus();
 
   try {
+    let sendType = 'm.room.message';
+    let sendContent = content;
+    if (room.isEncrypted) {
+      sendType = 'm.room.encrypted';
+      sendContent = await encryptForRoom(room, content);
+    }
     const res = await api('PUT',
-      `/_matrix/client/v3/rooms/${enc(room.roomId)}/send/m.room.message/${enc(txn)}`,
-      content);
+      `/_matrix/client/v3/rooms/${enc(room.roomId)}/send/${enc(sendType)}/${enc(txn)}`,
+      sendContent);
     const eventId = res && res.event_id;
     if (eventId) {
       if (room.eventIndex.has(eventId)) {
@@ -1710,6 +1989,7 @@ loginForm.addEventListener('submit', async (e) => {
     session = newSession;
     saveSession(session);
     showApp();
+    cryptoInitPromise = initCrypto();
     syncLoop();
   } catch (err) {
     let msg = 'Anmeldung fehlgeschlagen';
@@ -1787,6 +2067,40 @@ logoutBtn.addEventListener('click', async () => {
   toast('Abgemeldet');
 });
 
+/* ---------- Verschlüsselung: Recovery Key ---------- */
+
+recoveryBtn.addEventListener('click', () => {
+  recoveryForm.classList.toggle('hidden');
+  if (!recoveryForm.classList.contains('hidden')) recoveryInput.focus();
+});
+
+recoveryForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!cryptoReady || !cryptoEngine) {
+    toast('Verschlüsselung ist nicht verfügbar');
+    return;
+  }
+  const key = recoveryInput.value;
+  if (!key.trim()) return;
+  recoverySubmit.disabled = true;
+  recoveryBtn.disabled = true;
+  toast('Schlüssel-Backup wird importiert …');
+  try {
+    const { imported, failed } = await cryptoEngine.importFromRecoveryKey(key, (done, total) => {
+      if (done % 200 === 0 && done < total) toast(`Import: ${done}/${total} Schlüssel …`);
+    });
+    recoveryInput.value = '';
+    recoveryForm.classList.add('hidden');
+    toast(`${imported} Schlüssel importiert` + (failed ? ` (${failed} fehlgeschlagen)` : ''));
+    await retryPendingDecryption();
+  } catch (err) {
+    toast('Import fehlgeschlagen: ' + ((err && err.message) || err));
+  } finally {
+    recoverySubmit.disabled = false;
+    recoveryBtn.disabled = !cryptoReady;
+  }
+});
+
 /* ========================================================================
  * Start
  * ====================================================================== */
@@ -1797,6 +2111,7 @@ function init() {
   session = loadSession();
   if (session) {
     showApp();
+    cryptoInitPromise = initCrypto();
     syncLoop();
   } else {
     showLogin();
