@@ -82,6 +82,11 @@ class MainActivity : ComponentActivity() {
                 if (url.host == ASSET_HOST) {
                     return false
                 }
+                // Only hand plain web links to the system. Blocks intent://,
+                // custom-scheme and file:// injection into ACTION_VIEW.
+                if (url.scheme != "http" && url.scheme != "https") {
+                    return true
+                }
                 return try {
                     startActivity(Intent(Intent.ACTION_VIEW, url))
                     true

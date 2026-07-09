@@ -31,14 +31,14 @@ jobs:
           mkdir -p clients/android/app/src/main/assets/web
           cp -r clients/web/. clients/android/app/src/main/assets/web/
 
-      - name: Build debug APK
+      - name: Build release APK
         run: |
           cd clients/android
-          gradle assembleDebug --no-daemon
+          gradle assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: MatrixMess-Android-APK
-          path: clients/android/app/build/outputs/apk/debug/app-debug.apk
+          path: clients/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error

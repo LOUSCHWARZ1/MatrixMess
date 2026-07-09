@@ -15,6 +15,26 @@ android {
         versionName = "0.4.2"
     }
 
+    signingConfigs {
+        create("release") {
+            // Selbstsignierter Schluessel fuer Sideload-Verteilung (kein Play Store).
+            // Der feste Schluessel sorgt dafuer, dass Updates ueber vorhandene
+            // Installationen installierbar bleiben; er ist bewusst kein Geheimnis.
+            storeFile = file("matrixmess-release.keystore")
+            storePassword = "matrixmess"
+            keyAlias = "matrixmess"
+            keyPassword = "matrixmess"
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
