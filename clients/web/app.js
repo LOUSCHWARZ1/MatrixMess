@@ -1993,9 +1993,24 @@ loginForm.addEventListener('submit', async (e) => {
     syncLoop();
   } catch (err) {
     let msg = 'Anmeldung fehlgeschlagen';
-    if (err && err.errcode === 'M_FORBIDDEN') msg = 'Benutzername oder Passwort falsch';
-    else if (err && err.errcode === 'M_LIMIT_EXCEEDED') msg = 'Zu viele Versuche – bitte kurz warten';
-    else if (err && err.message) msg = 'Anmeldung fehlgeschlagen: ' + err.message;
+    // fetch() wirft bei Netzwerk-/CORS-Fehlern einen TypeError ("Failed to fetch"):
+    // die Anfrage erreichte den Homeserver gar nicht bzw. der Browser durfte die
+    // Antwort nicht lesen. Das ist fast immer eine fehlende CORS-Freigabe des Servers.
+    const isNetworkError = (err instanceof TypeError) ||
+      (err && typeof err.message === 'string' && /failed to fetch|load failed|networkerror/i.test(err.message));
+    if (isNetworkError) {
+      msg = 'Homeserver nicht erreichbar. Meist fehlt dem Server die CORS-Freigabe ' +
+            '(Access-Control-Allow-Origin) für Web-Clients, oder die Adresse ist falsch. ' +
+            'Prüfe die Adresse; die iPhone-App funktioniert auch ohne CORS.';
+    } else if (err && err.errcode === 'M_FORBIDDEN') {
+      msg = 'Benutzername oder Passwort falsch';
+    } else if (err && err.errcode === 'M_USER_DEACTIVATED') {
+      msg = 'Dieses Konto wurde deaktiviert';
+    } else if (err && err.errcode === 'M_LIMIT_EXCEEDED') {
+      msg = 'Zu viele Versuche – bitte kurz warten';
+    } else if (err && err.message) {
+      msg = 'Anmeldung fehlgeschlagen: ' + err.message;
+    }
     loginError.textContent = msg;
     loginError.classList.remove('hidden');
   } finally {

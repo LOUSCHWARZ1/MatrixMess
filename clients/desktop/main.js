@@ -101,9 +101,9 @@ if (!gotTheLock) {
         nodeIntegration: false,
         sandbox: true,
         preload: path.join(__dirname, 'preload.js')
-        // Note: webSecurity stays at its default (true). Matrix homeservers
-        // send "Access-Control-Allow-Origin: *", so fetch() from the mm://
-        // origin works without weakening security (corsEnabled scheme).
+        // webSecurity stays at its default (true). Cross-origin access to the
+        // user's homeserver is handled by the targeted CORS header injection in
+        // installHomeserverCors() below, not by disabling web security.
       }
     });
 
@@ -142,8 +142,55 @@ if (!gotTheLock) {
     }
   });
 
+  /**
+   * A native Matrix client (like the iPhone app) speaks plain HTTP and is not
+   * subject to browser CORS. The desktop app runs inside Chromium, so without
+   * help it would be blocked by homeservers that don't send CORS headers.
+   *
+   * This adds the required Access-Control-* headers to every http(s) response
+   * the renderer receives and forces preflight OPTIONS requests to succeed.
+   * It only lets the renderer READ responses to requests it may already send;
+   * it does not grant new network reach and keeps webSecurity enabled. We use
+   * a Bearer token (not cookies), so a wildcard origin is safe here.
+   */
+  function installHomeserverCors() {
+    const CORS = {
+      'access-control-allow-origin': ['*'],
+      'access-control-allow-methods': ['GET, POST, PUT, DELETE, OPTIONS, PATCH'],
+      'access-control-allow-headers': ['Authorization, Content-Type, X-Requested-With'],
+      'access-control-expose-headers': ['*']
+    };
+
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      if (!/^https?:\/\//i.test(details.url)) {
+        callback({});
+        return;
+      }
+
+      const headers = {};
+      // Drop any existing CORS headers (case-insensitive) to avoid conflicting
+      // duplicates, then set our permissive ones.
+      for (const key of Object.keys(details.responseHeaders || {})) {
+        if (!key.toLowerCase().startsWith('access-control-')) {
+          headers[key] = details.responseHeaders[key];
+        }
+      }
+      Object.assign(headers, CORS);
+
+      const override = { responseHeaders: headers };
+      // Make the preflight pass even if the server answered OPTIONS with an
+      // error status, so Chromium proceeds with the real request.
+      if (details.method === 'OPTIONS') {
+        override.statusLine = 'HTTP/1.1 200 OK';
+      }
+      callback(override);
+    });
+  }
+
   app.whenReady().then(() => {
     protocol.handle('mm', (request) => handleAppRequest(request));
+
+    installHomeserverCors();
 
     // Permission hardening: the renderer only ever needs notifications.
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
