@@ -1,0 +1,39 @@
+name: Desktop Windows Build
+
+on:
+  push:
+    paths:
+      - "clients/web/**"
+      - "clients/desktop/**"
+      - ".github/workflows/desktop-windows-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Copy web assets into desktop wrapper
+        shell: bash
+        run: cp -r clients/web clients/desktop/web
+
+      - name: Install dependencies and build
+        shell: bash
+        run: |
+          cd clients/desktop
+          npm install --no-audit --no-fund
+          npx electron-builder --win --publish never
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MatrixMess-Windows-Setup
+          path: clients/desktop/dist/*.exe
+          if-no-files-found: error
