@@ -563,6 +563,12 @@ input, textarea {
 }
 .mine .msg-meta { color: rgba(255, 255, 255, 0.75); }
 .edited-tag { font-size: 10.5px; }
+.msg-lock { font-size: 9.5px; opacity: 0.85; }
+
+/* Verschlüsselung: Recovery-Key-Formular im Einstellungs-Panel */
+#recovery-form { margin-top: 10px; }
+#recovery-form .field { margin-bottom: 10px; }
+#crypto-status { margin-bottom: 10px; }
 
 /* Zitat-Leiste (Replies) */
 .reply-quote {
