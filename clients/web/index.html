@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>MatrixMess</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ===== Login ===== -->
+  <div id="login-screen" class="screen hidden">
+    <div class="login-card">
+      <div class="login-icon" aria-hidden="true">💬</div>
+      <h1>MatrixMess</h1>
+      <p class="login-sub">Melde dich mit deinem Matrix-Konto an</p>
+      <form id="login-form" autocomplete="on">
+        <label class="field">
+          <span>Homeserver</span>
+          <input id="login-hs" type="text" value="https://matrix.org" autocomplete="url" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Benutzername</span>
+          <input id="login-user" type="text" placeholder="benutzer oder @benutzer:server" autocomplete="username" spellcheck="false" required>
+        </label>
+        <label class="field">
+          <span>Passwort</span>
+          <input id="login-pass" type="password" autocomplete="current-password" required>
+        </label>
+        <div id="login-error" class="login-error hidden" role="alert"></div>
+        <button id="login-btn" class="primary-btn" type="submit">Anmelden</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== App ===== -->
+  <div id="app" class="hidden">
+
+    <aside id="sidebar">
+      <header class="sidebar-header">
+        <div class="app-badge" aria-hidden="true">💬</div>
+        <h2>MatrixMess</h2>
+        <button id="settings-btn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙︎</button>
+      </header>
+      <div class="search-wrap">
+        <input id="room-search" type="search" placeholder="Suchen" aria-label="Räume durchsuchen">
+      </div>
+      <nav id="room-list" aria-label="Raumliste"></nav>
+    </aside>
+
+    <main id="chat">
+      <div id="chat-empty" class="chat-empty">
+        <div class="chat-empty-icon" aria-hidden="true">💬</div>
+        <p>Wähle einen Raum aus, um loszulegen</p>
+      </div>
+
+      <div id="chat-view" class="hidden">
+        <header id="chat-header">
+          <button id="back-btn" class="icon-btn" title="Zurück" aria-label="Zurück zur Raumliste">‹</button>
+          <div id="chat-avatar" class="avatar" aria-hidden="true"></div>
+          <div class="chat-title">
+            <div id="chat-name"></div>
+            <div id="chat-sub"></div>
+          </div>
+        </header>
+
+        <div id="timeline-wrap">
+          <div id="timeline" tabindex="0"></div>
+          <button id="scroll-down-btn" class="hidden" title="Nach unten" aria-label="Nach unten scrollen">
+            <span aria-hidden="true">↓</span>
+            <span id="scroll-down-count" class="hidden"></span>
+          </button>
+        </div>
+
+        <div id="typing-bar" class="hidden">
+          <span id="typing-text"></span>
+          <span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        </div>
+
+        <div id="composer-banner" class="hidden">
+          <div class="banner-stripe" aria-hidden="true"></div>
+          <div class="banner-info">
+            <div id="banner-title"></div>
+            <div id="banner-body"></div>
+          </div>
+          <button id="banner-cancel" class="icon-btn" title="Abbrechen" aria-label="Abbrechen">✕</button>
+        </div>
+
+        <footer id="composer">
+          <textarea id="composer-input" rows="1" placeholder="Nachricht" aria-label="Nachricht schreiben"></textarea>
+          <button id="send-btn" title="Senden" aria-label="Nachricht senden" disabled>➤</button>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <!-- ===== Einstellungen ===== -->
+  <div id="settings-overlay" class="hidden">
+    <div id="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <header class="settings-header">
+        <h3 id="settings-title">Einstellungen</h3>
+        <button id="settings-close" class="icon-btn" title="Schließen" aria-label="Einstellungen schließen">✕</button>
+      </header>
+
+      <section class="settings-section">
+        <h4>Erscheinungsbild</h4>
+        <div id="theme-seg" class="segmented" role="radiogroup" aria-label="Theme">
+          <button data-theme-opt="system" role="radio">System</button>
+          <button data-theme-opt="light" role="radio">Hell</button>
+          <button data-theme-opt="dark" role="radio">Dunkel</button>
+        </div>
+        <h4>Akzentfarbe</h4>
+        <div id="accent-row" aria-label="Akzentfarbe"></div>
+      </section>
+
+      <section class="settings-section">
+        <h4>Benachrichtigungen</h4>
+        <label class="toggle-row">
+          <span>Desktop-Benachrichtigungen</span>
+          <input id="notif-toggle" type="checkbox">
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </label>
+      </section>
+
+      <section class="settings-section">
+        <h4>Konto</h4>
+        <div id="settings-user" class="settings-user"></div>
+        <button id="logout-btn" class="danger-btn">Abmelden</button>
+      </section>
+    </div>
+  </div>
+
+  <div id="emoji-popover" class="hidden" role="menu" aria-label="Schnellreaktionen"></div>
+  <div id="toast-container" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
