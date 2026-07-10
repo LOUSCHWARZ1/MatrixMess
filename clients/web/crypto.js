@@ -110,9 +110,15 @@ export class CryptoEngine {
       this.storeName,
       passphrase
     );
-    // Geräte-/One-Time-Keys sofort hochladen, damit andere Geräte diesem
-    // Gerät Room-Keys schicken können (statt erst nach dem ersten /sync).
-    await this.processOutgoing();
+    // Geräte-/One-Time-Keys möglichst sofort hochladen, damit andere Geräte
+    // diesem Gerät Room-Keys schicken können. Ein Fehler hierbei darf die
+    // Engine-Initialisierung NICHT scheitern lassen – der Upload wird sonst
+    // beim ersten /sync ohnehin erneut versucht.
+    try {
+      await this.processOutgoing();
+    } catch (err) {
+      console.warn('[crypto] Initialer Key-Upload verschoben:', err);
+    }
     return this;
   }
 
@@ -271,7 +277,13 @@ export class CryptoEngine {
       // Bis zu 8 Durchläufe: manche Requests erzeugen Folge-Requests
       // (Upload -> Query -> Claim). Sicherheits-Cap gegen Endlosschleifen.
       for (let pass = 0; pass < 8; pass++) {
-        const requests = await this.machine.outgoingRequests();
+        let requests;
+        try {
+          requests = await this.machine.outgoingRequests();
+        } catch (err) {
+          console.warn('[crypto] outgoingRequests fehlgeschlagen:', err);
+          break;
+        }
         if (!requests || requests.length === 0) break;
         for (const req of requests) {
           try {
