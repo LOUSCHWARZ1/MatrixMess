@@ -1295,7 +1295,6 @@ input, textarea {
 
   /* Suche + Space-Leiste ausblenden */
   #sidebar.collapsed .search-wrap,
-  #sidebar.collapsed #space-bar { display: none; }
 
   /* Raumliste als reine Avatar-Spalte */
   #sidebar.collapsed #room-list { padding: 4px 8px 12px; }
@@ -1346,8 +1345,9 @@ html.force-mobile #app.show-chat #chat { display: flex; }
 html.force-mobile #back-btn { display: inline-flex; }
 html.force-mobile #sidebar-toggle { display: none; }
 html.force-mobile .bubble-wrap { max-width: 82%; }
-html.force-mobile .search-wrap,
-html.force-mobile #space-bar { display: block; }
+html.force-mobile .search-wrap { display: block; }
+html.force-mobile .theirs .msg-actions { left: auto; right: 4px; top: -14px; transform: none; }
+html.force-mobile .mine .msg-actions { right: calc(100% + 4px); }
 /* Auf breiten Bildschirmen als zentrierter Handy-Rahmen darstellen. */
 @media (min-width: 620px) {
   html.force-mobile body {
@@ -1449,7 +1449,6 @@ html.force-mobile #space-bar { display: block; }
 .room-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent, #8b4df7); }
 
 /* ---- Vertikale Bereichs-Navigation (Baum) ---- */
-#space-bar { display: none; }
 
 .nav-head {
   display: flex;
@@ -1516,4 +1515,11 @@ html.force-mobile #space-bar { display: block; }
 .nav-section.collapsed .nav-section-body { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .nav-section-chevron { transition: none; }
+}
+
+.nav-section-empty {
+  padding: 6px 14px 8px 33px;
+  font-size: 12.5px;
+  color: var(--text-secondary, #999);
+  font-style: italic;
 }

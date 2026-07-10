@@ -117,7 +117,6 @@ const recoveryBtn = $('#recovery-btn');
 const recoveryForm = $('#recovery-form');
 const recoveryInput = $('#recovery-input');
 const recoverySubmit = $('#recovery-submit');
-const spaceBarEl = $('#space-bar');
 const sidebarEl = $('#sidebar');
 const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
@@ -1636,22 +1635,28 @@ function sortRooms(list) {
 }
 
 let draggedRoomId = null;
+let draggedSectionKey = null;
 
-function attachRoomDrag(item, room) {
+function attachRoomDrag(item, room, sectionKey) {
   item.draggable = true;
   item.addEventListener('dragstart', (e) => {
     draggedRoomId = room.roomId;
+    draggedSectionKey = sectionKey || null;
     item.classList.add('dragging');
     try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', room.roomId); } catch (err) { /* */ }
   });
   item.addEventListener('dragend', () => {
     item.classList.remove('dragging');
     draggedRoomId = null;
+    draggedSectionKey = null;
     document.querySelectorAll('.room-item.drop-before, .room-item.drop-after')
       .forEach((n) => n.classList.remove('drop-before', 'drop-after'));
   });
   item.addEventListener('dragover', (e) => {
     if (!draggedRoomId || draggedRoomId === room.roomId) return;
+    // Nur innerhalb derselben Sektion umsortieren: sektionsübergreifendes
+    // Ziehen würde eine Verschiebung suggerieren, die es nicht gibt.
+    if (draggedSectionKey !== (sectionKey || null)) return;
     e.preventDefault();
     const r = item.getBoundingClientRect();
     const after = (e.clientY - r.top) > r.height / 2;
@@ -1716,7 +1721,7 @@ function createBereichPrompt() {
 }
 
 /** Hängt eine einklappbare Navigations-Sektion an die Raumliste an. */
-function appendNavSection(key, opts, title, roomsArr) {
+function appendNavSection(key, opts, title, roomsArr, emptyText) {
   const collapsed = navCollapsed.has(key);
   const sec = el('div', 'nav-section');
   if (collapsed) sec.classList.add('collapsed');
@@ -1736,8 +1741,11 @@ function appendNavSection(key, opts, title, roomsArr) {
   const body = el('div', 'nav-section-body');
   for (const room of roomsArr) {
     const item = buildRoomItem(room);
-    attachRoomDrag(item, room);
+    attachRoomDrag(item, room, key);
     body.appendChild(item);
+  }
+  if (!roomsArr.length && emptyText) {
+    body.appendChild(el('div', 'nav-section-empty', emptyText));
   }
   sec.appendChild(body);
   roomListEl.appendChild(sec);
@@ -1777,10 +1785,13 @@ function renderRoomList() {
   const inAnySpace = (r) => spaceList.some((s) => roomInSpaceId(r, s.id));
 
   // Bereiche (Bridges + eigene) mit ihren zugeordneten Räumen.
+  // Leere Bridge-Bereiche verstecken; leere EIGENE Bereiche anzeigen,
+  // sonst wirkt das Erstellen wie ein Fehlschlag.
   for (const sp of spaceList) {
     const roomsIn = all.filter((r) => roomInSpaceId(r, sp.id));
-    if (!roomsIn.length) continue;
-    appendNavSection('sp:' + sp.id, { emoji: sp.icon }, sp.title, roomsIn);
+    if (!roomsIn.length && sp.kind !== 'custom') continue;
+    appendNavSection('sp:' + sp.id, { emoji: sp.icon }, sp.title, roomsIn,
+      'Noch keine Chats – über das ⋯-Menü eines Chats zuordnen');
   }
 
   // Favoriten (können zusätzlich in Bereichen liegen – Mehrfachzuordnung ist gewollt).
