@@ -280,10 +280,42 @@ function loadSettings() {
   return defaults;
 }
 
+const AD_SETTINGS = 'io.matrixmess.settings';
+let settingsSyncTimer = null;
+// forceMobile ist geräteabhängig (Bildschirmgröße) und wird NICHT synchronisiert.
+const DEVICE_LOCAL_SETTINGS = ['forceMobile', 'notifications'];
+
 function saveSettings() {
   try {
     localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   } catch (e) { /* ignorieren */ }
+  // Geräteübergreifend über account_data synchronisieren (debounced),
+  // geräteabhängige Optionen ausgenommen.
+  if (!session) return;
+  clearTimeout(settingsSyncTimer);
+  settingsSyncTimer = setTimeout(() => {
+    const shared = {};
+    for (const k of Object.keys(settings)) {
+      if (!DEVICE_LOCAL_SETTINGS.includes(k)) shared[k] = settings[k];
+    }
+    Promise.resolve(putAccountData(AD_SETTINGS, shared))
+      .catch((e) => console.warn('Einstellungen-Sync fehlgeschlagen:', e));
+  }, 800);
+}
+
+/** Übernimmt geräteübergreifende Einstellungen aus account_data (ohne
+ *  geräteabhängige Optionen zu überschreiben). */
+function applyRemoteSettings(content) {
+  if (!content || typeof content !== 'object') return;
+  let changed = false;
+  for (const k of Object.keys(content)) {
+    if (DEVICE_LOCAL_SETTINGS.includes(k)) continue;
+    if (settings[k] !== content[k]) { settings[k] = content[k]; changed = true; }
+  }
+  if (changed) {
+    try { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); } catch (e) { /* */ }
+    applySettings();
+  }
 }
 
 function applySettings() {
@@ -457,6 +489,12 @@ async function initFeatureModules() {
       try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
       renderRoomList();
     }
+  } catch (err) { /* account_data evtl. nicht vorhanden */ }
+
+  // Geräteübergreifende Einstellungen vom Server übernehmen.
+  try {
+    const rs = await getAccountData(AD_SETTINGS);
+    if (rs) applyRemoteSettings(rs);
   } catch (err) { /* account_data evtl. nicht vorhanden */ }
 
   try {
@@ -1387,6 +1425,14 @@ function processSync(data) {
     if (ev.type === 'm.direct') {
       applyDirectAccountData(ev.content);
       for (const id of rooms.keys()) changed.add(id);
+    } else if (ev.type === AD_SETTINGS) {
+      // Einstellungen von einem anderen Gerät live übernehmen.
+      applyRemoteSettings(ev.content);
+    } else if (ev.type === AD_ROOM_ORDER && ev.content && Array.isArray(ev.content.order)) {
+      // Raumreihenfolge eines anderen Geräts live übernehmen.
+      roomOrder = ev.content.order.filter((x) => typeof x === 'string');
+      try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
+      renderRoomList();
     }
   }
 
