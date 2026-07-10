@@ -134,6 +134,7 @@ const textSizeSeg = $('#textsize-seg');
 const linkPreviewToggle = $('#linkpreview-toggle');
 const inlineMediaToggle = $('#inlinemedia-toggle');
 const enterSendToggle = $('#entersend-toggle');
+const forceMobileToggle = $('#forcemobile-toggle');
 const readReceiptToggle = $('#readreceipt-toggle');
 const typingToggle = $('#typing-toggle');
 
@@ -268,6 +269,7 @@ function loadSettings() {
     readReceipts: true,
     typingIndicators: true,
     enterToSend: true,
+    forceMobile: false,
   };
   try {
     const raw = localStorage.getItem(LS_SETTINGS);
@@ -293,6 +295,7 @@ function applySettings() {
   const compact = settings.density === 'compact';
   roomListEl.classList.toggle('density-compact', compact);
   timelineEl.classList.toggle('density-compact', compact);
+  root.classList.toggle('force-mobile', !!settings.forceMobile);
   renderSettingsPanel();
 }
 
@@ -329,6 +332,7 @@ function renderSettingsPanel() {
   linkPreviewToggle.checked = settings.linkPreviews !== false;
   inlineMediaToggle.checked = settings.inlineMedia !== false;
   enterSendToggle.checked = settings.enterToSend !== false;
+  forceMobileToggle.checked = !!settings.forceMobile;
   readReceiptToggle.checked = settings.readReceipts !== false;
   typingToggle.checked = settings.typingIndicators !== false;
   notifToggle.checked = !!settings.notifications &&
@@ -3367,6 +3371,12 @@ inlineMediaToggle.addEventListener('change', () => {
 enterSendToggle.addEventListener('change', () => {
   settings.enterToSend = enterSendToggle.checked;
   saveSettings();
+});
+
+forceMobileToggle.addEventListener('change', () => {
+  settings.forceMobile = forceMobileToggle.checked;
+  saveSettings();
+  applySettings();
 });
 
 readReceiptToggle.addEventListener('change', () => {
