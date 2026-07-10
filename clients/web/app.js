@@ -49,6 +49,7 @@ const LS_SYNC_TOKEN = 'mm.syncToken';
 const LS_SETTINGS = 'mm.settings';
 const LS_CRYPTO_PICKLE = 'mm.cryptoPickle';
 const LS_SIDEBAR_COLLAPSED = 'mm.sidebarCollapsed';
+const LS_DRAFTS = 'mm.drafts';
 
 const MEMBER_CACHE_MS = 5 * 60 * 1000;
 
@@ -1493,11 +1494,19 @@ function buildRoomItem(room) {
   main.appendChild(row1);
 
   const row2 = el('div', 'room-row2');
-  let preview = room.lastPreview || '';
-  if (preview && session && room.lastPreviewSender === session.userId) {
-    preview = 'Du: ' + preview;
+  const draft = room.roomId !== activeRoomId ? getDraft(room.roomId).trim() : '';
+  if (draft) {
+    const dp = el('div', 'room-preview room-draft');
+    dp.appendChild(el('span', 'room-draft-label', 'Entwurf: '));
+    dp.appendChild(document.createTextNode(draft));
+    row2.appendChild(dp);
+  } else {
+    let preview = room.lastPreview || '';
+    if (preview && session && room.lastPreviewSender === session.userId) {
+      preview = 'Du: ' + preview;
+    }
+    row2.appendChild(el('div', 'room-preview', preview));
   }
-  row2.appendChild(el('div', 'room-preview', preview));
   if (room.unread > 0) {
     row2.appendChild(el('div', 'room-badge', room.unread > 99 ? '99+' : String(room.unread)));
   }
@@ -1648,6 +1657,13 @@ function openRoom(roomId) {
   chatViewEl.classList.remove('hidden');
   appEl.classList.add('show-chat');
   renderChatHeader(room);
+  // Entwurf dieses Raums wiederherstellen (behebt auch, dass Text beim
+  // Raumwechsel stehen bliebe).
+  if (!(room.isEncrypted && !cryptoReady)) {
+    composerInput.value = getDraft(roomId);
+    autoGrowComposer();
+    sendBtn.disabled = composerInput.value.trim().length === 0;
+  }
   renderTypingBar(room);
   renderTimeline('bottom');
   updateScrollDownBtn();
@@ -2397,6 +2413,7 @@ function autoGrowComposer() {
 function resetComposer() {
   composerInput.value = '';
   autoGrowComposer();
+  if (activeRoomId) clearDraft(activeRoomId);
 }
 
 function startReply(room, ev) {
@@ -2599,6 +2616,7 @@ async function sendCurrentMessage() {
 composerInput.addEventListener('input', () => {
   autoGrowComposer();
   handleTypingSignal();
+  if (activeRoomId) setDraft(activeRoomId, composerInput.value);
 });
 
 composerInput.addEventListener('keydown', (e) => {
@@ -3036,6 +3054,42 @@ function initSidebarCollapsed() {
     collapsedState = localStorage.getItem(LS_SIDEBAR_COLLAPSED) === '1';
   } catch (e) { /* ignorieren */ }
   applySidebarCollapsed(collapsedState);
+}
+
+/* ---------- Entwürfe pro Raum ---------- */
+
+const drafts = new Map();
+(function loadDrafts() {
+  try {
+    const raw = localStorage.getItem(LS_DRAFTS);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      for (const k of Object.keys(obj)) {
+        if (typeof obj[k] === 'string' && obj[k]) drafts.set(k, obj[k]);
+      }
+    }
+  } catch (e) { /* ignorieren */ }
+})();
+
+let draftSaveTimer = null;
+function persistDrafts() {
+  clearTimeout(draftSaveTimer);
+  draftSaveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(LS_DRAFTS, JSON.stringify(Object.fromEntries(drafts)));
+    } catch (e) { /* ignorieren */ }
+  }, 400);
+}
+
+function getDraft(roomId) { return drafts.get(roomId) || ''; }
+function setDraft(roomId, text) {
+  if (!roomId) return;
+  if (text && text.trim()) drafts.set(roomId, text);
+  else drafts.delete(roomId);
+  persistDrafts();
+}
+function clearDraft(roomId) {
+  if (drafts.delete(roomId)) persistDrafts();
 }
 
 /* ---------- Schnellwechsler (Strg/Cmd+K) ---------- */
