@@ -1546,3 +1546,29 @@ html.force-mobile .mine .msg-actions { right: calc(100% + 4px); }
   font-size: 13px;
 }
 #decrypt-banner-btn:hover { filter: brightness(1.08); }
+
+/* ---- Geräte-Verifizierung ---- */
+#verify-overlay {
+  position: fixed; inset: 0; z-index: 210;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.4); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  padding: 20px;
+}
+#verify-panel {
+  width: min(440px, 94vw); max-height: 88vh; overflow-y: auto;
+  background: var(--bg, #fff); border-radius: 16px; box-shadow: var(--shadow-lg, 0 24px 64px rgba(0,0,0,.4));
+  padding: 4px 20px 20px;
+}
+#verify-body { padding-top: 6px; }
+.verify-msg { color: var(--text-secondary, #666); font-size: 14px; line-height: 1.5; margin: 4px 0 16px; }
+.verify-emoji-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px;
+}
+.verify-emoji {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 12px 6px; border-radius: 12px; background: var(--bg-secondary, #f5f5f7);
+}
+.verify-emoji-symbol { font-size: 30px; line-height: 1; }
+.verify-emoji-desc { font-size: 11px; color: var(--text-secondary, #888); text-align: center; }
+.verify-actions { display: flex; gap: 10px; }
+.verify-actions .primary-btn, .verify-actions .danger-btn { width: auto; flex: 1; }

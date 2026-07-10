@@ -482,6 +482,201 @@ export class CryptoEngine {
 
     return { imported: result.importedCount, failed };
   }
+
+  /* ===================================================================
+   * Geräte-Verifizierung (SAS / Emoji-Vergleich)
+   * Vollständig gekapselt: jeder Fehler wird abgefangen und darf die
+   * übrigen Krypto-Pfade (Init/Entschlüsselung/Senden) nicht berühren.
+   * =================================================================== */
+
+  /** Callback registrieren, der bei jeder Zustandsänderung die UI-Ansicht erhält. */
+  setVerificationChangeHandler(fn) {
+    this._onVerificationChange = typeof fn === 'function' ? fn : null;
+  }
+
+  _emitVerificationChange() {
+    if (this._onVerificationChange) {
+      try { this._onVerificationChange(this.getVerificationView()); } catch (e) { /* UI-Fehler ignorieren */ }
+    }
+  }
+
+  /** Sendet einen ausgehenden Verifizierungs-Request (To-Device oder Raum). */
+  async _dispatchVerification(outgoing) {
+    if (!outgoing) return;
+    try {
+      if (outgoing.room_id) {
+        await this.api(
+          'PUT',
+          `/_matrix/client/v3/rooms/${encodeURIComponent(outgoing.room_id)}/send/${encodeURIComponent(outgoing.event_type)}/${encodeURIComponent(outgoing.txn_id)}`,
+          JSON.parse(outgoing.body)
+        );
+      } else {
+        await this.api(
+          'PUT',
+          `/_matrix/client/v3/sendToDevice/${encodeURIComponent(outgoing.event_type)}/${encodeURIComponent(outgoing.txn_id)}`,
+          JSON.parse(outgoing.body)
+        );
+      }
+    } catch (err) {
+      console.warn('[crypto] Verifizierungs-Request fehlgeschlagen:', err);
+    }
+  }
+
+  _registerVreqCallback() {
+    if (this._vreq && this._vreq.registerChangesCallback) {
+      try { this._vreq.registerChangesCallback(async () => { await this._advanceVerification(); }); }
+      catch (e) { /* */ }
+    }
+  }
+
+  _registerSasCallback() {
+    if (this._vsas && this._vsas.registerChangesCallback) {
+      try { this._vsas.registerChangesCallback(async () => { await this._advanceVerification(); }); }
+      catch (e) { /* */ }
+    }
+  }
+
+  /** Startet die Verifizierung DIESES Geräts gegenüber den anderen (verifizierten) Geräten. */
+  async startSelfVerification() {
+    const machine = this._requireMachine();
+    const identity = await machine.getIdentity(new UserId(this.userId));
+    if (!identity || typeof identity.requestVerification !== 'function') {
+      throw new Error('Keine eigene Cross-Signing-Identität gefunden. Richte die Verschlüsselung zuerst auf einem anderen Gerät (z. B. iPhone) ein.');
+    }
+    const [request, outgoing] = await identity.requestVerification();
+    this._vreq = request;
+    this._vsas = null;
+    this._registerVreqCallback();
+    await this._dispatchVerification(outgoing);
+    await this._advanceVerification();
+    return this.getVerificationView();
+  }
+
+  /** Prüft nach jedem Sync auf eingehende Verifizierungs-Anfragen anderer Geräte. */
+  async checkIncomingVerifications() {
+    if (!this.machine) return;
+    if (this._vreq && !this._vreqFinished()) return; // bereits aktiv
+    try {
+      const requests = this.machine.getVerificationRequests(new UserId(this.userId));
+      for (const req of (requests || [])) {
+        if (req.isDone() || req.isCancelled() || req.isPassive()) continue;
+        this._vreq = req;
+        this._vsas = null;
+        this._registerVreqCallback();
+        await this._advanceVerification();
+        return;
+      }
+    } catch (e) { /* keine ausstehenden Anfragen */ }
+  }
+
+  _vreqFinished() {
+    try { return !this._vreq || this._vreq.isDone() || this._vreq.isCancelled(); }
+    catch (e) { return true; }
+  }
+
+  /** Bewegt den Verifizierungs-Fluss voran (accept/startSas/getVerification). */
+  async _advanceVerification() {
+    try {
+      const req = this._vreq;
+      if (req && !req.isDone() && !req.isCancelled()) {
+        // Eingehende Anfrage, die wir noch nicht beantwortet haben: annehmen.
+        if (!req.weStarted() && !req.isReady()) {
+          const out = req.accept();
+          if (out) await this._dispatchVerification(out);
+        }
+        // Bereit + von uns gestartet: in SAS übergehen (sendet m.key.verification.start).
+        if (req.isReady() && req.weStarted() && !this._vsas) {
+          const started = await req.startSas();
+          if (started && started[0]) {
+            this._vsas = started[0];
+            this._registerSasCallback();
+            await this._dispatchVerification(started[1]);
+          }
+        }
+        // Gegenseite hat SAS gestartet: die Verification abgreifen.
+        if (!this._vsas) {
+          const v = req.getVerification();
+          if (v && typeof v.emoji === 'function') {
+            this._vsas = v;
+            this._registerSasCallback();
+          }
+        }
+      }
+      const sas = this._vsas;
+      if (sas && !sas.isDone() && !sas.isCancelled()) {
+        // Von der Gegenseite gestartete SAS annehmen.
+        if (!sas.weStarted() && !sas.hasBeenAccepted()) {
+          const out = sas.accept();
+          if (out) await this._dispatchVerification(out);
+        }
+      }
+    } catch (err) {
+      console.warn('[crypto] Verifizierung konnte nicht fortgesetzt werden:', err);
+    }
+    this._emitVerificationChange();
+  }
+
+  /** Bestätigt, dass die Emoji auf beiden Geräten übereinstimmen. */
+  async confirmVerification() {
+    const sas = this._vsas;
+    if (!sas) return;
+    try {
+      const reqs = await sas.confirm();
+      for (const out of (reqs || [])) await this._dispatchVerification(out);
+    } catch (err) {
+      console.warn('[crypto] Bestätigung fehlgeschlagen:', err);
+    }
+    this._emitVerificationChange();
+  }
+
+  /** Bricht die laufende Verifizierung ab. */
+  async cancelVerification() {
+    try {
+      if (this._vsas && !this._vsas.isDone()) {
+        const out = this._vsas.cancel();
+        if (out) await this._dispatchVerification(out);
+      } else if (this._vreq && !this._vreqFinished()) {
+        const out = this._vreq.cancel();
+        if (out) await this._dispatchVerification(out);
+      }
+    } catch (e) { /* */ }
+    this._vreq = null;
+    this._vsas = null;
+    this._emitVerificationChange();
+  }
+
+  /** UI-freundliche Momentaufnahme des Verifizierungs-Zustands. */
+  getVerificationView() {
+    const view = {
+      active: false, done: false, cancelled: false,
+      emoji: null, canConfirm: false, waiting: false, otherDevice: null,
+    };
+    try {
+      const req = this._vreq;
+      const sas = this._vsas;
+      if (!req && !sas) return view;
+      view.active = true;
+      if (req) {
+        try { view.otherDevice = req.otherDeviceId ? String(req.otherDeviceId.toString()) : null; } catch (e) { /* */ }
+        if (req.isCancelled()) view.cancelled = true;
+        if (req.isDone()) view.done = true;
+      }
+      if (sas) {
+        if (sas.isCancelled()) view.cancelled = true;
+        if (sas.isDone()) view.done = true;
+        const emoji = (typeof sas.emoji === 'function') ? sas.emoji() : null;
+        if (emoji && emoji.length) {
+          view.emoji = emoji.map((e) => ({ symbol: e.symbol, description: e.description }));
+          view.canConfirm = !sas.haveWeConfirmed();
+        } else if (!view.done && !view.cancelled) {
+          view.waiting = true;
+        }
+      } else if (!view.done && !view.cancelled) {
+        view.waiting = true;
+      }
+    } catch (e) { /* */ }
+    return view;
+  }
 }
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';

@@ -123,6 +123,17 @@
     </main>
   </div>
 
+  <!-- ===== Geräte-Verifizierung ===== -->
+  <div id="verify-overlay" class="hidden">
+    <div id="verify-panel" role="dialog" aria-modal="true" aria-labelledby="verify-title">
+      <header class="settings-header">
+        <h3 id="verify-title">Gerät verifizieren</h3>
+        <button id="verify-close" class="icon-btn" title="Schließen" aria-label="Schließen"></button>
+      </header>
+      <div id="verify-body"></div>
+    </div>
+  </div>
+
   <!-- ===== Einstellungen ===== -->
   <div id="settings-overlay" class="hidden">
     <div id="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
@@ -212,6 +223,7 @@
           </label>
           <button id="recovery-submit" class="primary-btn" type="submit">Schlüssel importieren</button>
         </form>
+        <button id="verify-btn" class="primary-btn" type="button" style="margin-top:8px">Dieses Gerät verifizieren</button>
       </section>
 
       <section class="settings-section">
