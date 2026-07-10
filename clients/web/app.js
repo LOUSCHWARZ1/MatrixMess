@@ -22,6 +22,16 @@ import {
   renderEventCard,
   getUpcomingCount,
 } from './calendar.js';
+import {
+  initGames,
+  startGame,
+  collectGameState,
+  renderGameCard,
+  sendMove,
+  GAME_KINDS,
+  rollDice,
+  flipCoin,
+} from './games.js';
 
 // Clickjacking-Schutz: GitHub Pages kann kein frame-ancestors als HTTP-Header
 // senden (Meta-CSP ignoriert die Direktive) - Framebusting als Best-Effort.
@@ -112,6 +122,7 @@ const calendarBadge = $('#calendar-badge');
 const eventBtn = $('#event-btn');
 const composerEl = $('#composer');
 const attachBtn = $('#attach-btn');
+const gameBtn = $('#game-btn');
 const fileInput = $('#file-input');
 const emojiBtn = $('#emoji-btn');
 const micBtn = $('#mic-btn');
@@ -431,7 +442,74 @@ async function initFeatureModules() {
     console.warn('Kalender konnte nicht initialisiert werden:', err);
   }
   updateCalendarBadge();
+
+  try {
+    initGames({
+      sendGameEvent: async (roomId, content) => {
+        const room = rooms.get(roomId);
+        if (!room) return null;
+        await sendRoomMessage(room, content);
+      },
+      getMyUserId: () => (session ? session.userId : ''),
+    });
+  } catch (err) {
+    console.warn('Spiele konnten nicht initialisiert werden:', err);
+  }
 }
+
+/** true, wenn das Event ein Spielzug ist (wird in der Timeline nicht als
+ *  eigene Bubble angezeigt – nur der Spielbrett-Zustand zählt). */
+function isGameMove(ev) {
+  const g = ev && ev.content && ev.content['io.matrixmess.game'];
+  return !!(g && g.action === 'move');
+}
+
+/** true, wenn das Event ein Spielstart ist (wird als Spielkarte gerendert). */
+function isGameStart(ev) {
+  const g = ev && ev.content && ev.content['io.matrixmess.game'];
+  return !!(g && g.action === 'start');
+}
+
+/** Öffnet ein kleines Menü mit den verfügbaren Spielen über dem Spiel-Button. */
+function openGameMenu() {
+  if (!activeRoomId) return;
+  const room = rooms.get(activeRoomId);
+  if (!room || room.isEncrypted) return;
+  closeGameMenu();
+  const menu = el('div', 'game-menu');
+  menu.id = 'game-menu';
+  for (const g of GAME_KINDS) {
+    const b = el('button', 'game-menu-item');
+    b.appendChild(icon('gamepad', 16));
+    b.appendChild(el('span', null, g.label));
+    b.addEventListener('click', () => {
+      closeGameMenu();
+      startGame(activeRoomId, g.id);
+    });
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  const r = gameBtn.getBoundingClientRect();
+  menu.style.left = Math.max(8, r.left) + 'px';
+  menu.style.top = (r.top - menu.offsetHeight - 8) + 'px';
+  setTimeout(() => document.addEventListener('click', gameMenuOutside, { once: true }), 0);
+}
+
+function gameMenuOutside(e) {
+  const menu = document.getElementById('game-menu');
+  if (menu && !menu.contains(e.target) && e.target !== gameBtn) closeGameMenu();
+}
+
+function closeGameMenu() {
+  const menu = document.getElementById('game-menu');
+  if (menu) menu.remove();
+}
+
+gameBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (document.getElementById('game-menu')) { closeGameMenu(); return; }
+  openGameMenu();
+});
 
 function updateCalendarBadge() {
   const n = getUpcomingCount();
@@ -1603,10 +1681,13 @@ function renderChatHeader(room) {
     sendBtn.disabled = composerInput.value.trim().length === 0;
   }
 
-  // Medien-Upload: NIEMALS unverschlüsselt in E2EE-Räume senden.
+  // Medien-Upload und Spiele laufen als Klartext-Events: NIEMALS in E2EE-Räume.
   const mediaBlocked = room.isEncrypted;
   attachBtn.disabled = mediaBlocked;
   micBtn.disabled = mediaBlocked;
+  gameBtn.disabled = mediaBlocked;
+  gameBtn.title = mediaBlocked ? 'Spiele in verschlüsselten Räumen folgen' : 'Spiel starten';
+  if (mediaBlocked) closeGameMenu();
   attachBtn.title = mediaBlocked
     ? 'Medienversand in verschlüsselten Räumen folgt'
     : 'Datei anhängen';
@@ -1645,9 +1726,15 @@ function renderTimeline(mode) {
   }
 
   const events = room.events;
+  // Spielstände deterministisch aus allen Events berechnen (idempotent).
+  const games = collectGameState(events);
   let prevEv = null;
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
+
+    // Spielzüge sind unsichtbar – nur das Spielbrett zählt.
+    if (isGameMove(ev)) continue;
+
     const nextEv = events[i + 1] || null;
 
     const newDay = !prevEv || startOfDay(prevEv.ts) !== startOfDay(ev.ts);
@@ -1655,6 +1742,13 @@ function renderTimeline(mode) {
       const sep = el('div', 'day-sep');
       sep.appendChild(el('span', null, dayLabel(ev.ts)));
       timelineEl.appendChild(sep);
+    }
+
+    // Spielstart als interaktive Spielkarte rendern.
+    if (isGameStart(ev)) {
+      timelineEl.appendChild(buildGameRow(room, ev, games));
+      prevEv = ev;
+      continue;
     }
 
     const startsGroup = newDay || !prevEv || prevEv.sender !== ev.sender || ev.ts - prevEv.ts > GROUP_GAP_MS;
@@ -1672,6 +1766,31 @@ function renderTimeline(mode) {
   } else {
     timelineEl.scrollTop = prevScrollTop;
   }
+}
+
+/** Rendert eine Zeile mit interaktiver Spielkarte für ein Spielstart-Event. */
+function buildGameRow(room, ev, games) {
+  const row = el('div', 'msg-row game-row');
+  const wrap = el('div', 'bubble-wrap');
+  const state = ev.eventId ? games.get(ev.eventId) : null;
+  if (state) {
+    const card = renderGameCard(state, {
+      myUserId: session ? session.userId : '',
+      onMove: (cell) => {
+        if (room.isEncrypted) return;
+        sendMove(room.roomId, ev.eventId, cell);
+      },
+    });
+    wrap.appendChild(card);
+  } else {
+    // Pending-Start (noch keine Event-ID vom Server): schlichter Platzhalter.
+    const ph = el('div', 'game-pending');
+    ph.appendChild(icon('gamepad', 16));
+    ph.appendChild(el('span', null, 'Spiel wird gestartet …'));
+    wrap.appendChild(ph);
+  }
+  row.appendChild(wrap);
+  return row;
 }
 
 function buildMessageRow(room, ev, startsGroup, endsGroup) {
@@ -2834,6 +2953,7 @@ function mountStaticIcons() {
     ['#back-btn', 'chevron-left', 24],
     ['#banner-cancel', 'x', 16],
     ['#attach-btn', 'paperclip', 20],
+    ['#game-btn', 'gamepad', 20],
     ['#emoji-btn', 'smile', 20],
     ['#mic-btn', 'mic', 20],
     ['#send-btn', 'send', 18],

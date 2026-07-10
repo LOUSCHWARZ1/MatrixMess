@@ -117,3 +117,46 @@
   color: var(--accent, #8b4df7);
   font-weight: 600;
 }
+
+/* ---- Spielmenü (Composer) & Timeline-Integration ---- */
+.game-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, rgba(0,0,0,.1));
+  box-shadow: 0 12px 40px rgba(0,0,0,.22);
+}
+.game-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px 9px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text, #111);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.game-menu-item:hover { background: var(--bg-secondary, rgba(0,0,0,.06)); }
+.game-menu-item svg { color: var(--accent, #8b4df7); }
+
+.msg-row.game-row { justify-content: flex-start; }
+.msg-row.game-row .bubble-wrap { max-width: 320px; }
+.game-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--bg-secondary, rgba(0,0,0,.05));
+  color: var(--text-secondary, #666);
+  font-size: 14px;
+}
