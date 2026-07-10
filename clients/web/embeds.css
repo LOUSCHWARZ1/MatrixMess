@@ -222,6 +222,9 @@
 }
 
 .mm-embed-external {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text-secondary);
@@ -230,6 +233,7 @@
   border-radius: 6px;
   padding: 1px 4px;
 }
+.mm-embed-external svg { flex-shrink: 0; }
 .mm-embed-external:hover {
   color: var(--accent);
   background: var(--hover);
@@ -264,11 +268,15 @@
 }
 
 .mm-embed-linkcard-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.mm-embed-linkcard-label svg { flex-shrink: 0; }
 
 /* ====================== Generische Karte ====================== */
 
@@ -335,8 +343,9 @@
 }
 
 .mm-embed-generic-arrow {
+  display: inline-flex;
+  align-items: center;
   color: var(--text-secondary);
-  font-size: 13px;
   flex-shrink: 0;
 }
 .mm-embed-generic-a:hover .mm-embed-generic-arrow { color: var(--accent); }

@@ -19,7 +19,7 @@
   <!-- ===== Login ===== -->
   <div id="login-screen" class="screen hidden">
     <div class="login-card">
-      <div class="login-icon" aria-hidden="true">💬</div>
+      <div class="login-icon" aria-hidden="true"></div>
       <h1>MatrixMess</h1>
       <p class="login-sub">Melde dich mit deinem Matrix-Konto an</p>
       <form id="login-form" autocomplete="on">
@@ -46,10 +46,11 @@
 
     <aside id="sidebar">
       <header class="sidebar-header">
-        <div class="app-badge" aria-hidden="true">💬</div>
+        <div class="app-badge" aria-hidden="true"></div>
         <h2>MatrixMess</h2>
-        <button id="calendar-btn" class="icon-btn" title="Kalender" aria-label="Kalender öffnen">📅<span id="calendar-badge" class="hidden"></span></button>
-        <button id="settings-btn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙︎</button>
+        <button id="calendar-btn" class="icon-btn" title="Kalender" aria-label="Kalender öffnen"><span id="calendar-badge" class="hidden"></span></button>
+        <button id="settings-btn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen"></button>
+        <button id="sidebar-toggle" class="icon-btn" title="Seitenleiste einklappen" aria-label="Seitenleiste umschalten" aria-expanded="true"></button>
       </header>
       <div class="search-wrap">
         <input id="room-search" type="search" placeholder="Suchen" aria-label="Räume durchsuchen">
@@ -60,25 +61,24 @@
 
     <main id="chat">
       <div id="chat-empty" class="chat-empty">
-        <div class="chat-empty-icon" aria-hidden="true">💬</div>
+        <div class="chat-empty-icon" aria-hidden="true"></div>
         <p>Wähle einen Raum aus, um loszulegen</p>
       </div>
 
       <div id="chat-view" class="hidden">
         <header id="chat-header">
-          <button id="back-btn" class="icon-btn" title="Zurück" aria-label="Zurück zur Raumliste">‹</button>
+          <button id="back-btn" class="icon-btn" title="Zurück" aria-label="Zurück zur Raumliste"></button>
           <div id="chat-avatar" class="avatar" aria-hidden="true"></div>
           <div class="chat-title">
             <div id="chat-name"></div>
             <div id="chat-sub"></div>
           </div>
-          <button id="event-btn" class="header-pill-btn" title="Termin planen" aria-label="Termin planen">📅 Termin</button>
+          <button id="event-btn" class="header-pill-btn" title="Termin planen" aria-label="Termin planen"><span>Termin</span></button>
         </header>
 
         <div id="timeline-wrap">
           <div id="timeline" tabindex="0"></div>
           <button id="scroll-down-btn" class="hidden" title="Nach unten" aria-label="Nach unten scrollen">
-            <span aria-hidden="true">↓</span>
             <span id="scroll-down-count" class="hidden"></span>
           </button>
         </div>
@@ -94,16 +94,16 @@
             <div id="banner-title"></div>
             <div id="banner-body"></div>
           </div>
-          <button id="banner-cancel" class="icon-btn" title="Abbrechen" aria-label="Abbrechen">✕</button>
+          <button id="banner-cancel" class="icon-btn" title="Abbrechen" aria-label="Abbrechen"></button>
         </div>
 
         <footer id="composer">
-          <button id="attach-btn" class="icon-btn composer-btn" title="Datei anhängen" aria-label="Datei anhängen">📎</button>
+          <button id="attach-btn" class="icon-btn composer-btn" title="Datei anhängen" aria-label="Datei anhängen"></button>
           <input id="file-input" type="file" multiple class="hidden" tabindex="-1" aria-hidden="true">
           <textarea id="composer-input" rows="1" placeholder="Nachricht" aria-label="Nachricht schreiben"></textarea>
-          <button id="emoji-btn" class="icon-btn composer-btn" title="Emoji einfügen" aria-label="Emoji einfügen">☺</button>
-          <button id="mic-btn" class="icon-btn composer-btn" title="Sprachnachricht aufnehmen" aria-label="Sprachnachricht aufnehmen">🎤</button>
-          <button id="send-btn" title="Senden" aria-label="Nachricht senden" disabled>➤</button>
+          <button id="emoji-btn" class="icon-btn composer-btn" title="Emoji einfügen" aria-label="Emoji einfügen"></button>
+          <button id="mic-btn" class="icon-btn composer-btn" title="Sprachnachricht aufnehmen" aria-label="Sprachnachricht aufnehmen"></button>
+          <button id="send-btn" title="Senden" aria-label="Nachricht senden" disabled></button>
         </footer>
       </div>
     </main>
@@ -114,7 +114,7 @@
     <div id="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <header class="settings-header">
         <h3 id="settings-title">Einstellungen</h3>
-        <button id="settings-close" class="icon-btn" title="Schließen" aria-label="Einstellungen schließen">✕</button>
+        <button id="settings-close" class="icon-btn" title="Schließen" aria-label="Einstellungen schließen"></button>
       </header>
 
       <section class="settings-section">

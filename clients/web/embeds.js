@@ -65,6 +65,8 @@
 
 'use strict';
 
+import { icon } from './icons.js';
+
 /* ============================ Konstanten ============================ */
 
 const LS_TITLE_CACHE = 'mm.embedTitleCache';
@@ -244,7 +246,8 @@ function el(tag, className, text) {
  * @returns {HTMLAnchorElement}
  */
 function externalLink(href, label) {
-  const a = el('a', 'mm-embed-external', label || 'Extern öffnen ↗');
+  const a = el('a', 'mm-embed-external', label || 'Extern öffnen');
+  a.append(icon('external', 12));
   a.href = href;
   a.target = '_blank';
   a.rel = 'noopener noreferrer';
@@ -547,9 +550,11 @@ function buildProviderLinkCard(cardClass, badgeClass, providerName, label, u) {
   a.href = u.href;
   a.target = '_blank';
   a.rel = 'noopener noreferrer';
+  const labelEl = el('span', 'mm-embed-linkcard-label', label);
+  labelEl.append(icon('external', 12));
   a.append(
     el('span', 'mm-embed-badge ' + badgeClass, providerName),
-    el('span', 'mm-embed-linkcard-label', label + ' ↗'),
+    labelEl,
   );
   card.append(a);
   return card;
@@ -584,7 +589,9 @@ function buildGenericCard(u) {
     el('span', 'mm-embed-path', shortenPath(u)),
   );
 
-  a.append(fav, textWrap, el('span', 'mm-embed-generic-arrow', '↗'));
+  const arrow = el('span', 'mm-embed-generic-arrow');
+  arrow.append(icon('external', 14));
+  a.append(fav, textWrap, arrow);
   card.append(a);
   return card;
 }

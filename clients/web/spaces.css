@@ -53,6 +53,8 @@
 }
 
 .mm-space-chip-icon {
+  display: inline-flex;
+  align-items: center;
   font-size: 14px;
   line-height: 1;
 }
@@ -87,7 +89,6 @@
   color: var(--text-secondary);
   padding: 5px 11px;
 }
-.mm-space-chip-add .mm-space-chip-icon { font-size: 16px; font-weight: 700; }
 .mm-space-chip-add:hover { color: var(--text); }
 
 /* ===================== Main-Sektionen (einklappbar) =====================
@@ -112,8 +113,8 @@
 .mm-room-section-header:hover { color: var(--text); }
 
 .mm-room-section-chevron {
-  display: inline-block;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
   transition: transform 0.15s ease;
 }
 .mm-room-section.collapsed .mm-room-section-chevron { transform: rotate(-90deg); }
@@ -133,7 +134,9 @@
   position: fixed;
   inset: 0;
   z-index: 350;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -148,9 +151,8 @@
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
   outline: none;
   animation: mm-sp-pop-in 0.18s ease;
 }
@@ -268,10 +270,13 @@
 }
 
 .mm-sp-check-icon {
+  display: inline-flex;
+  align-items: center;
   font-size: 16px;
   line-height: 1;
   flex-shrink: 0;
 }
+.mm-sp-check-fav .mm-sp-check-icon { color: var(--accent); }
 
 .mm-sp-check-label {
   flex: 1;

@@ -5,23 +5,29 @@
   --accent: #8B4DF7;
   --msg-font-size: 15px;
   --bg: #ffffff;
-  --bg-secondary: #f2f2f7;
-  --bg-tertiary: #e9e9ee;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #e8e8ed;
   --text: #1c1c1e;
   --text-secondary: #8e8e93;
   --bubble-in: #e9e9eb;
-  --border: rgba(0, 0, 0, 0.08);
+  --border: rgba(0, 0, 0, 0.07);
   --hover: rgba(0, 0, 0, 0.045);
   --active: rgba(0, 0, 0, 0.08);
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.25);
   --danger: #ff3b30;
   --on-accent: #ffffff;
+  /* Akzent-Gradient (Logo, Send-Button, eigene Bubbles) */
+  --accent-grad: linear-gradient(135deg, var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 82%, #000) 100%);
+  /* Halbtransparente Fläche für Blur-Bars (Chat-Header, Composer) */
+  --bar-bg: rgba(255, 255, 255, 0.78);
 }
 
 [data-theme="dark"] {
-  --bg: #0e0e11;
-  --bg-secondary: #1a1a1f;
-  --bg-tertiary: #26262c;
+  --bg: #0a0a0c;
+  --bg-secondary: #1c1c1e;
+  --bg-tertiary: #2c2c2e;
   --text: #f2f2f7;
   --text-secondary: #98989f;
   --bubble-in: #26262b;
@@ -29,13 +35,15 @@
   --hover: rgba(255, 255, 255, 0.06);
   --active: rgba(255, 255, 255, 0.10);
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
+  --bar-bg: rgba(10, 10, 12, 0.72);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0e0e11;
-    --bg-secondary: #1a1a1f;
-    --bg-tertiary: #26262c;
+    --bg: #0a0a0c;
+    --bg-secondary: #1c1c1e;
+    --bg-tertiary: #2c2c2e;
     --text: #f2f2f7;
     --text-secondary: #98989f;
     --bubble-in: #26262b;
@@ -43,6 +51,8 @@
     --hover: rgba(255, 255, 255, 0.06);
     --active: rgba(255, 255, 255, 0.10);
     --shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
+    --bar-bg: rgba(10, 10, 12, 0.72);
   }
 }
 
@@ -73,6 +83,7 @@ button {
   border: none;
   cursor: pointer;
   padding: 0;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 
 input, textarea {
@@ -80,14 +91,42 @@ input, textarea {
   color: var(--text);
 }
 
+/* Fokus-Ring: 2px Akzent mit Offset auf allen Interaktiven */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Dezente Scrollbars */
+* { scrollbar-width: thin; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* Zeitangaben mit Tabellenziffern */
+.room-time, .msg-meta, #chat-sub {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
 .icon-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
   color: var(--text-secondary);
   transition: background 0.15s ease, color 0.15s ease;
   flex-shrink: 0;
@@ -121,12 +160,12 @@ input, textarea {
   width: 72px;
   height: 72px;
   margin: 0 auto 16px;
-  border-radius: 22px;
-  background: var(--accent);
+  border-radius: 50%;
+  background: var(--accent-grad);
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 36px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
 }
 
@@ -185,7 +224,7 @@ input, textarea {
   width: 100%;
   padding: 12px;
   border-radius: 12px;
-  background: var(--accent);
+  background: var(--accent-grad);
   color: var(--on-accent);
   font-weight: 600;
   font-size: 15px;
@@ -240,12 +279,12 @@ input, textarea {
 .app-badge {
   width: 32px;
   height: 32px;
-  border-radius: 10px;
-  background: var(--accent);
+  border-radius: 50%;
+  background: var(--accent-grad);
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 17px;
   flex-shrink: 0;
 }
 
@@ -281,17 +320,38 @@ input, textarea {
 }
 
 .room-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 10px;
   border-radius: 12px;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.15s ease;
   user-select: none;
 }
 .room-item:hover { background: var(--hover); }
-.room-item.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.room-item.active { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+/* Mini-Unread-Badge an der Avatar-Ecke (nur eingeklappte Sidebar) */
+.room-badge-mini {
+  display: none;
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--bg-secondary);
+}
 
 .avatar {
   width: 44px;
@@ -339,13 +399,14 @@ input, textarea {
 }
 
 .room-lock {
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
   color: var(--text-secondary);
 }
 
 .room-time {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
   flex-shrink: 0;
 }
@@ -362,8 +423,8 @@ input, textarea {
 
 .room-badge {
   flex-shrink: 0;
-  min-width: 19px;
-  height: 19px;
+  min-width: 20px;
+  height: 20px;
   padding: 0 6px;
   border-radius: 10px;
   background: var(--accent);
@@ -400,7 +461,7 @@ input, textarea {
   gap: 10px;
   color: var(--text-secondary);
 }
-.chat-empty-icon { font-size: 44px; opacity: 0.6; }
+.chat-empty-icon { opacity: 0.55; color: var(--text-secondary); }
 .chat-empty p { margin: 0; font-size: 14px; }
 
 #chat-view {
@@ -420,7 +481,15 @@ input, textarea {
   flex-shrink: 0;
 }
 
-#back-btn { display: none; font-size: 26px; line-height: 1; }
+@supports ((backdrop-filter: blur(18px)) or (-webkit-backdrop-filter: blur(18px))) {
+  #chat-header {
+    background: var(--bar-bg);
+    -webkit-backdrop-filter: blur(18px) saturate(1.6);
+    backdrop-filter: blur(18px) saturate(1.6);
+  }
+}
+
+#back-btn { display: none; }
 
 .chat-title { flex: 1; min-width: 0; }
 
@@ -433,12 +502,16 @@ input, textarea {
 }
 
 #chat-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12px;
   color: var(--text-secondary);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
+#chat-sub svg { flex-shrink: 0; }
+#chat-sub span { overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- Timeline ---------- */
 
@@ -482,9 +555,8 @@ input, textarea {
   padding: 3px 12px;
   border-radius: 999px;
   background: var(--bg-secondary);
-  border: 1px solid var(--border);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -526,7 +598,7 @@ input, textarea {
 }
 
 .mine .bubble {
-  background: var(--accent);
+  background: var(--accent-grad);
   color: var(--on-accent);
 }
 
@@ -565,7 +637,19 @@ input, textarea {
 }
 .mine .msg-meta { color: rgba(255, 255, 255, 0.75); }
 .edited-tag { font-size: 10.5px; }
-.msg-lock { font-size: 9.5px; opacity: 0.85; }
+.msg-lock, .msg-pending {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.85;
+}
+
+/* Platzhalter verschlüsselter Nachrichten (Icon + Text) */
+.encrypted-ph-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.encrypted-ph-inner svg { flex-shrink: 0; }
 
 /* Verschlüsselung: Recovery-Key-Formular im Einstellungs-Panel */
 #recovery-form { margin-top: 10px; }
@@ -636,12 +720,11 @@ input, textarea {
 .attachment-icon {
   width: 38px;
   height: 38px;
-  border-radius: 10px;
+  border-radius: 50%;
   background: rgba(127, 127, 127, 0.18);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
   flex-shrink: 0;
 }
 .attachment-info { min-width: 0; }
@@ -667,16 +750,17 @@ input, textarea {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
+  height: 26px;
+  padding: 0 9px;
   border-radius: 999px;
   background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   font-size: 12.5px;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 .reaction-chip:hover { background: var(--hover); }
 .reaction-chip.mine-reaction {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: var(--accent);
 }
 .reaction-chip .rc-count { font-weight: 600; color: var(--text-secondary); font-size: 11.5px; }
@@ -689,11 +773,10 @@ input, textarea {
   top: 50%;
   transform: translateY(-50%);
   gap: 2px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 2px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 3px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   z-index: 5;
   white-space: nowrap;
 }
@@ -704,8 +787,7 @@ input, textarea {
 .msg-actions button {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: 9px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -747,14 +829,13 @@ input, textarea {
   border-radius: 50%;
   background: var(--bg);
   border: 1px solid var(--border);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
-  font-size: 18px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
   color: var(--text);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10;
-  transition: transform 0.12s ease;
+  transition: transform 0.15s ease, background 0.15s ease;
 }
 #scroll-down-btn:hover { transform: translateY(-2px); }
 
@@ -837,52 +918,64 @@ input, textarea {
 #composer {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   background: var(--bg);
   flex-shrink: 0;
 }
 
+@supports ((backdrop-filter: blur(18px)) or (-webkit-backdrop-filter: blur(18px))) {
+  #composer {
+    background: var(--bar-bg);
+    -webkit-backdrop-filter: blur(18px) saturate(1.6);
+    backdrop-filter: blur(18px) saturate(1.6);
+  }
+}
+
 #composer-input {
   flex: 1;
   resize: none;
-  border: 1px solid var(--border);
-  border-radius: 18px;
+  border: none;
+  border-radius: 22px;
   background: var(--bg-secondary);
-  padding: 8px 14px;
+  padding: 9px 16px;
   max-height: 132px;
   overflow-y: auto;
   outline: none;
   line-height: 1.4;
-  transition: border-color 0.15s ease;
+  transition: box-shadow 0.15s ease;
 }
-#composer-input:focus { border-color: var(--accent); }
+#composer-input:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
 #composer-input::placeholder { color: var(--text-secondary); }
 
 #send-btn {
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 16px;
+  background: var(--accent-grad);
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: filter 0.15s ease, opacity 0.15s ease, transform 0.08s ease;
+  transition: filter 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
+#send-btn svg { margin-left: -1px; margin-top: 1px; }
 #send-btn:hover:not(:disabled) { filter: brightness(1.08); }
 #send-btn:active:not(:disabled) { transform: scale(0.92); }
-#send-btn:disabled { opacity: 0.35; cursor: default; }
+#send-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* ===================== Einstellungen ===================== */
 
 #settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -896,8 +989,8 @@ input, textarea {
   max-height: min(85vh, 640px);
   overflow-y: auto;
   background: var(--bg);
-  border-radius: 20px;
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
   padding: 18px 20px 22px;
 }
 
@@ -1069,13 +1162,15 @@ input, textarea {
   pointer-events: none;
 }
 
-/* "📅 Termin"-Button im Chat-Header */
+/* "Termin"-Button im Chat-Header */
 .header-pill-btn {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 6px 12px;
   border-radius: 999px;
   background: var(--bg-secondary);
-  border: 1px solid var(--border);
   color: var(--accent);
   font-size: 13px;
   font-weight: 600;
@@ -1086,8 +1181,9 @@ input, textarea {
 
 /* Favoriten-Stern + "…"-Button in der Raumzeile */
 .room-star {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
-  font-size: 12px;
   color: var(--accent);
 }
 .room-more-btn {
@@ -1098,11 +1194,19 @@ input, textarea {
   display: none;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
   color: var(--text-secondary);
 }
 .room-item:hover .room-more-btn { display: inline-flex; }
 .room-more-btn:hover { background: var(--hover); color: var(--text); }
+
+/* Sektions-Label (Main-Gruppierung): Icon + Titel */
+.mm-room-section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mm-room-section-label svg { flex-shrink: 0; }
 
 /* Kontextmenü der Raumzeile */
 .room-menu {
@@ -1116,23 +1220,25 @@ input, textarea {
   box-shadow: var(--shadow);
 }
 .room-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   width: 100%;
   text-align: left;
   padding: 8px 10px;
   border-radius: 8px;
   font-size: 13.5px;
   color: var(--text);
-  transition: background 0.12s ease;
+  transition: background 0.15s ease;
 }
+.room-menu-item svg { color: var(--text-secondary); flex-shrink: 0; }
 .room-menu-item:hover { background: var(--hover); }
 
 /* Composer-Zusatzbuttons (Anhang, Emoji, Mikrofon) */
 .composer-btn {
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  font-size: 18px;
 }
 .composer-btn:disabled { opacity: 0.4; cursor: default; }
 .composer-btn:disabled:hover { background: none; color: var(--text-secondary); }
@@ -1156,6 +1262,61 @@ input, textarea {
   font-size: 12px;
   color: var(--text-secondary);
   text-align: center;
+}
+
+/* ===================== Desktop-Sidebar: groß + einklappbar ===================== */
+
+/* Der Collapse-Button existiert nur auf dem Desktop (>= 900px). */
+#sidebar-toggle { display: none; }
+
+@media (min-width: 900px) {
+  /* Sidebar-Breite steuert die Spalte; width ist animierbar. */
+  #app { grid-template-columns: auto 1fr; }
+
+  #sidebar {
+    width: 340px;
+    transition: width 0.2s ease;
+  }
+
+  #sidebar-toggle { display: inline-flex; }
+
+  #sidebar.collapsed { width: 76px; }
+
+  /* Header wird zur vertikalen Icon-Spalte: Logo, Collapse, Kalender, Settings */
+  #sidebar.collapsed .sidebar-header {
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 8px 8px;
+  }
+  #sidebar.collapsed .sidebar-header h2 { display: none; }
+  #sidebar.collapsed .sidebar-header .app-badge { order: -2; }
+  #sidebar.collapsed #sidebar-toggle { order: -1; }
+
+  /* Suche + Space-Leiste ausblenden */
+  #sidebar.collapsed .search-wrap,
+  #sidebar.collapsed #space-bar { display: none; }
+
+  /* Raumliste als reine Avatar-Spalte */
+  #sidebar.collapsed #room-list { padding: 4px 8px 12px; }
+  #sidebar.collapsed .room-item {
+    justify-content: center;
+    padding: 6px 0;
+    gap: 0;
+  }
+  #sidebar.collapsed .room-item .avatar {
+    width: 48px;
+    height: 48px;
+    font-size: 19px;
+  }
+  #sidebar.collapsed .room-main,
+  #sidebar.collapsed .room-more-btn { display: none; }
+  #sidebar.collapsed .room-badge-mini { display: flex; }
+
+  /* Main-Gruppierung: Sektions-Header ausblenden, Räume immer zeigen */
+  #sidebar.collapsed .mm-room-section-header { display: none; }
+  #sidebar.collapsed .mm-room-section.collapsed .mm-room-section-body { display: block; }
+  #sidebar.collapsed .room-list-empty { display: none; }
 }
 
 /* ===================== Responsive ===================== */
