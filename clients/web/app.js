@@ -1463,6 +1463,7 @@ async function syncLoop() {
   const generation = ++syncGeneration;
   let backoff = 1000;
   syncToken = localStorage.getItem(LS_SYNC_TOKEN) || null;
+   if (syncToken && rooms.size === 0) syncToken = null; // Reload: Räume liegen nur im RAM, ohne Initial-Sync bliebe die Raumliste leer
 
   while (session && generation === syncGeneration) {
     const params = new URLSearchParams();
