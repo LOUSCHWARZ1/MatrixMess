@@ -1411,3 +1411,8 @@ input, textarea {
 /* ---- Entwurf-Hinweis in der Raumliste ---- */
 .room-draft { color: var(--accent, #8b4df7); font-style: italic; }
 .room-draft-label { font-weight: 600; font-style: normal; }
+
+/* ---- Raum-Drag & Drop ---- */
+.room-item.dragging { opacity: .5; }
+.room-item.drop-before { box-shadow: inset 0 2px 0 var(--accent, #8b4df7); }
+.room-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent, #8b4df7); }

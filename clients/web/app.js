@@ -50,6 +50,8 @@ const LS_SETTINGS = 'mm.settings';
 const LS_CRYPTO_PICKLE = 'mm.cryptoPickle';
 const LS_SIDEBAR_COLLAPSED = 'mm.sidebarCollapsed';
 const LS_DRAFTS = 'mm.drafts';
+const LS_ROOM_ORDER = 'mm.roomOrder';
+const AD_ROOM_ORDER = 'io.matrixmess.roomorder';
 
 const MEMBER_CACHE_MS = 5 * 60 * 1000;
 
@@ -443,6 +445,16 @@ async function initFeatureModules() {
     console.warn('Kalender konnte nicht initialisiert werden:', err);
   }
   updateCalendarBadge();
+
+  // Manuelle Raumreihenfolge vom Server laden (über Geräte synchron).
+  try {
+    const ro = await getAccountData(AD_ROOM_ORDER);
+    if (ro && Array.isArray(ro.order)) {
+      roomOrder = ro.order.filter((x) => typeof x === 'string');
+      try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
+      renderRoomList();
+    }
+  } catch (err) { /* account_data evtl. nicht vorhanden */ }
 
   try {
     initGames({
@@ -1581,9 +1593,93 @@ document.addEventListener('click', (e) => {
   if (roomMenuEl && !roomMenuEl.contains(e.target)) closeRoomMenu();
 });
 
+/* ---------- Manuelle Raumreihenfolge (Drag & Drop) ---------- */
+
+let roomOrder = [];
+(function loadRoomOrder() {
+  try {
+    const raw = localStorage.getItem(LS_ROOM_ORDER);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) roomOrder = arr.filter((x) => typeof x === 'string');
+    }
+  } catch (e) { /* ignorieren */ }
+})();
+
+let roomOrderSaveTimer = null;
+function saveRoomOrder() {
+  try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
+  clearTimeout(roomOrderSaveTimer);
+  roomOrderSaveTimer = setTimeout(() => {
+    putAccountData(AD_ROOM_ORDER, { order: roomOrder });
+  }, 800);
+}
+
+/** Manuell angeordnete Räume zuerst (in gespeicherter Reihenfolge), Rest nach Aktivität. */
+function sortRooms(list) {
+  const pos = new Map();
+  roomOrder.forEach((id, i) => pos.set(id, i));
+  return list.slice().sort((a, b) => {
+    const pa = pos.has(a.roomId);
+    const pb = pos.has(b.roomId);
+    if (pa && pb) return pos.get(a.roomId) - pos.get(b.roomId);
+    if (pa) return -1;
+    if (pb) return 1;
+    return b.lastEventTs - a.lastEventTs;
+  });
+}
+
+let draggedRoomId = null;
+
+function attachRoomDrag(item, room) {
+  item.draggable = true;
+  item.addEventListener('dragstart', (e) => {
+    draggedRoomId = room.roomId;
+    item.classList.add('dragging');
+    try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', room.roomId); } catch (err) { /* */ }
+  });
+  item.addEventListener('dragend', () => {
+    item.classList.remove('dragging');
+    draggedRoomId = null;
+    document.querySelectorAll('.room-item.drop-before, .room-item.drop-after')
+      .forEach((n) => n.classList.remove('drop-before', 'drop-after'));
+  });
+  item.addEventListener('dragover', (e) => {
+    if (!draggedRoomId || draggedRoomId === room.roomId) return;
+    e.preventDefault();
+    const r = item.getBoundingClientRect();
+    const after = (e.clientY - r.top) > r.height / 2;
+    item.classList.toggle('drop-after', after);
+    item.classList.toggle('drop-before', !after);
+  });
+  item.addEventListener('dragleave', () => {
+    item.classList.remove('drop-before', 'drop-after');
+  });
+  item.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const after = item.classList.contains('drop-after');
+    item.classList.remove('drop-before', 'drop-after');
+    reorderRoom(draggedRoomId, room.roomId, after);
+  });
+}
+
+function reorderRoom(fromId, targetId, after) {
+  if (!fromId || fromId === targetId) return;
+  // Aktuelle Gesamtreihenfolge als Basis nehmen und den gezogenen Raum umsetzen.
+  const order = sortRooms([...rooms.values()]).map((r) => r.roomId);
+  const fromIdx = order.indexOf(fromId);
+  if (fromIdx >= 0) order.splice(fromIdx, 1);
+  let targetIdx = order.indexOf(targetId);
+  if (targetIdx < 0) return;
+  order.splice(after ? targetIdx + 1 : targetIdx, 0, fromId);
+  roomOrder = order;
+  saveRoomOrder();
+  renderRoomList();
+}
+
 function renderRoomList() {
   const query = roomSearchEl.value.trim().toLowerCase();
-  const sorted = [...rooms.values()].sort((a, b) => b.lastEventTs - a.lastEventTs);
+  const sorted = sortRooms([...rooms.values()]);
   roomListEl.textContent = '';
   closeRoomMenu();
 
@@ -1623,7 +1719,13 @@ function renderRoomList() {
       roomListEl.appendChild(secEl);
     }
   } else {
-    for (const room of visible) roomListEl.appendChild(buildRoomItem(room));
+    // Drag & Drop nur in der flachen Liste ohne aktive Suche.
+    const allowDrag = !query;
+    for (const room of visible) {
+      const item = buildRoomItem(room);
+      if (allowDrag) attachRoomDrag(item, room);
+      roomListEl.appendChild(item);
+    }
   }
 
   if (!visible.length) {
