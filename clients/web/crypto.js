@@ -576,6 +576,10 @@ export class CryptoEngine {
 
   /** Bewegt den Verifizierungs-Fluss voran (accept/startSas/getVerification). */
   async _advanceVerification() {
+    // Reentrancy-Guard: mehrere Change-Callbacks können quasi-gleichzeitig
+    // feuern; ohne Lock könnten zwei startSas()-Aufrufe ein Glare auslösen.
+    if (this._vAdvancing) { this._vAdvancePending = true; return; }
+    this._vAdvancing = true;
     try {
       const req = this._vreq;
       if (req && !req.isDone() && !req.isCancelled()) {
@@ -612,8 +616,15 @@ export class CryptoEngine {
       }
     } catch (err) {
       console.warn('[crypto] Verifizierung konnte nicht fortgesetzt werden:', err);
+    } finally {
+      this._vAdvancing = false;
     }
     this._emitVerificationChange();
+    // Während des Laufs eingegangene Änderungen nachziehen.
+    if (this._vAdvancePending) {
+      this._vAdvancePending = false;
+      await this._advanceVerification();
+    }
   }
 
   /** Bestätigt, dass die Emoji auf beiden Geräten übereinstimmen. */
