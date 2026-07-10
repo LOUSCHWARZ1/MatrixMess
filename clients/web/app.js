@@ -421,21 +421,18 @@ function putAccountData(type, content) {
 /* ---------- Feature-Module: Bereiche (Spaces) & Kalender ---------- */
 
 async function initFeatureModules() {
-  spaces.renderSpaceBar(spaceBarEl);
   try {
     await spaces.initSpaces({
       getRooms: () => [...rooms.values()],
       getAccountData,
       putAccountData,
       onChange: () => {
-        spaces.renderSpaceBar(spaceBarEl);
         renderRoomList();
       },
     });
   } catch (err) {
     console.warn('Bereiche konnten nicht initialisiert werden:', err);
   }
-  spaces.renderSpaceBar(spaceBarEl);
   renderRoomList();
   try {
     await initCalendar({
@@ -1686,64 +1683,117 @@ function reorderRoom(fromId, targetId, after) {
   renderRoomList();
 }
 
+/* ---------- Vertikale Bereichs-Navigation (Baum) ---------- */
+
+const LS_NAV_COLLAPSED = 'mm.navCollapsed';
+const navCollapsed = new Set();
+(function loadNavCollapsed() {
+  try {
+    const raw = localStorage.getItem(LS_NAV_COLLAPSED);
+    if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) arr.forEach((k) => navCollapsed.add(k)); }
+  } catch (e) { /* */ }
+})();
+function toggleNavCollapsed(key) {
+  if (navCollapsed.has(key)) navCollapsed.delete(key); else navCollapsed.add(key);
+  try { localStorage.setItem(LS_NAV_COLLAPSED, JSON.stringify([...navCollapsed])); } catch (e) { /* */ }
+  renderRoomList();
+}
+
+/** Gehört ein Raum zu einem Bereich (Bridge-Erkennung oder manuelle Zuordnung)? */
+function roomInSpaceId(room, id) {
+  if (id === 'all') return true;
+  if (id === 'main') return spaces.isFavorite(room.roomId);
+  const assigned = spaces.getRoomSpaceIds(room.roomId) || [];
+  if (id.startsWith('bridge:')) return spaces.detectBridge(room) === id.slice(7) || assigned.includes(id);
+  return assigned.includes(id);
+}
+
+function createBereichPrompt() {
+  const title = window.prompt('Name des neuen Bereichs:');
+  if (title && title.trim()) {
+    spaces.createCustomSpace({ title: title.trim() }); // onChange rendert neu
+  }
+}
+
+/** Hängt eine einklappbare Navigations-Sektion an die Raumliste an. */
+function appendNavSection(key, opts, title, roomsArr) {
+  const collapsed = navCollapsed.has(key);
+  const sec = el('div', 'nav-section');
+  if (collapsed) sec.classList.add('collapsed');
+
+  const header = el('button', 'nav-section-header');
+  header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  const chev = el('span', 'nav-section-chevron');
+  chev.appendChild(icon('chevron-down', 12));
+  header.appendChild(chev);
+  if (opts && opts.iconName) header.appendChild(icon(opts.iconName, 14));
+  else if (opts && opts.emoji) header.appendChild(el('span', 'nav-section-emoji', opts.emoji));
+  header.appendChild(el('span', 'nav-section-label', title));
+  header.appendChild(el('span', 'nav-section-count', String(roomsArr.length)));
+  header.addEventListener('click', () => toggleNavCollapsed(key));
+  sec.appendChild(header);
+
+  const body = el('div', 'nav-section-body');
+  for (const room of roomsArr) {
+    const item = buildRoomItem(room);
+    attachRoomDrag(item, room);
+    body.appendChild(item);
+  }
+  sec.appendChild(body);
+  roomListEl.appendChild(sec);
+}
+
 function renderRoomList() {
   const query = roomSearchEl.value.trim().toLowerCase();
-  const sorted = sortRooms([...rooms.values()]);
   roomListEl.textContent = '';
   closeRoomMenu();
+  const all = sortRooms([...rooms.values()]);
 
-  const visible = [];
-  for (const room of sorted) {
-    const name = roomDisplayName(room);
-    if (query && !name.toLowerCase().includes(query)) continue;
-    if (!spaces.roomInActiveSpace(room)) continue;
-    visible.push(room);
+  // Suche: flache, gefilterte Liste über alle Räume.
+  if (query) {
+    const hits = all.filter((r) => roomDisplayName(r).toLowerCase().includes(query));
+    for (const room of hits) roomListEl.appendChild(buildRoomItem(room));
+    if (!hits.length) roomListEl.appendChild(el('div', 'room-list-empty', 'Keine Räume gefunden'));
+    return;
   }
 
-  if (spaces.getActiveSpaceId() === 'main' && visible.length) {
-    // Main-Bereich: nach Herkunft gruppiert, Sektionen einklappbar
-    for (const section of spaces.groupRoomsForMain(visible)) {
-      const secEl = el('div', 'mm-room-section');
-      if (section.collapsed) secEl.classList.add('collapsed');
-
-      const header = el('button', 'mm-room-section-header');
-      header.setAttribute('aria-expanded', section.collapsed ? 'false' : 'true');
-      const chevron = el('span', 'mm-room-section-chevron');
-      chevron.appendChild(icon('chevron-down', 12));
-      header.appendChild(chevron);
-      const label = el('span', 'mm-room-section-label');
-      if (section.key === 'matrix') label.appendChild(icon('globe', 13));
-      else label.appendChild(el('span', null, section.icon));
-      label.appendChild(el('span', null, section.title));
-      header.appendChild(label);
-      header.appendChild(el('span', 'mm-room-section-count', String(section.rooms.length)));
-      header.addEventListener('click', () => {
-        spaces.toggleSectionCollapsed(section.key); // onChange rendert neu
-      });
-      secEl.appendChild(header);
-
-      const body = el('div', 'mm-room-section-body');
-      for (const room of section.rooms) body.appendChild(buildRoomItem(room));
-      secEl.appendChild(body);
-      roomListEl.appendChild(secEl);
-    }
-  } else {
-    // Drag & Drop nur in der flachen Liste ohne aktive Suche.
-    const allowDrag = !query;
-    for (const room of visible) {
-      const item = buildRoomItem(room);
-      if (allowDrag) attachRoomDrag(item, room);
-      roomListEl.appendChild(item);
-    }
+  if (!rooms.size) {
+    roomListEl.appendChild(el('div', 'room-list-empty', 'Noch keine Räume – warte auf den ersten Sync …'));
+    return;
   }
 
-  if (!visible.length) {
-    let msg;
-    if (query) msg = 'Keine Räume gefunden';
-    else if (rooms.size && spaces.getActiveSpaceId() !== 'all') msg = 'Keine Räume in diesem Bereich';
-    else msg = 'Noch keine Räume – warte auf den ersten Sync …';
-    roomListEl.appendChild(el('div', 'room-list-empty', msg));
+  // Kopf "Bereiche" mit Erstellen-Button.
+  const head = el('div', 'nav-head');
+  head.appendChild(el('span', 'nav-head-title', 'Bereiche'));
+  const addBtn = el('button', 'nav-add-btn');
+  addBtn.title = 'Bereich erstellen';
+  addBtn.setAttribute('aria-label', 'Bereich erstellen');
+  addBtn.appendChild(icon('plus', 16));
+  addBtn.addEventListener('click', createBereichPrompt);
+  head.appendChild(addBtn);
+  roomListEl.appendChild(head);
+
+  const spaceList = spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge');
+  const inAnySpace = (r) => spaceList.some((s) => roomInSpaceId(r, s.id));
+
+  // Bereiche (Bridges + eigene) mit ihren zugeordneten Räumen.
+  for (const sp of spaceList) {
+    const roomsIn = all.filter((r) => roomInSpaceId(r, sp.id));
+    if (!roomsIn.length) continue;
+    appendNavSection('sp:' + sp.id, { emoji: sp.icon }, sp.title, roomsIn);
   }
+
+  // Favoriten (können zusätzlich in Bereichen liegen – Mehrfachzuordnung ist gewollt).
+  const favorites = all.filter((r) => spaces.isFavorite(r.roomId));
+  if (favorites.length) appendNavSection('fav', { iconName: 'star-filled' }, 'Favoriten', favorites);
+
+  // Direktnachrichten (nicht in einem Bereich, keine Favoriten).
+  const dms = all.filter((r) => r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
+  if (dms.length) appendNavSection('dm', { iconName: 'user' }, 'Direktnachrichten', dms);
+
+  // Weitere Räume.
+  const other = all.filter((r) => !r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
+  if (other.length) appendNavSection('other', { iconName: 'folder' }, 'Weitere', other);
 }
 
 /* ========================================================================
