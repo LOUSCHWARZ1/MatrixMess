@@ -3038,6 +3038,100 @@ function initSidebarCollapsed() {
   applySidebarCollapsed(collapsedState);
 }
 
+/* ---------- Schnellwechsler (Strg/Cmd+K) ---------- */
+
+let quickSwitcherEl = null;
+let quickSwitcherIndex = 0;
+
+function openQuickSwitcher() {
+  if (!session || quickSwitcherEl) return;
+  const overlay = el('div', 'quick-switcher-overlay');
+  overlay.id = 'quick-switcher';
+  const panel = el('div', 'quick-switcher');
+
+  const inputWrap = el('div', 'qs-input-wrap');
+  inputWrap.appendChild(icon('search', 18));
+  const input = el('input', 'qs-input');
+  input.type = 'text';
+  input.placeholder = 'Zu Raum wechseln …';
+  input.setAttribute('aria-label', 'Raum suchen');
+  inputWrap.appendChild(input);
+  panel.appendChild(inputWrap);
+
+  const list = el('div', 'qs-list');
+  panel.appendChild(list);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  quickSwitcherEl = overlay;
+  quickSwitcherIndex = 0;
+
+  const renderList = () => {
+    const q = input.value.trim().toLowerCase();
+    const matches = [...rooms.values()]
+      .map((room) => ({ room, name: roomDisplayName(room) }))
+      .filter((x) => !q || x.name.toLowerCase().includes(q))
+      .sort((a, b) => b.room.lastEventTs - a.room.lastEventTs)
+      .slice(0, 40);
+    if (quickSwitcherIndex >= matches.length) quickSwitcherIndex = Math.max(0, matches.length - 1);
+    list.textContent = '';
+    matches.forEach((x, i) => {
+      const item = el('div', 'qs-item');
+      if (i === quickSwitcherIndex) item.classList.add('active');
+      const av = el('div', 'qs-avatar');
+      setAvatar(av, x.room.roomId, x.name, roomAvatarMxc(x.room));
+      item.appendChild(av);
+      const meta = el('div', 'qs-meta');
+      meta.appendChild(el('div', 'qs-name', x.name));
+      meta.appendChild(el('div', 'qs-preview', x.room.lastPreview || ''));
+      item.appendChild(meta);
+      item.addEventListener('click', () => { closeQuickSwitcher(); openRoom(x.room.roomId); });
+      item.addEventListener('mousemove', () => {
+        if (quickSwitcherIndex !== i) { quickSwitcherIndex = i; highlightQs(list); }
+      });
+      list.appendChild(item);
+    });
+    if (!matches.length) list.appendChild(el('div', 'qs-empty', 'Keine Räume gefunden'));
+    list._matches = matches;
+  };
+
+  input.addEventListener('input', () => { quickSwitcherIndex = 0; renderList(); });
+  input.addEventListener('keydown', (e) => {
+    const matches = list._matches || [];
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      quickSwitcherIndex = Math.min(quickSwitcherIndex + 1, matches.length - 1);
+      highlightQs(list);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      quickSwitcherIndex = Math.max(quickSwitcherIndex - 1, 0);
+      highlightQs(list);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const m = matches[quickSwitcherIndex];
+      if (m) { closeQuickSwitcher(); openRoom(m.room.roomId); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeQuickSwitcher();
+    }
+  });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeQuickSwitcher(); });
+
+  renderList();
+  input.focus();
+}
+
+function highlightQs(list) {
+  const items = list.querySelectorAll('.qs-item');
+  items.forEach((it, i) => {
+    it.classList.toggle('active', i === quickSwitcherIndex);
+    if (i === quickSwitcherIndex) it.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function closeQuickSwitcher() {
+  if (quickSwitcherEl) { quickSwitcherEl.remove(); quickSwitcherEl = null; }
+}
+
 /* ---------- Einstellungen ---------- */
 
 settingsBtn.addEventListener('click', () => {
@@ -3054,6 +3148,12 @@ settingsOverlay.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !settingsOverlay.classList.contains('hidden')) {
     settingsOverlay.classList.add('hidden');
+  }
+  // Strg/Cmd+K: Schnellwechsler
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    if (quickSwitcherEl) closeQuickSwitcher();
+    else openQuickSwitcher();
   }
 });
 
