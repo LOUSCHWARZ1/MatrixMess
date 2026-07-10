@@ -6,6 +6,14 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#8B4DF7">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MatrixMess">
 <title>MatrixMess</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="spaces.css">
@@ -140,6 +148,11 @@
           <button data-textsize-opt="large" role="radio">Groß</button>
           <button data-textsize-opt="xlarge" role="radio">Sehr groß</button>
         </div>
+        <label class="toggle-row">
+          <span>Handy-Modus (kompaktes Layout)</span>
+          <input id="forcemobile-toggle" type="checkbox">
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </label>
       </section>
 
       <section class="settings-section">

@@ -1337,6 +1337,37 @@ input, textarea {
   .mine .msg-actions { right: calc(100% + 4px); }
 }
 
+/* ---- Erzwungener Handy-Modus (per Einstellung umschaltbar) ---- */
+html.force-mobile #app { grid-template-columns: 1fr; }
+html.force-mobile #sidebar { display: flex; }
+html.force-mobile #chat { display: none; }
+html.force-mobile #app.show-chat #sidebar { display: none; }
+html.force-mobile #app.show-chat #chat { display: flex; }
+html.force-mobile #back-btn { display: inline-flex; }
+html.force-mobile #sidebar-toggle { display: none; }
+html.force-mobile .bubble-wrap { max-width: 82%; }
+html.force-mobile .search-wrap,
+html.force-mobile #space-bar { display: block; }
+/* Auf breiten Bildschirmen als zentrierter Handy-Rahmen darstellen. */
+@media (min-width: 620px) {
+  html.force-mobile body {
+    background: #0a0a0c;
+    display: flex;
+    justify-content: center;
+  }
+  html.force-mobile #app,
+  html.force-mobile #login-screen {
+    width: 100%;
+    max-width: 430px;
+    height: 100vh;
+    max-height: 932px;
+    margin: auto;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 30px 80px rgba(0,0,0,.5);
+    border-radius: 0;
+    overflow: hidden;
+  }
+}
+
 /* ---- Schnellwechsler (Strg/Cmd+K) ---- */
 .quick-switcher-overlay {
   position: fixed;
