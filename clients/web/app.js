@@ -22,6 +22,13 @@ import {
   getUpcomingCount,
 } from './calendar.js';
 
+// Clickjacking-Schutz: GitHub Pages kann kein frame-ancestors als HTTP-Header
+// senden (Meta-CSP ignoriert die Direktive) - Framebusting als Best-Effort.
+if (window.top !== window.self) {
+  try { window.top.location = window.self.location; }
+  catch (e) { document.documentElement.textContent = ''; }
+}
+
 /* ========================================================================
  * Konstanten & DOM-Referenzen
  * ====================================================================== */
@@ -790,12 +797,20 @@ async function fetchMxcArrayBuffer(mxc) {
   const server = enc(m[1]);
   const mediaId = enc(m[2]);
   const authUrl = `${session.baseUrl}/_matrix/client/v1/media/download/${server}/${mediaId}`;
+  let authStatus = 0;
   try {
     const res = await fetch(authUrl, {
       headers: { Authorization: 'Bearer ' + session.accessToken },
     });
     if (res.ok) return await res.arrayBuffer();
-  } catch (e) { /* weiter zum Fallback */ }
+    authStatus = res.status;
+  } catch (e) { /* Netzwerkfehler: Fallback versuchen */ }
+  // Legacy-Fallback nur, wenn der authentifizierte Endpoint fehlt (alter
+  // Server, 404) oder gar nicht erreichbar war - 401/403/429 durchreichen,
+  // statt sie mit einem zweiten, unautorisierten Request zu maskieren.
+  if (authStatus !== 0 && authStatus !== 404 && authStatus !== 400) {
+    throw new Error('Medien-Download fehlgeschlagen (' + authStatus + ')');
+  }
   const legacyUrl = `${session.baseUrl}/_matrix/media/v3/download/${server}/${mediaId}`;
   const res2 = await fetch(legacyUrl);
   if (!res2.ok) throw new Error('Medien-Download fehlgeschlagen (' + res2.status + ')');
@@ -2391,6 +2406,10 @@ bannerCancel.addEventListener('click', cancelBanner);
 /** Sendet einen m.room.message-Content mit Pending-Echo. In E2EE-Räumen wird
  *  der Event-Content verschlüsselt (analog sendCurrentMessage). */
 async function sendRoomMessage(room, content) {
+  // Klartext-Medien (url ohne file-Objekt) duerfen E2EE-Raeume nie verlassen.
+  if (room.isEncrypted && content && content.url && !content.file) {
+    throw new ApiError('Unverschlüsselte Medien in E2EE-Räumen blockiert', 'MM_E2EE_MEDIA', 0);
+  }
   if (room.isEncrypted && !cryptoReady) {
     toast('Verschlüsselung nicht verfügbar – Senden in diesem Raum ist derzeit nicht möglich.');
     throw new ApiError('Verschlüsselung nicht verfügbar', 'MM_NO_CRYPTO', 0);
@@ -2490,6 +2509,13 @@ function readImageSize(file) {
 }
 
 async function uploadAndSendFile(room, file) {
+  // Defense-in-depth: nie unverschluesselte Medien in E2EE-Raeume, auch wenn
+  // ein Aufrufer die Pruefung vergisst oder der Raum waehrenddessen
+  // verschluesselt wurde.
+  if (room.isEncrypted) {
+    toast('Medienversand in verschlüsselten Räumen folgt.');
+    throw new ApiError('Medien in E2EE-Räumen noch nicht unterstützt', 'MM_E2EE_MEDIA', 0);
+  }
   const mime = file.type || 'application/octet-stream';
   let msgtype = 'm.file';
   if (mime.startsWith('image/')) msgtype = 'm.image';
@@ -2687,6 +2713,9 @@ function showApp() {
   showChatPlaceholder();
   renderRoomList();
   renderSettingsPanel();
+  // Spaces + Kalender initialisieren (account_data laden, Space-Leiste rendern).
+  // Fire-and-forget: Fehler duerfen Login/Sync nie blockieren.
+  initFeatureModules().catch((e) => console.warn('Feature-Module:', e));
 }
 
 loginForm.addEventListener('submit', async (e) => {
@@ -2761,6 +2790,51 @@ themeSeg.addEventListener('click', (e) => {
   settings.theme = btn.dataset.themeOpt;
   saveSettings();
   applySettings();
+});
+
+densitySeg.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-density-opt]');
+  if (!btn) return;
+  settings.density = btn.dataset.densityOpt;
+  saveSettings();
+  applySettings();
+});
+
+textSizeSeg.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-textsize-opt]');
+  if (!btn) return;
+  settings.textSize = btn.dataset.textsizeOpt;
+  saveSettings();
+  applySettings();
+});
+
+linkPreviewToggle.addEventListener('change', () => {
+  settings.linkPreviews = linkPreviewToggle.checked;
+  saveSettings();
+  applySettings();
+  if (activeRoomId) renderTimeline();
+});
+
+inlineMediaToggle.addEventListener('change', () => {
+  settings.inlineMedia = inlineMediaToggle.checked;
+  saveSettings();
+  applySettings();
+  if (activeRoomId) renderTimeline();
+});
+
+enterSendToggle.addEventListener('change', () => {
+  settings.enterToSend = enterSendToggle.checked;
+  saveSettings();
+});
+
+readReceiptToggle.addEventListener('change', () => {
+  settings.readReceipts = readReceiptToggle.checked;
+  saveSettings();
+});
+
+typingToggle.addEventListener('change', () => {
+  settings.typingIndicators = typingToggle.checked;
+  saveSettings();
 });
 
 notifToggle.addEventListener('change', async () => {
