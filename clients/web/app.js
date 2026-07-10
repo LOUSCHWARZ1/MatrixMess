@@ -284,6 +284,17 @@ const AD_SETTINGS = 'io.matrixmess.settings';
 let settingsSyncTimer = null;
 // forceMobile ist geräteabhängig (Bildschirmgröße) und wird NICHT synchronisiert.
 const DEVICE_LOCAL_SETTINGS = ['forceMobile', 'notifications'];
+// Kanonische Fassung des zuletzt selbst gesendeten Settings-Blobs, um das
+// eigene /sync-Echo zu erkennen und NICHT anzuwenden (sonst Lost-Update-Race).
+let lastSentSettingsJson = null;
+
+/** Kanonischer JSON-String der geteilten Einstellungen (sortierte Schlüssel). */
+function canonicalSharedSettings(obj) {
+  const keys = Object.keys(obj || {}).filter((k) => !DEVICE_LOCAL_SETTINGS.includes(k)).sort();
+  const out = {};
+  for (const k of keys) out[k] = obj[k];
+  return JSON.stringify(out);
+}
 
 function saveSettings() {
   try {
@@ -298,15 +309,19 @@ function saveSettings() {
     for (const k of Object.keys(settings)) {
       if (!DEVICE_LOCAL_SETTINGS.includes(k)) shared[k] = settings[k];
     }
+    lastSentSettingsJson = canonicalSharedSettings(shared);
     Promise.resolve(putAccountData(AD_SETTINGS, shared))
       .catch((e) => console.warn('Einstellungen-Sync fehlgeschlagen:', e));
   }, 800);
 }
 
 /** Übernimmt geräteübergreifende Einstellungen aus account_data (ohne
- *  geräteabhängige Optionen zu überschreiben). */
+ *  geräteabhängige Optionen zu überschreiben). Das eigene Echo wird ignoriert. */
 function applyRemoteSettings(content) {
   if (!content || typeof content !== 'object') return;
+  // Eigenes Echo? Dann nichts tun – sonst würde es eine zwischenzeitliche
+  // lokale Änderung zurücksetzen.
+  if (canonicalSharedSettings(content) === lastSentSettingsJson) return;
   let changed = false;
   for (const k of Object.keys(content)) {
     if (DEVICE_LOCAL_SETTINGS.includes(k)) continue;
@@ -1429,10 +1444,14 @@ function processSync(data) {
       // Einstellungen von einem anderen Gerät live übernehmen.
       applyRemoteSettings(ev.content);
     } else if (ev.type === AD_ROOM_ORDER && ev.content && Array.isArray(ev.content.order)) {
-      // Raumreihenfolge eines anderen Geräts live übernehmen.
-      roomOrder = ev.content.order.filter((x) => typeof x === 'string');
-      try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
-      renderRoomList();
+      // Raumreihenfolge eines anderen Geräts live übernehmen – eigenes Echo
+      // ignorieren, sonst würde eine zwischenzeitliche Umsortierung zurückspringen.
+      const incoming = ev.content.order.filter((x) => typeof x === 'string');
+      if (JSON.stringify(incoming) !== lastSentRoomOrderJson) {
+        roomOrder = incoming;
+        try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
+        renderRoomList();
+      }
     }
   }
 
@@ -1674,10 +1693,12 @@ let roomOrder = [];
 })();
 
 let roomOrderSaveTimer = null;
+let lastSentRoomOrderJson = null;
 function saveRoomOrder() {
   try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
   clearTimeout(roomOrderSaveTimer);
   roomOrderSaveTimer = setTimeout(() => {
+    lastSentRoomOrderJson = JSON.stringify(roomOrder);
     Promise.resolve(putAccountData(AD_ROOM_ORDER, { order: roomOrder }))
       .catch((e) => console.warn('Raumreihenfolge-Sync fehlgeschlagen:', e));
   }, 800);
