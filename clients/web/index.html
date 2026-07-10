@@ -22,6 +22,7 @@
 <link rel="stylesheet" href="emoji.css">
 <link rel="stylesheet" href="calendar.css">
 <link rel="stylesheet" href="games.css">
+<link rel="stylesheet" href="room-info.css">
 </head>
 <body>
 
@@ -82,6 +83,7 @@
             <div id="chat-sub"></div>
           </div>
           <button id="event-btn" class="header-pill-btn" title="Termin planen" aria-label="Termin planen"><span>Termin</span></button>
+          <button id="roominfo-btn" class="icon-btn" title="Rauminfo" aria-label="Rauminfo anzeigen"></button>
         </header>
 
         <div id="decrypt-banner" class="hidden">
@@ -121,6 +123,17 @@
         </footer>
       </div>
     </main>
+  </div>
+
+  <!-- ===== Raum-Info-Panel ===== -->
+  <div id="roominfo-overlay" class="hidden">
+    <div id="roominfo-panel" role="dialog" aria-modal="true" aria-labelledby="roominfo-title">
+      <header class="roominfo-header">
+        <h3 id="roominfo-title"></h3>
+        <button id="roominfo-close" class="icon-btn" title="Schließen" aria-label="Schließen"></button>
+      </header>
+      <div id="roominfo-body"></div>
+    </div>
   </div>
 
   <!-- ===== Geräte-Verifizierung ===== -->

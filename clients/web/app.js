@@ -32,6 +32,13 @@ import {
   rollDice,
   flipCoin,
 } from './games.js';
+import {
+  initRoomInfo,
+  openRoomInfo,
+  closeRoomInfo,
+  isRoomInfoOpen,
+  refreshRoomInfo,
+} from './room-info.js';
 
 // Clickjacking-Schutz: GitHub Pages kann kein frame-ancestors als HTTP-Header
 // senden (Meta-CSP ignoriert die Direktive) - Framebusting als Best-Effort.
@@ -129,6 +136,7 @@ const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
 const calendarBadge = $('#calendar-badge');
 const eventBtn = $('#event-btn');
+const roomInfoBtn = $('#roominfo-btn');
 const composerEl = $('#composer');
 const attachBtn = $('#attach-btn');
 const gameBtn = $('#game-btn');
@@ -1123,6 +1131,7 @@ function getRoom(roomId) {
       roomId,
       explicitName: null,
       avatarMxc: null,
+      topic: null,
       heroes: [],
       members: new Map(),       // userId -> { displayname, avatarUrl }
       lastEventTs: 0,
@@ -1231,6 +1240,9 @@ function applyStateEvent(room, ev) {
       break;
     case 'm.room.avatar':
       room.avatarMxc = c.url || null;
+      break;
+    case 'm.room.topic':
+      room.topic = c.topic || null;
       break;
     case 'm.room.encryption':
       room.isEncrypted = true;
@@ -1597,6 +1609,7 @@ function processSync(data) {
       renderChatHeader(room);
       renderTypingBar(room);
       renderTimeline(nearBottom ? 'bottom' : 'keep');
+      refreshRoomInfo(activeRoomId);
       if (newRemoteInActive > 0) {
         if (nearBottom) {
           if (!document.hidden) sendReadReceipt(room);
@@ -2024,6 +2037,7 @@ function openRoom(roomId) {
   if (activeRoomId !== roomId) {
     cancelBanner();
     unseenCount = 0;
+    if (isRoomInfoOpen()) closeRoomInfo();
   }
   activeRoomId = roomId;
   chatEmptyEl.classList.add('hidden');
@@ -3308,6 +3322,10 @@ eventBtn.addEventListener('click', () => {
   openEventPlanner({ roomId: room.roomId, roomName: roomDisplayName(room) });
 });
 
+roomInfoBtn.addEventListener('click', () => {
+  if (activeRoomId) openRoomInfo(activeRoomId);
+});
+
 calendarBtn.addEventListener('click', () => {
   document.body.appendChild(renderCalendarPanel());
 });
@@ -3412,6 +3430,7 @@ function mountStaticIcons() {
   // Buttons, bei denen das Icon VOR bestehendem Inhalt (Badge/Label) sitzt:
   calendarBtn.insertBefore(icon('calendar', 20), calendarBtn.firstChild);
   eventBtn.insertBefore(icon('calendar-plus', 15), eventBtn.firstChild);
+  roomInfoBtn.appendChild(icon('user', 20));
   scrollDownBtn.insertBefore(icon('arrow-down', 20), scrollDownBtn.firstChild);
 }
 
@@ -3750,6 +3769,11 @@ recoveryForm.addEventListener('submit', async (e) => {
 function init() {
   mountStaticIcons();
   initSidebarCollapsed();
+  initRoomInfo({
+    icon, el, getRoom, roomDisplayName, memberName, roomAvatarMxc,
+    setAvatar, avatarColor, getJoinedMembers, getAttachmentBlob,
+    openImageLightbox, extractFirstUrl, formatBytes,
+  });
   applySettings();
   autoGrowComposer();
   session = loadSession();
