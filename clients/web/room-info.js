@@ -196,29 +196,26 @@ function renderMedia(room, c) {
   for (const it of items) {
     const cell = D.el('button', 'ri-media-cell');
     const isVideo = it.content.msgtype === 'm.video';
-    if (isVideo) cell.appendChild(D.icon('play', 22));
     cell.title = it.content.body || (isVideo ? 'Video' : 'Bild');
-    // Thumbnail lazy laden.
-    D.getAttachmentBlob(it.content).then((blob) => {
-      if (!cell.isConnected) return;
-      const url = URL.createObjectURL(blob);
-      if (isVideo) {
-        const v = document.createElement('video');
-        v.src = url; v.muted = true; v.preload = 'metadata';
-        cell.insertBefore(v, cell.firstChild);
-      } else {
+    if (isVideo) {
+      // Kein Voll-Download nur fürs Raster: Play-Symbol; Abspielen im Chat.
+      cell.classList.add('ri-media-video');
+      cell.appendChild(D.icon('play', 22));
+    } else {
+      // Bild lazy laden.
+      D.getAttachmentBlob(it.content).then((blob) => {
+        if (!cell.isConnected) return;
         const img = document.createElement('img');
-        img.alt = ''; img.src = url;
+        img.alt = ''; img.src = URL.createObjectURL(blob);
         cell.appendChild(img);
-      }
-    }).catch(() => { /* Zelle bleibt leer */ });
-    cell.addEventListener('click', () => {
-      if (isVideo) return; // Videos im Chat abspielen
-      D.openImageLightbox({
-        getBlobUrl: async () => URL.createObjectURL(await D.getAttachmentBlob(it.content)),
-        filename: it.content.body || 'Bild',
+      }).catch(() => { /* Zelle bleibt leer */ });
+      cell.addEventListener('click', () => {
+        D.openImageLightbox({
+          getBlobUrl: async () => URL.createObjectURL(await D.getAttachmentBlob(it.content)),
+          filename: it.content.body || 'Bild',
+        });
       });
-    });
+    }
     grid.appendChild(cell);
   }
   c.appendChild(grid);
