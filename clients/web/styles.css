@@ -1407,3 +1407,7 @@ input, textarea {
 .qs-name { font-size: 15px; font-weight: 600; color: var(--text, #111); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qs-preview { font-size: 13px; color: var(--text-secondary, #888); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qs-empty { padding: 24px; text-align: center; color: var(--text-secondary, #888); }
+
+/* ---- Entwurf-Hinweis in der Raumliste ---- */
+.room-draft { color: var(--accent, #8b4df7); font-style: italic; }
+.room-draft-label { font-weight: 600; font-style: normal; }
