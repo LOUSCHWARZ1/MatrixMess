@@ -120,6 +120,10 @@ const recoverySubmit = $('#recovery-submit');
 const decryptBanner = $('#decrypt-banner');
 const decryptBannerText = $('#decrypt-banner-text');
 const decryptBannerBtn = $('#decrypt-banner-btn');
+const verifyBtn = $('#verify-btn');
+const verifyOverlay = $('#verify-overlay');
+const verifyClose = $('#verify-close');
+const verifyBody = $('#verify-body');
 const sidebarEl = $('#sidebar');
 const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
@@ -396,7 +400,86 @@ function renderCryptoSection() {
     ? 'Ende-zu-Ende-Verschlüsselung: aktiv'
     : 'Ende-zu-Ende-Verschlüsselung: nicht verfügbar';
   recoveryBtn.disabled = !cryptoReady;
+  if (verifyBtn) verifyBtn.disabled = !cryptoReady;
   if (!cryptoReady) recoveryForm.classList.add('hidden');
+}
+
+/* ---------- Geräte-Verifizierung (SAS) ---------- */
+
+let verifyOpen = false;
+
+/** Rendert das Verifizierungs-Overlay aus der aktuellen Zustandsansicht. */
+function renderVerification(view) {
+  if (!verifyBody) return;
+  verifyBody.textContent = '';
+  const v = view || (cryptoEngine && cryptoEngine.getVerificationView && cryptoEngine.getVerificationView()) || { active: false };
+
+  if (v.done) {
+    verifyBody.appendChild(el('p', 'verify-msg', '✓ Dieses Gerät ist jetzt verifiziert.'));
+    const ok = el('button', 'primary-btn', 'Fertig');
+    ok.addEventListener('click', closeVerify);
+    verifyBody.appendChild(ok);
+    return;
+  }
+  if (v.cancelled) {
+    verifyBody.appendChild(el('p', 'verify-msg', 'Die Verifizierung wurde abgebrochen.'));
+    const ok = el('button', 'primary-btn', 'Schließen');
+    ok.addEventListener('click', closeVerify);
+    verifyBody.appendChild(ok);
+    return;
+  }
+  if (v.emoji && v.emoji.length) {
+    verifyBody.appendChild(el('p', 'verify-msg',
+      'Vergleiche diese Emoji mit deinem anderen Gerät. Stimmen sie in gleicher Reihenfolge überein?'));
+    const grid = el('div', 'verify-emoji-grid');
+    for (const e of v.emoji) {
+      const cell = el('div', 'verify-emoji');
+      cell.appendChild(el('div', 'verify-emoji-symbol', e.symbol));
+      cell.appendChild(el('div', 'verify-emoji-desc', e.description));
+      grid.appendChild(cell);
+    }
+    verifyBody.appendChild(grid);
+    const row = el('div', 'verify-actions');
+    const match = el('button', 'primary-btn', 'Stimmt überein');
+    match.disabled = !v.canConfirm;
+    match.addEventListener('click', () => {
+      match.disabled = true;
+      cryptoEngine.confirmVerification().catch(() => {});
+    });
+    const no = el('button', 'danger-btn', 'Stimmt nicht');
+    no.addEventListener('click', () => { cryptoEngine.cancelVerification().catch(() => {}); });
+    row.appendChild(match);
+    row.appendChild(no);
+    verifyBody.appendChild(row);
+    return;
+  }
+  // Wartezustand
+  verifyBody.appendChild(el('p', 'verify-msg',
+    'Warte auf das andere Gerät … Bestätige die Verifizierungsanfrage dort (z. B. in der iPhone-App).'));
+  const cancel = el('button', 'danger-btn', 'Abbrechen');
+  cancel.addEventListener('click', () => { cryptoEngine.cancelVerification().catch(() => {}); });
+  verifyBody.appendChild(cancel);
+}
+
+function openVerify() {
+  if (!verifyOverlay) return;
+  verifyOpen = true;
+  verifyOverlay.classList.remove('hidden');
+  renderVerification();
+}
+
+function closeVerify() {
+  verifyOpen = false;
+  if (verifyOverlay) verifyOverlay.classList.add('hidden');
+}
+
+function onVerificationChange(view) {
+  if (verifyOpen) renderVerification(view);
+  else if (view && view.active && !view.done && !view.cancelled) {
+    // Eingehende Verifizierung eines anderen Geräts: Overlay automatisch öffnen.
+    openVerify();
+    renderVerification(view);
+  }
 }
 
 /* ========================================================================
@@ -711,6 +794,9 @@ async function initCrypto() {
     });
     cryptoEngine = engine;
     cryptoReady = true;
+    if (engine.setVerificationChangeHandler) {
+      engine.setVerificationChangeHandler(onVerificationChange);
+    }
     renderCryptoSection();
     if (activeRoomId) {
       const room = rooms.get(activeRoomId);
@@ -1417,6 +1503,12 @@ async function syncLoop() {
         retryPendingDecryption().catch((err) => {
           console.warn('Retry der Entschlüsselung fehlgeschlagen:', err);
         });
+      }
+
+      // Auf eingehende Geräte-Verifizierungs-Anfragen prüfen (gekapselt –
+      // darf den Sync nie stören).
+      if (cryptoReady && cryptoEngine && cryptoEngine.checkIncomingVerifications) {
+        cryptoEngine.checkIncomingVerifications().catch(() => {});
       }
     } catch (err) {
       clearTimeout(abortTimer);
@@ -3311,6 +3403,7 @@ function mountStaticIcons() {
     ['#mic-btn', 'mic', 20],
     ['#send-btn', 'send', 18],
     ['#settings-close', 'x', 16],
+    ['#verify-close', 'x', 16],
   ];
   for (const [sel, name, size] of mounts) {
     const node = document.querySelector(sel);
@@ -3598,6 +3691,27 @@ recoveryBtn.addEventListener('click', () => {
 });
 
 decryptBannerBtn.addEventListener('click', openRecoveryKeyEntry);
+
+verifyBtn.addEventListener('click', async () => {
+  if (!cryptoReady || !cryptoEngine) { toast('Verschlüsselung ist nicht verfügbar'); return; }
+  settingsOverlay.classList.add('hidden');
+  openVerify();
+  try {
+    await cryptoEngine.startSelfVerification();
+  } catch (err) {
+    verifyBody.textContent = '';
+    verifyBody.appendChild(el('p', 'verify-msg', (err && err.message) || String(err)));
+    const ok = el('button', 'primary-btn', 'Schließen');
+    ok.addEventListener('click', closeVerify);
+    verifyBody.appendChild(ok);
+  }
+});
+
+verifyClose.addEventListener('click', () => {
+  if (cryptoEngine && cryptoEngine.cancelVerification) cryptoEngine.cancelVerification().catch(() => {});
+  closeVerify();
+});
+verifyOverlay.addEventListener('click', (e) => { if (e.target === verifyOverlay) closeVerify(); });
 
 recoveryForm.addEventListener('submit', async (e) => {
   e.preventDefault();
