@@ -1057,7 +1057,10 @@ function updateRoomPreview(room, ev) {
   const ts = ev.ts || 0;
   if (ts >= room.lastEventTs) {
     room.lastEventTs = ts;
-    room.lastPreview = truncate(eventDisplayBody(ev), 90);
+    // Spielzüge sind unsichtbar – als lesbare Vorschau statt "🎮 Zug: B2".
+    room.lastPreview = isGameMove(ev)
+      ? '🎮 Spielzug'
+      : truncate(eventDisplayBody(ev), 90);
     room.lastPreviewSender = ev.sender;
   }
 }
@@ -1441,6 +1444,7 @@ function maybeNotify(room, ev) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (!document.hidden) return;
   if (ev.type !== 'm.room.message' && ev.type !== 'm.room.encrypted') return;
+  if (isGameMove(ev)) return; // versteckte Spielzüge nicht als Push melden
   try {
     const body = memberName(room, ev.sender) + ': ' + truncate(eventDisplayBody(ev), 120);
     const n = new Notification(roomDisplayName(room), { body, tag: 'mm-' + room.roomId });
@@ -1611,22 +1615,23 @@ function saveRoomOrder() {
   try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
   clearTimeout(roomOrderSaveTimer);
   roomOrderSaveTimer = setTimeout(() => {
-    putAccountData(AD_ROOM_ORDER, { order: roomOrder });
+    Promise.resolve(putAccountData(AD_ROOM_ORDER, { order: roomOrder }))
+      .catch((e) => console.warn('Raumreihenfolge-Sync fehlgeschlagen:', e));
   }, 800);
 }
 
-/** Manuell angeordnete Räume zuerst (in gespeicherter Reihenfolge), Rest nach Aktivität. */
+/** Sortierung: noch nicht manuell angeordnete Räume (z. B. brandneue Chats)
+ *  oben nach Aktivität, damit sie nicht unter der manuellen Liste verschwinden;
+ *  darunter die manuell angeordneten Räume in gespeicherter Reihenfolge. */
 function sortRooms(list) {
   const pos = new Map();
   roomOrder.forEach((id, i) => pos.set(id, i));
-  return list.slice().sort((a, b) => {
-    const pa = pos.has(a.roomId);
-    const pb = pos.has(b.roomId);
-    if (pa && pb) return pos.get(a.roomId) - pos.get(b.roomId);
-    if (pa) return -1;
-    if (pb) return 1;
-    return b.lastEventTs - a.lastEventTs;
-  });
+  const pinned = [];
+  const fresh = [];
+  for (const r of list) (pos.has(r.roomId) ? pinned : fresh).push(r);
+  pinned.sort((a, b) => pos.get(a.roomId) - pos.get(b.roomId));
+  fresh.sort((a, b) => b.lastEventTs - a.lastEventTs);
+  return fresh.concat(pinned);
 }
 
 let draggedRoomId = null;
@@ -1843,17 +1848,15 @@ function renderTimeline(mode) {
     timelineEl.appendChild(older);
   }
 
-  const events = room.events;
   // Spielstände deterministisch aus allen Events berechnen (idempotent).
-  const games = collectGameState(events);
+  const games = collectGameState(room.events);
+  // Spielzüge sind unsichtbar – vorab herausfiltern, damit sie Gruppierung
+  // und Datumstrenner nicht verfälschen.
+  const vis = room.events.filter((e) => !isGameMove(e));
   let prevEv = null;
-  for (let i = 0; i < events.length; i++) {
-    const ev = events[i];
-
-    // Spielzüge sind unsichtbar – nur das Spielbrett zählt.
-    if (isGameMove(ev)) continue;
-
-    const nextEv = events[i + 1] || null;
+  for (let i = 0; i < vis.length; i++) {
+    const ev = vis[i];
+    const nextEv = vis[i + 1] || null;
 
     const newDay = !prevEv || startOfDay(prevEv.ts) !== startOfDay(ev.ts);
     if (newDay) {
@@ -1862,15 +1865,19 @@ function renderTimeline(mode) {
       timelineEl.appendChild(sep);
     }
 
-    // Spielstart als interaktive Spielkarte rendern.
+    // Spielstart als interaktive Spielkarte rendern (bricht die Gruppe).
     if (isGameStart(ev)) {
       timelineEl.appendChild(buildGameRow(room, ev, games));
-      prevEv = ev;
+      prevEv = null;
       continue;
     }
 
-    const startsGroup = newDay || !prevEv || prevEv.sender !== ev.sender || ev.ts - prevEv.ts > GROUP_GAP_MS;
-    const endsGroup = !nextEv || nextEv.sender !== ev.sender ||
+    // Spielkarten sind Gruppengrenzen: nicht mit ihnen gruppieren.
+    const prevIsCard = prevEv && isGameStart(prevEv);
+    const nextIsCard = nextEv && isGameStart(nextEv);
+    const startsGroup = newDay || !prevEv || prevIsCard ||
+      prevEv.sender !== ev.sender || ev.ts - prevEv.ts > GROUP_GAP_MS;
+    const endsGroup = !nextEv || nextIsCard || nextEv.sender !== ev.sender ||
       nextEv.ts - ev.ts > GROUP_GAP_MS || startOfDay(nextEv.ts) !== startOfDay(ev.ts);
 
     timelineEl.appendChild(buildMessageRow(room, ev, startsGroup, endsGroup));
@@ -2605,7 +2612,13 @@ async function sendCurrentMessage() {
 
   // Slash-Commands (nur bei neuer Nachricht, nicht beim Bearbeiten/Antworten)
   if (!editTarget && !replyTarget && text.startsWith('/')) {
-    const handled = await runSlashCommand(room, text);
+    let handled = false;
+    try {
+      handled = await runSlashCommand(room, text);
+    } catch (err) {
+      toast('Befehl fehlgeschlagen: ' + err.message);
+      handled = true; // Fehler nicht als Normaltext nachsenden
+    }
     if (handled) { resetComposer(); return; }
   }
 
