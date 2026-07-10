@@ -117,6 +117,9 @@ const recoveryBtn = $('#recovery-btn');
 const recoveryForm = $('#recovery-form');
 const recoveryInput = $('#recovery-input');
 const recoverySubmit = $('#recovery-submit');
+const decryptBanner = $('#decrypt-banner');
+const decryptBannerText = $('#decrypt-banner-text');
+const decryptBannerBtn = $('#decrypt-banner-btn');
 const sidebarEl = $('#sidebar');
 const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
@@ -660,6 +663,16 @@ async function initCrypto() {
       const room = rooms.get(activeRoomId);
       if (room) renderChatHeader(room);
     }
+    // Backup automatisch wiederherstellen, wenn der Recovery Key bereits einmal
+    // eingegeben wurde – so bleiben verschlüsselte Verläufe über Reloads lesbar.
+    engine.tryAutoRestore().then((res) => {
+      if (res && res.imported > 0) {
+        retryPendingDecryption().catch(() => {});
+        if (activeRoomId) renderTimeline('keep');
+        renderRoomList();
+      }
+      updateDecryptionBanner();
+    }).catch(() => { updateDecryptionBanner(); });
   } catch (err) {
     console.warn('Verschlüsselung konnte nicht initialisiert werden:', err);
     cryptoEngine = null;
@@ -681,6 +694,9 @@ function clearCryptoState(userId) {
   pendingDecryption.clear();
   memberCache.clear();
   try { localStorage.removeItem(LS_CRYPTO_PICKLE); } catch (e) { /* */ }
+  if (userId) {
+    try { localStorage.removeItem('mm.recoveryKey.' + userId); } catch (e) { /* */ }
+  }
   if (userId && typeof indexedDB !== 'undefined') {
     const base = 'mm-crypto-' + userId;
     // matrix-sdk-crypto-wasm legt "<name>::matrix-sdk-crypto"(-meta) an.
@@ -807,6 +823,7 @@ async function retryPendingDecryption() {
       renderTimeline(isNearBottom() ? 'bottom' : 'keep');
     }
   }
+  updateDecryptionBanner();
 }
 
 /** Liefert die (max. 5 Minuten gecachten) User-IDs aller Raum-Mitglieder. */
@@ -1817,6 +1834,31 @@ function showChatPlaceholder() {
   appEl.classList.remove('show-chat');
 }
 
+/** Zeigt den Entschlüsselungs-Banner, wenn im aktiven E2EE-Raum Nachrichten
+ *  auf Schlüssel warten – mit prominenter Aufforderung zum Recovery-Key. */
+function updateDecryptionBanner() {
+  if (!decryptBanner) return;
+  const room = activeRoomId ? rooms.get(activeRoomId) : null;
+  const locked = room && room.isEncrypted && cryptoReady &&
+    pendingDecryption.has(room.roomId) && pendingDecryption.get(room.roomId).size > 0;
+  if (!locked) { decryptBanner.classList.add('hidden'); return; }
+  const hasKey = cryptoEngine && cryptoEngine.hasStoredRecoveryKey && cryptoEngine.hasStoredRecoveryKey();
+  decryptBannerText.textContent = hasKey
+    ? 'Einige Nachrichten sind noch gesperrt. Verifiziere dieses Gerät auf einem anderen Gerät, um alle Schlüssel zu erhalten.'
+    : 'Ältere verschlüsselte Nachrichten sind gesperrt. Gib deinen Recovery Key ein, um sie zu entschlüsseln.';
+  decryptBannerBtn.classList.toggle('hidden', !!hasKey);
+  decryptBanner.classList.remove('hidden');
+}
+
+/** Öffnet die Recovery-Key-Eingabe (Einstellungen -> Verschlüsselung). */
+function openRecoveryKeyEntry() {
+  renderSettingsPanel();
+  settingsOverlay.classList.remove('hidden');
+  recoveryForm.classList.remove('hidden');
+  setTimeout(() => { try { recoveryInput.focus(); } catch (e) { /* */ } }, 50);
+  recoveryInput.scrollIntoView({ block: 'center' });
+}
+
 function openRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -1839,6 +1881,7 @@ function openRoom(roomId) {
   renderTypingBar(room);
   renderTimeline('bottom');
   updateScrollDownBtn();
+  updateDecryptionBanner();
   renderRoomList();
   sendReadReceipt(room);
   if (window.innerWidth >= 720) composerInput.focus();
@@ -3487,6 +3530,8 @@ recoveryBtn.addEventListener('click', () => {
   if (!recoveryForm.classList.contains('hidden')) recoveryInput.focus();
 });
 
+decryptBannerBtn.addEventListener('click', openRecoveryKeyEntry);
+
 recoveryForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!cryptoReady || !cryptoEngine) {
@@ -3506,6 +3551,9 @@ recoveryForm.addEventListener('submit', async (e) => {
     recoveryForm.classList.add('hidden');
     toast(`${imported} Schlüssel importiert` + (failed ? ` (${failed} fehlgeschlagen)` : ''));
     await retryPendingDecryption();
+    if (activeRoomId) renderTimeline('keep');
+    renderRoomList();
+    updateDecryptionBanner();
   } catch (err) {
     toast('Import fehlgeschlagen: ' + ((err && err.message) || err));
   } finally {

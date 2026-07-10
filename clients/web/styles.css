@@ -1523,3 +1523,26 @@ html.force-mobile .mine .msg-actions { right: calc(100% + 4px); }
   color: var(--text-secondary, #999);
   font-style: italic;
 }
+
+/* ---- Entschlüsselungs-Banner (E2EE) ---- */
+#decrypt-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--accent, #8b4df7) 12%, var(--bg, #fff));
+  border-bottom: 1px solid var(--border, rgba(0,0,0,.08));
+  font-size: 13.5px;
+  color: var(--text, #111);
+}
+#decrypt-banner-text { flex: 1; min-width: 0; }
+#decrypt-banner-btn {
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  border-radius: 10px;
+  background: var(--accent-grad, var(--accent, #8b4df7));
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+}
+#decrypt-banner-btn:hover { filter: brightness(1.08); }

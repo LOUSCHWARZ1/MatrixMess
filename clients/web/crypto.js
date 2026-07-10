@@ -110,7 +110,42 @@ export class CryptoEngine {
       this.storeName,
       passphrase
     );
+    // Geräte-/One-Time-Keys sofort hochladen, damit andere Geräte diesem
+    // Gerät Room-Keys schicken können (statt erst nach dem ersten /sync).
+    await this.processOutgoing();
     return this;
+  }
+
+  _recoveryKeyStorageKey() { return 'mm.recoveryKey.' + this.userId; }
+
+  /** Gespeicherten Recovery Key lesen (falls der Nutzer ihn einmal eingegeben hat). */
+  getStoredRecoveryKey() {
+    try { return localStorage.getItem(this._recoveryKeyStorageKey()) || null; }
+    catch (e) { return null; }
+  }
+
+  hasStoredRecoveryKey() { return !!this.getStoredRecoveryKey(); }
+
+  /** Recovery Key vergessen (Logout). */
+  forgetRecoveryKey() {
+    try { localStorage.removeItem(this._recoveryKeyStorageKey()); } catch (e) { /* */ }
+  }
+
+  /**
+   * Versucht, das Backup automatisch mit einem zuvor gespeicherten Recovery Key
+   * wiederherzustellen. Liefert das Import-Ergebnis oder null, wenn kein Key
+   * gespeichert ist bzw. der Import scheitert (dann bleibt der UI-Fluss beim
+   * manuellen Eingeben).
+   */
+  async tryAutoRestore() {
+    const stored = this.getStoredRecoveryKey();
+    if (!stored) return null;
+    try {
+      return await this.importFromRecoveryKey(stored);
+    } catch (err) {
+      console.warn('[crypto] Auto-Restore fehlgeschlagen:', err);
+      return null;
+    }
   }
 
   /** OlmMachine (und IndexedDB-Verbindungen) schließen. */
@@ -233,7 +268,9 @@ export class CryptoEngine {
     if (!this.machine || this._outgoingBusy) return;
     this._outgoingBusy = true;
     try {
-      for (let pass = 0; pass < 2; pass++) {
+      // Bis zu 8 Durchläufe: manche Requests erzeugen Folge-Requests
+      // (Upload -> Query -> Claim). Sicherheits-Cap gegen Endlosschleifen.
+      for (let pass = 0; pass < 8; pass++) {
         const requests = await this.machine.outgoingRequests();
         if (!requests || requests.length === 0) break;
         for (const req of requests) {
@@ -426,6 +463,11 @@ export class CryptoEngine {
     }
 
     const result = await machine.importBackedUpRoomKeys(backedUp, undefined, version);
+
+    // Recovery Key merken, damit spätere Sitzungen automatisch wiederherstellen
+    // (gleiche Vertrauensgrenze wie der bereits lokal liegende Pickle-Key).
+    try { localStorage.setItem(this._recoveryKeyStorageKey(), trimmed); } catch (e) { /* */ }
+
     return { imported: result.importedCount, failed };
   }
 }
