@@ -94,6 +94,8 @@
  * SPACES_ACCENTS -> [{ id, label, css }]   // die 8 Akzentfarben
  */
 
+import { icon } from './icons.js';
+
 const ACCOUNT_DATA_TYPE = 'io.matrixmess.spaces';
 const LS_STATE = 'mm.spaces';
 const LS_COLLAPSED = 'mm.spacesCollapsed';
@@ -551,7 +553,11 @@ export function renderSpaceBar(containerEl) {
     chip.setAttribute('aria-pressed', isActive ? 'true' : 'false');
     chip.title = sp.title;
 
-    chip.append(el('span', 'mm-space-chip-icon', sp.icon));
+    const chipIcon = el('span', 'mm-space-chip-icon');
+    if (sp.kind === 'all') chipIcon.append(icon('chat', 14));
+    else if (sp.kind === 'main') chipIcon.append(icon('star-filled', 14));
+    else chipIcon.textContent = sp.icon;
+    chip.append(chipIcon);
     chip.append(el('span', 'mm-space-chip-title', sp.title));
     if (typeof sp.count === 'number' && sp.count > 0) {
       chip.append(el('span', 'mm-space-chip-count', String(sp.count)));
@@ -564,7 +570,9 @@ export function renderSpaceBar(containerEl) {
   addChip.type = 'button';
   addChip.title = 'Bereiche verwalten';
   addChip.setAttribute('aria-label', 'Bereiche verwalten');
-  addChip.append(el('span', 'mm-space-chip-icon', '+'));
+  const addIcon = el('span', 'mm-space-chip-icon');
+  addIcon.append(icon('plus', 15));
+  addChip.append(addIcon);
   addChip.addEventListener('click', () => openManageDialog());
   containerEl.append(addChip);
 }
@@ -585,7 +593,8 @@ function openModal(titleText) {
 
   const header = el('div', 'mm-sp-modal-header');
   const title = el('h3', 'mm-sp-modal-title', titleText);
-  const closeBtn = el('button', 'mm-sp-close', '✕');
+  const closeBtn = el('button', 'mm-sp-close');
+  closeBtn.append(icon('x', 16));
   closeBtn.type = 'button';
   closeBtn.setAttribute('aria-label', 'Schließen');
   header.append(title, closeBtn);
@@ -653,9 +662,11 @@ export function openAssignDialog(roomId, roomName) {
   favInput.type = 'checkbox';
   favInput.checked = favChecked;
   favInput.addEventListener('change', () => { favChecked = favInput.checked; });
+  const favIcon = el('span', 'mm-sp-check-icon');
+  favIcon.append(icon('star-filled', 16));
   favRow.append(
     favInput,
-    el('span', 'mm-sp-check-icon', '⭐'),
+    favIcon,
     el('span', 'mm-sp-check-label', 'Main (Favorit)'),
   );
   modal.body.append(favRow);
@@ -756,13 +767,15 @@ function openManageDialog(startWithCreate) {
         el('span', 'mm-sp-space-row-title', sp.title),
       );
 
-      const editBtn = el('button', 'mm-sp-icon-btn', '✏️');
+      const editBtn = el('button', 'mm-sp-icon-btn');
+      editBtn.append(icon('edit', 15));
       editBtn.type = 'button';
       editBtn.title = 'Bearbeiten';
       editBtn.setAttribute('aria-label', 'Bereich bearbeiten: ' + sp.title);
       editBtn.addEventListener('click', () => { editing = sp.id; render(); });
 
-      const delBtn = el('button', 'mm-sp-icon-btn mm-sp-danger', '🗑');
+      const delBtn = el('button', 'mm-sp-icon-btn mm-sp-danger');
+      delBtn.append(icon('trash', 15));
       delBtn.type = 'button';
       delBtn.title = 'Löschen';
       delBtn.setAttribute('aria-label', 'Bereich löschen: ' + sp.title);
@@ -776,7 +789,7 @@ function openManageDialog(startWithCreate) {
           setTimeout(() => {
             if (delBtn.isConnected) {
               delete delBtn.dataset.confirm;
-              delBtn.textContent = '🗑';
+              delBtn.replaceChildren(icon('trash', 15));
             }
           }, 3000);
         }

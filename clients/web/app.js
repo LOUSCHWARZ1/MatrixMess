@@ -4,6 +4,7 @@
 
 /* ---------- Feature-Module ---------- */
 
+import { icon } from './icons.js';
 import * as spaces from './spaces.js';
 import {
   renderAudioPlayer,
@@ -37,6 +38,7 @@ const LS_SESSION = 'mm.session';
 const LS_SYNC_TOKEN = 'mm.syncToken';
 const LS_SETTINGS = 'mm.settings';
 const LS_CRYPTO_PICKLE = 'mm.cryptoPickle';
+const LS_SIDEBAR_COLLAPSED = 'mm.sidebarCollapsed';
 
 const MEMBER_CACHE_MS = 5 * 60 * 1000;
 
@@ -103,6 +105,8 @@ const recoveryForm = $('#recovery-form');
 const recoveryInput = $('#recovery-input');
 const recoverySubmit = $('#recovery-submit');
 const spaceBarEl = $('#space-bar');
+const sidebarEl = $('#sidebar');
+const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
 const calendarBadge = $('#calendar-badge');
 const eventBtn = $('#event-btn');
@@ -230,7 +234,8 @@ function avatarColor(key) {
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
   const hue = ((hash % 360) + 360) % 360;
-  return `hsl(${hue}, 55%, 52%)`;
+  // Dezenter Namens-Gradient statt flacher Fläche (Element-X-Stil)
+  return `linear-gradient(135deg, hsl(${hue}, 60%, 58%) 0%, hsl(${hue}, 55%, 45%) 100%)`;
 }
 
 /* ========================================================================
@@ -1391,11 +1396,21 @@ function buildRoomItem(room) {
   setAvatar(avatar, room.roomId, name, roomAvatarMxc(room));
   item.appendChild(avatar);
 
+  item.title = name;
+
   const main = el('div', 'room-main');
   const row1 = el('div', 'room-row1');
-  if (room.isEncrypted) row1.appendChild(el('span', 'room-lock', '🔒'));
+  if (room.isEncrypted) {
+    const lock = el('span', 'room-lock');
+    lock.appendChild(icon('lock', 11));
+    row1.appendChild(lock);
+  }
   row1.appendChild(el('div', 'room-name', name));
-  if (spaces.isFavorite(room.roomId)) row1.appendChild(el('span', 'room-star', '★'));
+  if (spaces.isFavorite(room.roomId)) {
+    const star = el('span', 'room-star');
+    star.appendChild(icon('star-filled', 12));
+    row1.appendChild(star);
+  }
   row1.appendChild(el('div', 'room-time', listTimeLabel(room.lastEventTs)));
   main.appendChild(row1);
 
@@ -1411,7 +1426,13 @@ function buildRoomItem(room) {
   main.appendChild(row2);
   item.appendChild(main);
 
-  const more = el('button', 'room-more-btn', '⋯');
+  if (room.unread > 0) {
+    const mini = el('div', 'room-badge-mini', room.unread > 99 ? '99+' : String(room.unread));
+    item.appendChild(mini);
+  }
+
+  const more = el('button', 'room-more-btn');
+  more.appendChild(icon('more-h', 16));
   more.title = 'Raum-Optionen';
   more.setAttribute('aria-label', 'Raum-Optionen');
   more.addEventListener('click', (e) => {
@@ -1440,15 +1461,19 @@ function openRoomMenu(anchor, room) {
   const menu = el('div', 'room-menu');
   menu.setAttribute('role', 'menu');
 
-  const assign = el('button', 'room-menu-item', '📂 Zu Bereichen zuordnen');
+  const assign = el('button', 'room-menu-item');
+  assign.appendChild(icon('folder', 16));
+  assign.appendChild(el('span', null, 'Zu Bereichen zuordnen'));
   assign.addEventListener('click', () => {
     closeRoomMenu();
     spaces.openAssignDialog(room.roomId, roomDisplayName(room));
   });
   menu.appendChild(assign);
 
-  const fav = el('button', 'room-menu-item',
-    spaces.isFavorite(room.roomId) ? '★ Favorit entfernen' : '☆ Als Favorit markieren');
+  const isFav = spaces.isFavorite(room.roomId);
+  const fav = el('button', 'room-menu-item');
+  fav.appendChild(icon(isFav ? 'star-filled' : 'star', 16));
+  fav.appendChild(el('span', null, isFav ? 'Favorit entfernen' : 'Als Favorit markieren'));
   fav.addEventListener('click', () => {
     closeRoomMenu();
     spaces.toggleFavorite(room.roomId); // onChange rendert die Liste neu
@@ -1491,8 +1516,14 @@ function renderRoomList() {
 
       const header = el('button', 'mm-room-section-header');
       header.setAttribute('aria-expanded', section.collapsed ? 'false' : 'true');
-      header.appendChild(el('span', 'mm-room-section-chevron', '▾'));
-      header.appendChild(el('span', null, section.icon + ' ' + section.title));
+      const chevron = el('span', 'mm-room-section-chevron');
+      chevron.appendChild(icon('chevron-down', 12));
+      header.appendChild(chevron);
+      const label = el('span', 'mm-room-section-label');
+      if (section.key === 'matrix') label.appendChild(icon('globe', 13));
+      else label.appendChild(el('span', null, section.icon));
+      label.appendChild(el('span', null, section.title));
+      header.appendChild(label);
       header.appendChild(el('span', 'mm-room-section-count', String(section.rooms.length)));
       header.addEventListener('click', () => {
         spaces.toggleSectionCollapsed(section.key); // onChange rendert neu
@@ -1551,9 +1582,12 @@ function renderChatHeader(room) {
   const name = roomDisplayName(room);
   chatNameEl.textContent = name;
   const subParts = [];
-  if (room.isEncrypted) subParts.push('🔒 Ende-zu-Ende-verschlüsselt');
+  if (room.isEncrypted) subParts.push('Ende-zu-Ende-verschlüsselt');
   if (room.isDirect) subParts.push('Direktnachricht');
-  chatSubEl.textContent = subParts.length ? subParts.join(' · ') : room.roomId;
+  chatSubEl.textContent = '';
+  if (room.isEncrypted) chatSubEl.appendChild(icon('lock', 10));
+  chatSubEl.appendChild(el('span', null,
+    subParts.length ? subParts.join(' · ') : room.roomId));
   setAvatar(chatAvatarEl, room.roomId, name, roomAvatarMxc(room));
 
   // In E2EE-Raeumen niemals unverschluesselt senden: Composer nur sperren,
@@ -1699,7 +1733,9 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
   if (ev.failed) {
     meta.appendChild(el('span', null, '⚠︎'));
   } else if (ev.pending) {
-    meta.appendChild(el('span', null, '🕓'));
+    const pend = el('span', 'msg-pending');
+    pend.appendChild(icon('clock', 11));
+    meta.appendChild(pend);
   } else if (endsGroup) {
     meta.appendChild(el('span', null, formatTime(ev.ts)));
   }
@@ -1707,7 +1743,9 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
     meta.insertBefore(el('span', 'edited-tag', '(bearbeitet)'), meta.firstChild);
   }
   if (ev.encrypted && !ev.redacted) {
-    meta.appendChild(el('span', 'msg-lock', '🔒'));
+    const lock = el('span', 'msg-lock');
+    lock.appendChild(icon('lock', 10));
+    meta.appendChild(lock);
   }
   const hasMeta = meta.childNodes.length > 0;
 
@@ -1720,9 +1758,12 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
 
   if (ev.type === 'm.room.encrypted') {
     bubble.classList.add('encrypted-ph');
-    bubble.appendChild(el('span', null, cryptoReady
-      ? '🔒 Warten auf Schlüssel …'
-      : '🔒 Verschlüsselte Nachricht – E2EE wird in der Webversion noch nicht unterstützt'));
+    const ph = el('span', 'encrypted-ph-inner');
+    ph.appendChild(icon('lock', 12));
+    ph.appendChild(el('span', null, cryptoReady
+      ? 'Warten auf Schlüssel …'
+      : 'Verschlüsselte Nachricht – E2EE wird in der Webversion noch nicht unterstützt'));
+    bubble.appendChild(ph);
     if (hasMeta) bubble.appendChild(meta);
     return;
   }
@@ -1778,7 +1819,9 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
         holder.replaceWith(img);
       })
       .catch(() => {
-        if (holder.isConnected) holder.textContent = '🖼️ Bild nicht verfügbar';
+        if (holder.isConnected) {
+          holder.replaceChildren(icon('image', 18), el('span', null, 'Bild nicht verfügbar'));
+        }
       });
     if (hasMeta) bubble.appendChild(meta);
     return;
@@ -1811,9 +1854,11 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
 
   if ((msgtype === 'm.file' || msgtype === 'm.video' || msgtype === 'm.audio' ||
        msgtype === 'm.image') && hasAttachment) {
-    const icons = { 'm.file': '📎', 'm.video': '🎬', 'm.audio': '🎵', 'm.image': '🖼️' };
+    const icons = { 'm.file': 'file', 'm.video': 'video', 'm.audio': 'play', 'm.image': 'image' };
     const card = el('div', 'attachment-card');
-    card.appendChild(el('div', 'attachment-icon', icons[msgtype]));
+    const iconWrap = el('div', 'attachment-icon');
+    iconWrap.appendChild(icon(icons[msgtype] || 'file', 18));
+    card.appendChild(iconWrap);
     const info = el('div', 'attachment-info');
     info.appendChild(el('div', 'attachment-name', c.filename || c.body || 'Datei'));
     const size = c.info && c.info.size ? formatBytes(c.info.size) : 'Zum Herunterladen tippen';
@@ -1860,14 +1905,18 @@ function buildMessageActions(room, ev, mine) {
   const actions = el('div', 'msg-actions');
 
   if (ev.type === 'm.room.message') {
-    const replyBtn = el('button', null, '↩');
+    const replyBtn = el('button');
+    replyBtn.appendChild(icon('reply', 16));
     replyBtn.title = 'Antworten';
+    replyBtn.setAttribute('aria-label', 'Antworten');
     replyBtn.addEventListener('click', () => startReply(room, ev));
     actions.appendChild(replyBtn);
   }
 
-  const reactBtn = el('button', null, '☺');
+  const reactBtn = el('button');
+  reactBtn.appendChild(icon('smile', 16));
   reactBtn.title = 'Reagieren';
+  reactBtn.setAttribute('aria-label', 'Reagieren');
   reactBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     openEmojiPopover(reactBtn, room, ev);
@@ -1878,13 +1927,17 @@ function buildMessageActions(room, ev, mine) {
     const c = ev.content || {};
     const editable = !c.msgtype || c.msgtype === 'm.text' || c.msgtype === 'm.notice' || c.msgtype === 'm.emote';
     if (editable) {
-      const editBtn = el('button', null, '✎');
+      const editBtn = el('button');
+      editBtn.appendChild(icon('edit', 15));
       editBtn.title = 'Bearbeiten';
+      editBtn.setAttribute('aria-label', 'Bearbeiten');
       editBtn.addEventListener('click', () => startEdit(room, ev));
       actions.appendChild(editBtn);
     }
-    const delBtn = el('button', null, '🗑');
+    const delBtn = el('button');
+    delBtn.appendChild(icon('trash', 15));
     delBtn.title = 'Löschen';
+    delBtn.setAttribute('aria-label', 'Löschen');
     delBtn.addEventListener('click', () => deleteMessage(room, ev));
     actions.appendChild(delBtn);
   }
@@ -1907,7 +1960,8 @@ function openEmojiPopover(anchor, room, ev) {
     emojiPopover.appendChild(b);
   }
   // "+" öffnet den vollen Emoji-Picker für die Reaktion
-  const more = el('button', null, '+');
+  const more = el('button');
+  more.appendChild(icon('plus', 18));
   more.title = 'Weitere Emojis';
   more.setAttribute('aria-label', 'Weitere Emojis');
   more.addEventListener('click', (e) => {
@@ -2765,6 +2819,60 @@ backBtn.addEventListener('click', () => {
   appEl.classList.remove('show-chat');
 });
 
+/* ---------- Statische Icons (UI-Chrome, ersetzt Emoji-Zeichen) ---------- */
+
+/** Hängt die icon()-SVGs in die statischen Buttons/Badges aus index.html.
+ *  Wird im Init-Pfad VOR showApp/showLogin aufgerufen, damit auch der
+ *  Login-Screen versorgt ist. */
+function mountStaticIcons() {
+  const mounts = [
+    ['.login-icon', 'chat', 36],
+    ['.app-badge', 'chat', 18],
+    ['.chat-empty-icon', 'chat', 48],
+    ['#settings-btn', 'settings', 20],
+    ['#sidebar-toggle', 'sidebar', 20],
+    ['#back-btn', 'chevron-left', 24],
+    ['#banner-cancel', 'x', 16],
+    ['#attach-btn', 'paperclip', 20],
+    ['#emoji-btn', 'smile', 20],
+    ['#mic-btn', 'mic', 20],
+    ['#send-btn', 'send', 18],
+    ['#settings-close', 'x', 16],
+  ];
+  for (const [sel, name, size] of mounts) {
+    const node = document.querySelector(sel);
+    if (node) node.appendChild(icon(name, size));
+  }
+  // Buttons, bei denen das Icon VOR bestehendem Inhalt (Badge/Label) sitzt:
+  calendarBtn.insertBefore(icon('calendar', 20), calendarBtn.firstChild);
+  eventBtn.insertBefore(icon('calendar-plus', 15), eventBtn.firstChild);
+  scrollDownBtn.insertBefore(icon('arrow-down', 20), scrollDownBtn.firstChild);
+}
+
+/* ---------- Sidebar: Einklappen (Desktop) ---------- */
+
+function applySidebarCollapsed(collapsedState) {
+  sidebarEl.classList.toggle('collapsed', collapsedState);
+  sidebarToggle.title = collapsedState ? 'Seitenleiste ausklappen' : 'Seitenleiste einklappen';
+  sidebarToggle.setAttribute('aria-expanded', collapsedState ? 'false' : 'true');
+}
+
+sidebarToggle.addEventListener('click', () => {
+  const next = !sidebarEl.classList.contains('collapsed');
+  try {
+    localStorage.setItem(LS_SIDEBAR_COLLAPSED, next ? '1' : '0');
+  } catch (e) { /* z. B. Privatmodus */ }
+  applySidebarCollapsed(next);
+});
+
+function initSidebarCollapsed() {
+  let collapsedState = false;
+  try {
+    collapsedState = localStorage.getItem(LS_SIDEBAR_COLLAPSED) === '1';
+  } catch (e) { /* ignorieren */ }
+  applySidebarCollapsed(collapsedState);
+}
+
 /* ---------- Einstellungen ---------- */
 
 settingsBtn.addEventListener('click', () => {
@@ -2906,6 +3014,8 @@ recoveryForm.addEventListener('submit', async (e) => {
  * ====================================================================== */
 
 function init() {
+  mountStaticIcons();
+  initSidebarCollapsed();
   applySettings();
   autoGrowComposer();
   session = loadSession();

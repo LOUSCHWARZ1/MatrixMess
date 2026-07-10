@@ -94,6 +94,8 @@
 
 'use strict';
 
+import { icon } from './icons.js';
+
 /* ============================ Konstanten ============================ */
 
 const ACCOUNT_DATA_TYPE = 'io.matrixmess.calendar';
@@ -423,7 +425,8 @@ function openModal(titleText, subText) {
 
   const header = el('div', 'mm-cal-modal-header');
   const title = el('h3', 'mm-cal-modal-title', titleText);
-  const closeBtn = el('button', 'mm-cal-close', '✕');
+  const closeBtn = el('button', 'mm-cal-close');
+  closeBtn.append(icon('x', 16));
   closeBtn.type = 'button';
   closeBtn.setAttribute('aria-label', 'Schließen');
   header.append(title, closeBtn);
@@ -646,8 +649,10 @@ export function renderEventCard(evtLike) {
   const card = el('div', 'mm-cal-card');
 
   const head = el('div', 'mm-cal-card-head');
+  const cardIcon = el('span', 'mm-cal-card-icon');
+  cardIcon.append(icon('calendar', 14));
   head.append(
-    el('span', 'mm-cal-card-icon', '📅'),
+    cardIcon,
     el('span', 'mm-cal-card-kicker', 'Termin'),
   );
   card.append(head);
@@ -677,7 +682,8 @@ export function renderCalendarPanel() {
   // Header
   const header = el('div', 'mm-cal-panel-header');
   const title = el('h3', 'mm-cal-panel-title', 'Kalender');
-  const closeBtn = el('button', 'mm-cal-close', '✕');
+  const closeBtn = el('button', 'mm-cal-close');
+  closeBtn.append(icon('x', 16));
   closeBtn.type = 'button';
   closeBtn.setAttribute('aria-label', 'Kalender schließen');
   header.append(title, closeBtn);
@@ -693,8 +699,10 @@ export function renderCalendarPanel() {
   const toolbar = el('div', 'mm-cal-toolbar');
   const exportBtn = el('button', 'mm-cal-export-btn');
   exportBtn.type = 'button';
+  const exportIcon = el('span', 'mm-cal-export-icon');
+  exportIcon.append(icon('download', 14));
   exportBtn.append(
-    el('span', 'mm-cal-export-icon', '⬇'),
+    exportIcon,
     el('span', null, 'Alle als ICS exportieren'),
   );
   exportBtn.title = 'Alle kommenden Termine als .ics-Datei herunterladen';
@@ -749,8 +757,10 @@ function rebuildPanelList(p) {
 
   if (!events.length) {
     const empty = el('div', 'mm-cal-empty');
+    const emptyIcon = el('div', 'mm-cal-empty-icon');
+    emptyIcon.append(icon('calendar', 40));
     empty.append(
-      el('div', 'mm-cal-empty-icon', '📅'),
+      emptyIcon,
       el('div', 'mm-cal-empty-title', 'Keine kommenden Termine'),
       el('div', 'mm-cal-empty-hint',
         'Plane einen Termin direkt aus einem Chat – er erscheint dann hier und als Karte im Chatverlauf.'),
@@ -791,8 +801,10 @@ function buildPanelEntry(evt) {
   const main = el('div', 'mm-cal-entry-main');
   main.append(el('div', 'mm-cal-entry-title', evt.title));
   const room = el('div', 'mm-cal-entry-room');
+  const roomIcon = el('span', 'mm-cal-entry-room-icon');
+  roomIcon.append(icon('chat', 11));
   room.append(
-    el('span', 'mm-cal-entry-room-icon', '💬'),
+    roomIcon,
     el('span', null, evt.roomName || evt.roomId || 'Unbekannter Raum'),
   );
   main.append(room);
