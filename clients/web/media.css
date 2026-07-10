@@ -1,0 +1,461 @@
+/* MatrixMess Web – Medien-Modul (Audio-/Video-Player, Lightbox, Sprachaufnahme)
+   Nutzt die Design-Tokens aus styles.css (--accent, --bg, --text, …).
+   Dark Mode: läuft primär über die Custom Properties; zusätzliche
+   Feinjustierungen unten via [data-theme="dark"] + prefers-color-scheme. */
+
+/* ===================== Gemeinsames ===================== */
+
+.mm-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  animation: mm-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes mm-spin {
+  to { transform: rotate(360deg); }
+}
+
+.mm-media-error {
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--danger);
+  text-align: center;
+}
+
+.mm-error-text { color: var(--danger) !important; }
+
+/* ===================== Audio-Player ===================== */
+
+.mm-audio {
+  min-width: 220px;
+  max-width: 320px;
+  padding: 4px 6px;
+}
+
+.mm-audio-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 2px 2px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-audio-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mm-audio-mic {
+  width: 20px;
+  height: 20px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.mm-audio-mic svg { width: 18px; height: 18px; }
+
+.mm-audio-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: filter 0.15s ease, transform 0.08s ease;
+}
+.mm-audio-btn svg { width: 17px; height: 17px; }
+.mm-audio-btn:hover { filter: brightness(1.08); }
+.mm-audio-btn:active { transform: scale(0.92); }
+
+.mm-audio-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mm-audio-track {
+  position: relative;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+  border-radius: 9px;
+}
+.mm-audio-track:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.mm-audio-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+.mm-audio-fill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 4px;
+  width: 0%;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.mm-audio-knob {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  transition: transform 0.1s ease;
+}
+.mm-audio-track:hover .mm-audio-knob,
+.mm-audio-track:focus-visible .mm-audio-knob {
+  transform: translate(-50%, -50%) scale(1.2);
+}
+
+.mm-audio-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mm-audio-time {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-audio-speed {
+  padding: 1px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.mm-audio-speed:hover {
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ===================== Video-Player ===================== */
+
+.mm-video {
+  position: relative;
+  width: min(420px, 100%);
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 8%, var(--bg-tertiary));
+}
+
+.mm-video video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  background: #000;
+  border-radius: 12px;
+}
+
+.mm-video-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+  background: linear-gradient(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.34));
+  color: #fff;
+}
+
+.mm-video-playbtn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+.mm-video-playbtn svg { width: 24px; height: 24px; }
+.mm-video-playbtn .mm-spinner { width: 20px; height: 20px; }
+.mm-video-overlay:hover .mm-video-playbtn {
+  transform: scale(1.07);
+  filter: brightness(1.08);
+}
+
+.mm-video-name {
+  max-width: 88%;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-video-overlay .mm-media-error {
+  color: #ffb3ad;
+  font-size: 12px;
+  padding: 0 12px;
+}
+
+/* ===================== Bild-Lightbox ===================== */
+
+.mm-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: mm-fade-in 0.16s ease;
+}
+
+@keyframes mm-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.mm-lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
+  color: #fff;
+}
+
+.mm-lightbox-img {
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 110px);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  cursor: zoom-in;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Zoom: Originalgröße, Overlay wird scrollbar */
+.mm-lightbox.mm-zoomed {
+  display: block;
+  overflow: auto;
+}
+.mm-lightbox.mm-zoomed .mm-lightbox-stage {
+  display: block;
+  min-width: 100%;
+  min-height: 100%;
+  text-align: center;
+}
+.mm-lightbox.mm-zoomed .mm-lightbox-img {
+  max-width: none;
+  max-height: none;
+  margin: 28px auto;
+  border-radius: 0;
+  cursor: zoom-out;
+}
+
+.mm-lightbox-bar {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  display: flex;
+  gap: 8px;
+  z-index: 2;
+}
+
+.mm-lightbox-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: background 0.14s ease, transform 0.1s ease;
+}
+.mm-lightbox-btn svg { width: 19px; height: 19px; }
+.mm-lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.26);
+  transform: scale(1.06);
+}
+
+.mm-lightbox-caption {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 80vw;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ===================== Sprachaufnahme ===================== */
+
+.mm-recorder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--danger) 7%, var(--bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  min-width: 0;
+}
+
+.mm-rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+  opacity: 0.45;
+}
+.mm-recorder.mm-recording .mm-rec-dot {
+  animation: mm-rec-pulse 1.2s ease-in-out infinite;
+  opacity: 1;
+}
+
+@keyframes mm-rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
+}
+
+.mm-rec-time {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--danger);
+  min-width: 40px;
+  flex-shrink: 0;
+}
+
+.mm-rec-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-rec-cancel {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.mm-rec-cancel:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.mm-rec-send {
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--on-accent);
+  flex-shrink: 0;
+  transition: filter 0.15s ease, transform 0.08s ease;
+}
+.mm-rec-send:hover:not(:disabled) { filter: brightness(1.08); }
+.mm-rec-send:active:not(:disabled) { transform: scale(0.96); }
+
+.mm-rec-cancel:disabled,
+.mm-rec-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ===================== Dark-Mode-Feinjustierung ===================== */
+
+[data-theme="dark"] .mm-lightbox { background: rgba(0, 0, 0, 0.9); }
+[data-theme="dark"] .mm-audio-track::before {
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+}
+[data-theme="dark"] .mm-video {
+  background: color-mix(in srgb, #000 35%, var(--bg-tertiary));
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .mm-lightbox { background: rgba(0, 0, 0, 0.9); }
+  :root:not([data-theme="light"]) .mm-audio-track::before {
+    background: color-mix(in srgb, var(--text) 22%, transparent);
+  }
+  :root:not([data-theme="light"]) .mm-video {
+    background: color-mix(in srgb, #000 35%, var(--bg-tertiary));
+  }
+}
+
+/* ===================== Reduzierte Bewegung ===================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .mm-recorder.mm-recording .mm-rec-dot { animation: none; }
+  .mm-lightbox { animation: none; }
+  .mm-audio-knob,
+  .mm-video-playbtn,
+  .mm-lightbox-btn { transition: none; }
+}

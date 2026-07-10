@@ -1,0 +1,496 @@
+/* MatrixMess Web – Kalender-Modul (calendar.css)
+   Nutzt die Design-Tokens aus styles.css (--accent, --bg, --bg-secondary,
+   --bg-tertiary, --text, --text-secondary, --border, --hover, --shadow,
+   --danger, --on-accent). Dark Mode kommt damit automatisch über
+   [data-theme="dark"] bzw. prefers-color-scheme; ergänzende Feinheiten
+   stehen am Dateiende. Klassenpräfix "mm-cal-". */
+
+/* ===================== Overlay (Panel + Modal) ===================== */
+
+.mm-cal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  padding: 20px;
+}
+
+.mm-cal-modal-overlay { z-index: 320; }
+
+/* ===================== Kalender-Panel ===================== */
+
+.mm-cal-panel {
+  width: 100%;
+  max-width: 480px;
+  max-height: min(85vh, 680px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  padding: 18px 20px 20px;
+  outline: none;
+}
+
+.mm-cal-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.mm-cal-panel-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.mm-cal-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.mm-cal-close:hover { background: var(--hover); color: var(--text); }
+
+/* Ehrlicher Hinweis: ICS-Export statt Kalender-Sync */
+.mm-cal-sync-hint {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.mm-cal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.mm-cal-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s ease, transform 0.08s ease;
+}
+.mm-cal-export-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.mm-cal-export-btn:active:not(:disabled) { transform: scale(0.97); }
+.mm-cal-export-btn:disabled { opacity: 0.45; cursor: default; }
+.mm-cal-export-icon { font-size: 13px; line-height: 1; }
+
+/* ---------- Termin-Liste ---------- */
+
+.mm-cal-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 2px;
+}
+
+.mm-cal-day {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mm-cal-day-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  padding: 0 2px;
+}
+
+.mm-cal-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  transition: border-color 0.15s ease;
+}
+.mm-cal-entry:hover { border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+.mm-cal-entry-time {
+  flex-shrink: 0;
+  min-width: 62px;
+  text-align: left;
+}
+.mm-cal-entry-start {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.mm-cal-entry-end {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mm-cal-entry-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.mm-cal-entry-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-cal-entry-room {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 1px;
+  overflow: hidden;
+}
+.mm-cal-entry-room > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mm-cal-entry-room-icon { font-size: 11px; flex-shrink: 0; }
+
+.mm-cal-entry-note {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.mm-cal-entry-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.mm-cal-action-btn {
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: center;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.mm-cal-action-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.mm-cal-action-btn.mm-cal-danger:hover {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.mm-cal-action-btn.mm-cal-danger[data-confirm="1"] {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* ---------- Leerer Zustand ---------- */
+
+.mm-cal-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  padding: 42px 18px;
+  color: var(--text-secondary);
+}
+.mm-cal-empty-icon { font-size: 40px; opacity: 0.6; }
+.mm-cal-empty-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.mm-cal-empty-hint {
+  font-size: 13px;
+  max-width: 300px;
+  line-height: 1.45;
+}
+
+/* ===================== Termin-Karte im Chat ===================== */
+
+.mm-cal-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 200px;
+  max-width: 340px;
+  padding: 10px 13px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--text);
+}
+
+.mm-cal-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mm-cal-card-icon { font-size: 14px; line-height: 1; }
+.mm-cal-card-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+}
+
+.mm-cal-card-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.mm-cal-card-when {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.mm-cal-card-note {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* ===================== Modal (Planer / Bearbeiten) ===================== */
+
+.mm-cal-modal {
+  width: 100%;
+  max-width: 400px;
+  max-height: min(85vh, 620px);
+  overflow-y: auto;
+  background: var(--bg);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  padding: 18px 20px 20px;
+  outline: none;
+}
+
+.mm-cal-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.mm-cal-modal-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.mm-cal-modal-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-cal-modal-body { margin-top: 8px; }
+
+.mm-cal-field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.mm-cal-field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.mm-cal-input,
+.mm-cal-textarea {
+  width: 100%;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.mm-cal-textarea {
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.4;
+}
+.mm-cal-input:focus,
+.mm-cal-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.mm-cal-input.invalid,
+.mm-cal-textarea.invalid {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+.mm-cal-input::placeholder,
+.mm-cal-textarea::placeholder { color: var(--text-secondary); }
+
+/* datetime-local: Indikator im Dark Mode über color-scheme korrekt */
+input.mm-cal-input[type="datetime-local"] {
+  color-scheme: light;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Dauer-Chips ---------- */
+
+.mm-cal-dur-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mm-cal-dur-chip {
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.12s ease, color 0.12s ease,
+              border-color 0.12s ease, transform 0.08s ease;
+}
+.mm-cal-dur-chip:hover { background: var(--hover); color: var(--text); }
+.mm-cal-dur-chip:active { transform: scale(0.96); }
+.mm-cal-dur-chip.selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.mm-cal-dur-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* ---------- Modal-Footer ---------- */
+
+.mm-cal-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.mm-cal-btn {
+  padding: 9px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.15s ease, filter 0.15s ease, transform 0.08s ease;
+}
+.mm-cal-btn:hover { background: var(--hover); }
+.mm-cal-btn:active { transform: scale(0.97); }
+
+.mm-cal-btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+.mm-cal-btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+
+/* ===================== Dark-Mode-Feinheiten =====================
+   Die Farb-Tokens kommen aus styles.css und schalten bereits über
+   [data-theme="dark"] und prefers-color-scheme um; hier nur Nuancen. */
+
+[data-theme="dark"] .mm-cal-overlay { background: rgba(0, 0, 0, 0.6); }
+[data-theme="dark"] .mm-cal-card {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-secondary));
+}
+[data-theme="dark"] .mm-cal-action-btn { background: var(--bg-tertiary); }
+[data-theme="dark"] input.mm-cal-input[type="datetime-local"] { color-scheme: dark; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .mm-cal-overlay { background: rgba(0, 0, 0, 0.6); }
+  :root:not([data-theme="light"]) .mm-cal-card {
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-secondary));
+  }
+  :root:not([data-theme="light"]) .mm-cal-action-btn { background: var(--bg-tertiary); }
+  :root:not([data-theme="light"]) input.mm-cal-input[type="datetime-local"] {
+    color-scheme: dark;
+  }
+}
+
+/* ===================== Responsive ===================== */
+
+@media (max-width: 719px) {
+  .mm-cal-panel, .mm-cal-modal { max-width: 100%; }
+
+  .mm-cal-entry {
+    flex-wrap: wrap;
+  }
+  .mm-cal-entry-actions {
+    flex-direction: row;
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 2px;
+  }
+  .mm-cal-card { max-width: 100%; }
+}

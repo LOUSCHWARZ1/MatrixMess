@@ -2,6 +2,26 @@
    Keine Frameworks, kein Build-Step, keine externen Abhängigkeiten. */
 'use strict';
 
+/* ---------- Feature-Module ---------- */
+
+import * as spaces from './spaces.js';
+import {
+  renderAudioPlayer,
+  renderVideoPlayer,
+  openImageLightbox,
+  createVoiceRecorder,
+  decryptAttachment,
+} from './media.js';
+import { extractFirstUrl, renderLinkEmbed } from './embeds.js';
+import { openEmojiPicker, QUICK_REACTIONS } from './emoji.js';
+import {
+  initCalendar,
+  openEventPlanner,
+  renderCalendarPanel,
+  renderEventCard,
+  getUpcomingCount,
+} from './calendar.js';
+
 /* ========================================================================
  * Konstanten & DOM-Referenzen
  * ====================================================================== */
@@ -12,8 +32,6 @@ const LS_SETTINGS = 'mm.settings';
 const LS_CRYPTO_PICKLE = 'mm.cryptoPickle';
 
 const MEMBER_CACHE_MS = 5 * 60 * 1000;
-
-const QUICK_EMOJIS = ['👍', '❤️', '😂', '🔥'];
 
 const ACCENT_COLORS = [
   { name: 'Violett', value: '#8B4DF7' },
@@ -77,6 +95,22 @@ const recoveryBtn = $('#recovery-btn');
 const recoveryForm = $('#recovery-form');
 const recoveryInput = $('#recovery-input');
 const recoverySubmit = $('#recovery-submit');
+const spaceBarEl = $('#space-bar');
+const calendarBtn = $('#calendar-btn');
+const calendarBadge = $('#calendar-badge');
+const eventBtn = $('#event-btn');
+const composerEl = $('#composer');
+const attachBtn = $('#attach-btn');
+const fileInput = $('#file-input');
+const emojiBtn = $('#emoji-btn');
+const micBtn = $('#mic-btn');
+const densitySeg = $('#density-seg');
+const textSizeSeg = $('#textsize-seg');
+const linkPreviewToggle = $('#linkpreview-toggle');
+const inlineMediaToggle = $('#inlinemedia-toggle');
+const enterSendToggle = $('#entersend-toggle');
+const readReceiptToggle = $('#readreceipt-toggle');
+const typingToggle = $('#typing-toggle');
 
 /* ========================================================================
  * Zustand
@@ -197,7 +231,18 @@ function avatarColor(key) {
  * ====================================================================== */
 
 function loadSettings() {
-  const defaults = { theme: 'system', accent: '#8B4DF7', notifications: false };
+  const defaults = {
+    theme: 'system',
+    accent: '#8B4DF7',
+    notifications: false,
+    density: 'comfortable',      // 'comfortable' | 'compact'
+    textSize: 'standard',        // 'small' | 'standard' | 'large' | 'xlarge'
+    linkPreviews: true,
+    inlineMedia: true,
+    readReceipts: true,
+    typingIndicators: true,
+    enterToSend: true,
+  };
   try {
     const raw = localStorage.getItem(LS_SETTINGS);
     if (raw) return Object.assign(defaults, JSON.parse(raw));
@@ -217,6 +262,11 @@ function applySettings() {
   else if (settings.theme === 'light') root.setAttribute('data-theme', 'light');
   else root.removeAttribute('data-theme');
   root.style.setProperty('--accent', settings.accent);
+  const sizeMap = { small: '13.5px', standard: '15px', large: '17px', xlarge: '19px' };
+  root.style.setProperty('--msg-font-size', sizeMap[settings.textSize] || sizeMap.standard);
+  const compact = settings.density === 'compact';
+  roomListEl.classList.toggle('density-compact', compact);
+  timelineEl.classList.toggle('density-compact', compact);
   renderSettingsPanel();
 }
 
@@ -240,6 +290,21 @@ function renderSettingsPanel() {
     });
     accentRow.appendChild(sw);
   }
+  for (const btn of densitySeg.querySelectorAll('button')) {
+    const sel = btn.dataset.densityOpt === (settings.density || 'comfortable');
+    btn.classList.toggle('selected', sel);
+    btn.setAttribute('aria-checked', sel ? 'true' : 'false');
+  }
+  for (const btn of textSizeSeg.querySelectorAll('button')) {
+    const sel = btn.dataset.textsizeOpt === (settings.textSize || 'standard');
+    btn.classList.toggle('selected', sel);
+    btn.setAttribute('aria-checked', sel ? 'true' : 'false');
+  }
+  linkPreviewToggle.checked = settings.linkPreviews !== false;
+  inlineMediaToggle.checked = settings.inlineMedia !== false;
+  enterSendToggle.checked = settings.enterToSend !== false;
+  readReceiptToggle.checked = settings.readReceipts !== false;
+  typingToggle.checked = settings.typingIndicators !== false;
   notifToggle.checked = !!settings.notifications &&
     ('Notification' in window) && Notification.permission === 'granted';
   settingsUserEl.textContent = session ? `Angemeldet als ${session.userId}` : '';
@@ -304,6 +369,80 @@ async function api(method, path, body, opts = {}) {
     throw new ApiError(msg, errcode, res.status);
   }
   return data;
+}
+
+/* ---------- account_data (user-scoped) ---------- */
+
+async function getAccountData(type) {
+  try {
+    return await api('GET',
+      `/_matrix/client/v3/user/${enc(session.userId)}/account_data/${enc(type)}`);
+  } catch (err) {
+    if (err && (err.status === 404 || err.errcode === 'M_NOT_FOUND')) return null;
+    throw err;
+  }
+}
+
+function putAccountData(type, content) {
+  return api('PUT',
+    `/_matrix/client/v3/user/${enc(session.userId)}/account_data/${enc(type)}`, content);
+}
+
+/* ---------- Feature-Module: Bereiche (Spaces) & Kalender ---------- */
+
+async function initFeatureModules() {
+  spaces.renderSpaceBar(spaceBarEl);
+  try {
+    await spaces.initSpaces({
+      getRooms: () => [...rooms.values()],
+      getAccountData,
+      putAccountData,
+      onChange: () => {
+        spaces.renderSpaceBar(spaceBarEl);
+        renderRoomList();
+      },
+    });
+  } catch (err) {
+    console.warn('Bereiche konnten nicht initialisiert werden:', err);
+  }
+  spaces.renderSpaceBar(spaceBarEl);
+  renderRoomList();
+  try {
+    await initCalendar({
+      getAccountData,
+      putAccountData,
+      sendEventMessage,
+      onChange: updateCalendarBadge,
+      getUserId: () => (session ? session.userId : ''),
+    });
+  } catch (err) {
+    console.warn('Kalender konnte nicht initialisiert werden:', err);
+  }
+  updateCalendarBadge();
+}
+
+function updateCalendarBadge() {
+  const n = getUpcomingCount();
+  if (n > 0) {
+    calendarBadge.textContent = n > 99 ? '99+' : String(n);
+    calendarBadge.classList.remove('hidden');
+  } else {
+    calendarBadge.classList.add('hidden');
+  }
+}
+
+/** Sendet die Termin-Nachricht des Kalender-Moduls in den Raum
+ *  (E2EE-Räume werden über sendRoomMessage automatisch verschlüsselt). */
+async function sendEventMessage(roomId, evt) {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Raum nicht gefunden');
+  const when = new Date(evt.startTs).toLocaleDateString('de-DE',
+    { weekday: 'short', day: 'numeric', month: 'long' }) + ', ' + formatTime(evt.startTs);
+  await sendRoomMessage(room, {
+    msgtype: 'm.text',
+    body: '📅 ' + evt.title + ' – ' + when,
+    'io.matrixmess.event': Object.assign({}, evt),
+  });
 }
 
 /* ---------- Login / Logout ---------- */
@@ -385,6 +524,8 @@ function hardLogout() {
   }
   createdObjectURLs.length = 0;
   mediaCache.clear();
+  attachmentBlobCache.clear();
+  inlineImageUrlCache.clear();
   showLogin();
 }
 
@@ -636,6 +777,75 @@ function mxcToObjectURL(mxc, thumb) {
 }
 
 /* ========================================================================
+ * Anhänge: Bytes laden & (bei E2EE-Attachments) entschlüsseln
+ * ====================================================================== */
+
+const attachmentBlobCache = new Map();  // mxc -> Promise<Blob> (ggf. entschlüsselt)
+const inlineImageUrlCache = new Map();  // mxc -> Promise<string objectURL> (dauerhaft)
+
+async function fetchMxcArrayBuffer(mxc) {
+  const m = /^mxc:\/\/([^/]+)\/([^/?#]+)/.exec(String(mxc || ''));
+  if (!m) throw new Error('Ungültige mxc-URL');
+  if (!session) throw new Error('Keine Session');
+  const server = enc(m[1]);
+  const mediaId = enc(m[2]);
+  const authUrl = `${session.baseUrl}/_matrix/client/v1/media/download/${server}/${mediaId}`;
+  try {
+    const res = await fetch(authUrl, {
+      headers: { Authorization: 'Bearer ' + session.accessToken },
+    });
+    if (res.ok) return await res.arrayBuffer();
+  } catch (e) { /* weiter zum Fallback */ }
+  const legacyUrl = `${session.baseUrl}/_matrix/media/v3/download/${server}/${mediaId}`;
+  const res2 = await fetch(legacyUrl);
+  if (!res2.ok) throw new Error('Medien-Download fehlgeschlagen (' + res2.status + ')');
+  return await res2.arrayBuffer();
+}
+
+/** Liefert das Attachment eines Message-Contents als Blob. Bei content.file
+ *  (EncryptedFile v2 aus E2EE-Räumen) wird der Ciphertext geladen und via
+ *  media.decryptAttachment entschlüsselt; sonst wird content.url geladen. */
+function getAttachmentBlob(content) {
+  const file = content && content.file;
+  const mxc = file ? file.url : content && content.url;
+  if (!mxc) return Promise.reject(new Error('Kein Anhang vorhanden'));
+  if (attachmentBlobCache.has(mxc)) return attachmentBlobCache.get(mxc);
+  const promise = (async () => {
+    let buf = await fetchMxcArrayBuffer(mxc);
+    if (file) buf = await decryptAttachment(buf, file);
+    const mime = (content.info && content.info.mimetype) || 'application/octet-stream';
+    return new Blob([buf], { type: mime });
+  })();
+  attachmentBlobCache.set(mxc, promise);
+  promise.catch(() => attachmentBlobCache.delete(mxc));
+  return promise;
+}
+
+/** getBlobUrl-Closure für die media.js-Player: liefert bei jedem Aufruf eine
+ *  FRISCHE blob:-URL, weil die Player sie beim Entfernen aus dem DOM revoken
+ *  (das Blob selbst bleibt gecacht). */
+function attachmentUrlGetter(content) {
+  return async () => URL.createObjectURL(await getAttachmentBlob(content));
+}
+
+/** Dauerhafte (gecachte) Object-URL für Inline-Vorschauen verschlüsselter
+ *  Bilder – wird erst beim Logout freigegeben. */
+function getInlineAttachmentURL(content) {
+  const file = content && content.file;
+  const mxc = file ? file.url : content && content.url;
+  if (!mxc) return Promise.reject(new Error('Kein Anhang vorhanden'));
+  if (inlineImageUrlCache.has(mxc)) return inlineImageUrlCache.get(mxc);
+  const promise = getAttachmentBlob(content).then((blob) => {
+    const url = URL.createObjectURL(blob);
+    createdObjectURLs.push(url);
+    return url;
+  });
+  inlineImageUrlCache.set(mxc, promise);
+  promise.catch(() => inlineImageUrlCache.delete(mxc));
+  return promise;
+}
+
+/* ========================================================================
  * State-Modell
  * ====================================================================== */
 
@@ -662,6 +872,8 @@ function getRoom(roomId) {
       prevBatch: null,
       paginating: false,
       lastReceiptEventId: null,
+      bridgeProtocol: null,     // aus m.bridge / uk.half-shot.bridge
+      bridgeHint: null,         // aus Sender-Prefixen (@whatsapp_ …)
     };
     rooms.set(roomId, room);
   }
@@ -752,6 +964,12 @@ function applyStateEvent(room, ev) {
       break;
     case 'm.room.encryption':
       room.isEncrypted = true;
+      break;
+    case 'm.bridge':
+    case 'uk.half-shot.bridge':
+      if (c.protocol && typeof c.protocol.id === 'string' && c.protocol.id) {
+        room.bridgeProtocol = c.protocol.id;
+      }
       break;
     case 'm.room.member':
       if (ev.state_key) {
@@ -846,12 +1064,36 @@ function applyEditEvent(room, ev) {
   }
 }
 
+/* ---------- Bridge-Erkennung über Sender-Prefixe ---------- */
+
+const BRIDGE_SENDER_PREFIXES = [
+  ['@whatsapp_', 'whatsapp'],
+  ['@signal_', 'signal'],
+  ['@telegram_', 'telegram'],
+  ['@telegrambot', 'telegram'],
+  ['@instagram_', 'instagram'],
+  ['@_discord_', 'discord'],
+  ['@discord_', 'discord'],
+];
+
+function updateBridgeHint(room, sender) {
+  if (!sender || room.bridgeHint) return;
+  const s = String(sender).toLowerCase();
+  for (const [prefix, hint] of BRIDGE_SENDER_PREFIXES) {
+    if (s.startsWith(prefix)) {
+      room.bridgeHint = hint;
+      return;
+    }
+  }
+}
+
 /**
  * Verarbeitet ein Timeline-Event.
  * @returns {boolean} true, wenn ein neues sichtbares Event angefügt wurde
  */
 function applyTimelineEvent(room, ev, live) {
   const type = ev.type;
+  updateBridgeHint(room, ev.sender);
 
   if (type === 'm.room.redaction') {
     applyRedactionEvent(room, ev);
@@ -1124,52 +1366,139 @@ function setAvatar(node, key, name, mxc) {
   }
 }
 
+function buildRoomItem(room) {
+  const name = roomDisplayName(room);
+  const item = el('div', 'room-item');
+  item.setAttribute('role', 'button');
+  if (room.roomId === activeRoomId) item.classList.add('active');
+
+  const avatar = el('div', 'avatar');
+  setAvatar(avatar, room.roomId, name, roomAvatarMxc(room));
+  item.appendChild(avatar);
+
+  const main = el('div', 'room-main');
+  const row1 = el('div', 'room-row1');
+  if (room.isEncrypted) row1.appendChild(el('span', 'room-lock', '🔒'));
+  row1.appendChild(el('div', 'room-name', name));
+  if (spaces.isFavorite(room.roomId)) row1.appendChild(el('span', 'room-star', '★'));
+  row1.appendChild(el('div', 'room-time', listTimeLabel(room.lastEventTs)));
+  main.appendChild(row1);
+
+  const row2 = el('div', 'room-row2');
+  let preview = room.lastPreview || '';
+  if (preview && session && room.lastPreviewSender === session.userId) {
+    preview = 'Du: ' + preview;
+  }
+  row2.appendChild(el('div', 'room-preview', preview));
+  if (room.unread > 0) {
+    row2.appendChild(el('div', 'room-badge', room.unread > 99 ? '99+' : String(room.unread)));
+  }
+  main.appendChild(row2);
+  item.appendChild(main);
+
+  const more = el('button', 'room-more-btn', '⋯');
+  more.title = 'Raum-Optionen';
+  more.setAttribute('aria-label', 'Raum-Optionen');
+  more.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openRoomMenu(more, room);
+  });
+  item.appendChild(more);
+
+  item.addEventListener('click', () => openRoom(room.roomId));
+  return item;
+}
+
+/* ---------- Kontextmenü einer Raumzeile ---------- */
+
+let roomMenuEl = null;
+
+function closeRoomMenu() {
+  if (roomMenuEl) {
+    roomMenuEl.remove();
+    roomMenuEl = null;
+  }
+}
+
+function openRoomMenu(anchor, room) {
+  closeRoomMenu();
+  const menu = el('div', 'room-menu');
+  menu.setAttribute('role', 'menu');
+
+  const assign = el('button', 'room-menu-item', '📂 Zu Bereichen zuordnen');
+  assign.addEventListener('click', () => {
+    closeRoomMenu();
+    spaces.openAssignDialog(room.roomId, roomDisplayName(room));
+  });
+  menu.appendChild(assign);
+
+  const fav = el('button', 'room-menu-item',
+    spaces.isFavorite(room.roomId) ? '★ Favorit entfernen' : '☆ Als Favorit markieren');
+  fav.addEventListener('click', () => {
+    closeRoomMenu();
+    spaces.toggleFavorite(room.roomId); // onChange rendert die Liste neu
+  });
+  menu.appendChild(fav);
+
+  document.body.appendChild(menu);
+  const rect = anchor.getBoundingClientRect();
+  let x = Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8);
+  let y = rect.bottom + 4;
+  if (y + menu.offsetHeight > window.innerHeight - 8) y = rect.top - menu.offsetHeight - 4;
+  menu.style.left = Math.max(8, x) + 'px';
+  menu.style.top = Math.max(8, y) + 'px';
+  roomMenuEl = menu;
+}
+
+document.addEventListener('click', (e) => {
+  if (roomMenuEl && !roomMenuEl.contains(e.target)) closeRoomMenu();
+});
+
 function renderRoomList() {
   const query = roomSearchEl.value.trim().toLowerCase();
   const sorted = [...rooms.values()].sort((a, b) => b.lastEventTs - a.lastEventTs);
   roomListEl.textContent = '';
-  let shown = 0;
+  closeRoomMenu();
 
+  const visible = [];
   for (const room of sorted) {
     const name = roomDisplayName(room);
     if (query && !name.toLowerCase().includes(query)) continue;
-    shown++;
-
-    const item = el('div', 'room-item');
-    item.setAttribute('role', 'button');
-    if (room.roomId === activeRoomId) item.classList.add('active');
-
-    const avatar = el('div', 'avatar');
-    setAvatar(avatar, room.roomId, name, roomAvatarMxc(room));
-    item.appendChild(avatar);
-
-    const main = el('div', 'room-main');
-    const row1 = el('div', 'room-row1');
-    if (room.isEncrypted) row1.appendChild(el('span', 'room-lock', '🔒'));
-    row1.appendChild(el('div', 'room-name', name));
-    row1.appendChild(el('div', 'room-time', listTimeLabel(room.lastEventTs)));
-    main.appendChild(row1);
-
-    const row2 = el('div', 'room-row2');
-    let preview = room.lastPreview || '';
-    if (preview && session && room.lastPreviewSender === session.userId) {
-      preview = 'Du: ' + preview;
-    }
-    row2.appendChild(el('div', 'room-preview', preview));
-    if (room.unread > 0) {
-      row2.appendChild(el('div', 'room-badge', room.unread > 99 ? '99+' : String(room.unread)));
-    }
-    main.appendChild(row2);
-    item.appendChild(main);
-
-    item.addEventListener('click', () => openRoom(room.roomId));
-    roomListEl.appendChild(item);
+    if (!spaces.roomInActiveSpace(room)) continue;
+    visible.push(room);
   }
 
-  if (!shown) {
-    roomListEl.appendChild(
-      el('div', 'room-list-empty', query ? 'Keine Räume gefunden' : 'Noch keine Räume – warte auf den ersten Sync …')
-    );
+  if (spaces.getActiveSpaceId() === 'main' && visible.length) {
+    // Main-Bereich: nach Herkunft gruppiert, Sektionen einklappbar
+    for (const section of spaces.groupRoomsForMain(visible)) {
+      const secEl = el('div', 'mm-room-section');
+      if (section.collapsed) secEl.classList.add('collapsed');
+
+      const header = el('button', 'mm-room-section-header');
+      header.setAttribute('aria-expanded', section.collapsed ? 'false' : 'true');
+      header.appendChild(el('span', 'mm-room-section-chevron', '▾'));
+      header.appendChild(el('span', null, section.icon + ' ' + section.title));
+      header.appendChild(el('span', 'mm-room-section-count', String(section.rooms.length)));
+      header.addEventListener('click', () => {
+        spaces.toggleSectionCollapsed(section.key); // onChange rendert neu
+      });
+      secEl.appendChild(header);
+
+      const body = el('div', 'mm-room-section-body');
+      for (const room of section.rooms) body.appendChild(buildRoomItem(room));
+      secEl.appendChild(body);
+      roomListEl.appendChild(secEl);
+    }
+  } else {
+    for (const room of visible) roomListEl.appendChild(buildRoomItem(room));
+  }
+
+  if (!visible.length) {
+    let msg;
+    if (query) msg = 'Keine Räume gefunden';
+    else if (rooms.size && spaces.getActiveSpaceId() !== 'all') msg = 'Keine Räume in diesem Bereich';
+    else msg = 'Noch keine Räume – warte auf den ersten Sync …';
+    roomListEl.appendChild(el('div', 'room-list-empty', msg));
   }
 }
 
@@ -1224,6 +1553,18 @@ function renderChatHeader(room) {
     composerInput.placeholder = 'Nachricht';
     sendBtn.disabled = composerInput.value.trim().length === 0;
   }
+
+  // Medien-Upload: NIEMALS unverschlüsselt in E2EE-Räume senden.
+  const mediaBlocked = room.isEncrypted;
+  attachBtn.disabled = mediaBlocked;
+  micBtn.disabled = mediaBlocked;
+  attachBtn.title = mediaBlocked
+    ? 'Medienversand in verschlüsselten Räumen folgt'
+    : 'Datei anhängen';
+  micBtn.title = mediaBlocked
+    ? 'Medienversand in verschlüsselten Räumen folgt'
+    : 'Sprachnachricht aufnehmen';
+  emojiBtn.disabled = composerInput.disabled;
 }
 
 function isNearBottom() {
@@ -1386,12 +1727,26 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
     bubble.appendChild(quote);
   }
 
-  if (msgtype === 'm.image' && c.url) {
+  // Termin-Karte (Kalender-Modul)
+  if (c['io.matrixmess.event'] && typeof c['io.matrixmess.event'] === 'object') {
+    bubble.appendChild(renderEventCard(c['io.matrixmess.event']));
+    if (hasMeta) bubble.appendChild(meta);
+    return;
+  }
+
+  const hasAttachment = !!(c.url || c.file);
+  const inlineMedia = settings.inlineMedia !== false;
+
+  if (msgtype === 'm.image' && hasAttachment && inlineMedia) {
     bubble.classList.add('media');
     const holder = el('div', 'msg-image-loading', 'Bild wird geladen …');
     bubble.appendChild(holder);
     const info = c.info || {};
-    mxcToObjectURL(c.url, { width: 640, height: 640, method: 'scale' })
+    // Unverschlüsselt: Server-Thumbnail; verschlüsselt: Original laden + entschlüsseln.
+    const thumbPromise = c.file
+      ? getInlineAttachmentURL(c)
+      : mxcToObjectURL(c.url, { width: 640, height: 640, method: 'scale' });
+    thumbPromise
       .then((url) => {
         if (!holder.isConnected) return;
         const img = document.createElement('img');
@@ -1400,9 +1755,10 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
         if (info.w && info.h) img.style.aspectRatio = `${info.w} / ${info.h}`;
         img.src = url;
         img.addEventListener('click', () => {
-          mxcToObjectURL(c.url)
-            .then((full) => window.open(full, '_blank'))
-            .catch(() => toast('Bild konnte nicht geladen werden'));
+          openImageLightbox({
+            getBlobUrl: attachmentUrlGetter(c),
+            filename: c.filename || c.body || 'bild',
+          });
         });
         holder.replaceWith(img);
       })
@@ -1413,8 +1769,34 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
     return;
   }
 
-  if ((msgtype === 'm.file' || msgtype === 'm.video' || msgtype === 'm.audio') && c.url) {
-    const icons = { 'm.file': '📎', 'm.video': '🎬', 'm.audio': '🎵' };
+  if (msgtype === 'm.audio' && hasAttachment && inlineMedia) {
+    const isVoice = !!c['org.matrix.msc3245.voice'];
+    const player = renderAudioPlayer({
+      getBlobUrl: attachmentUrlGetter(c),
+      durationMs: c.info && c.info.duration,
+      filename: isVoice ? undefined : (c.filename || c.body || undefined),
+      isVoice,
+    });
+    bubble.appendChild(player);
+    if (hasMeta) bubble.appendChild(meta);
+    return;
+  }
+
+  if (msgtype === 'm.video' && hasAttachment && inlineMedia) {
+    const player = renderVideoPlayer({
+      getBlobUrl: attachmentUrlGetter(c),
+      filename: c.filename || c.body || undefined,
+      width: c.info && c.info.w,
+      height: c.info && c.info.h,
+    });
+    bubble.appendChild(player);
+    if (hasMeta) bubble.appendChild(meta);
+    return;
+  }
+
+  if ((msgtype === 'm.file' || msgtype === 'm.video' || msgtype === 'm.audio' ||
+       msgtype === 'm.image') && hasAttachment) {
+    const icons = { 'm.file': '📎', 'm.video': '🎬', 'm.audio': '🎵', 'm.image': '🖼️' };
     const card = el('div', 'attachment-card');
     card.appendChild(el('div', 'attachment-icon', icons[msgtype]));
     const info = el('div', 'attachment-info');
@@ -1443,6 +1825,18 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
     span.textContent = body;
   }
   bubble.appendChild(span);
+
+  // Link-Vorschau / Social-Embed unter dem Text
+  if (settings.linkPreviews !== false && msgtype !== 'm.emote' && body) {
+    try {
+      const firstUrl = extractFirstUrl(body);
+      if (firstUrl) {
+        const embed = renderLinkEmbed(firstUrl);
+        if (embed) bubble.appendChild(embed);
+      }
+    } catch (e) { /* Embeds sind optional */ }
+  }
+
   if (hasMeta) bubble.appendChild(meta);
 }
 
@@ -1489,7 +1883,7 @@ let popoverContext = null;
 function openEmojiPopover(anchor, room, ev) {
   emojiPopover.textContent = '';
   popoverContext = { roomId: room.roomId, eventId: ev.eventId };
-  for (const emoji of QUICK_EMOJIS) {
+  for (const emoji of QUICK_REACTIONS) {
     const b = el('button', null, emoji);
     b.addEventListener('click', () => {
       closeEmojiPopover();
@@ -1497,6 +1891,30 @@ function openEmojiPopover(anchor, room, ev) {
     });
     emojiPopover.appendChild(b);
   }
+  // "+" öffnet den vollen Emoji-Picker für die Reaktion
+  const more = el('button', null, '+');
+  more.title = 'Weitere Emojis';
+  more.setAttribute('aria-label', 'Weitere Emojis');
+  more.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Unsichtbarer Anker an der Popover-Position, da das Popover gleich zugeht.
+    const rect = emojiPopover.getBoundingClientRect();
+    closeEmojiPopover();
+    const ghost = el('span');
+    ghost.style.position = 'fixed';
+    ghost.style.left = rect.left + 'px';
+    ghost.style.top = rect.top + 'px';
+    ghost.style.width = rect.width + 'px';
+    ghost.style.height = rect.height + 'px';
+    ghost.style.pointerEvents = 'none';
+    document.body.appendChild(ghost);
+    openEmojiPicker({
+      anchorEl: ghost,
+      onPick: (emoji) => toggleReaction(room, ev, emoji),
+      onClose: () => ghost.remove(),
+    });
+  });
+  emojiPopover.appendChild(more);
   emojiPopover.classList.remove('hidden');
   const rect = anchor.getBoundingClientRect();
   const pw = emojiPopover.offsetWidth;
@@ -1601,13 +2019,16 @@ async function deleteMessage(room, ev) {
 
 async function downloadAttachment(content) {
   try {
-    const url = await mxcToObjectURL(content.url);
+    // Unterstützt auch E2EE-Attachments (content.file wird entschlüsselt).
+    const blob = await getAttachmentBlob(content);
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = content.filename || content.body || 'datei';
     document.body.appendChild(a);
     a.click();
     a.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) { /* */ } }, 10000);
   } catch (err) {
     toast('Download fehlgeschlagen');
   }
@@ -1677,10 +2098,11 @@ async function sendReadReceipt(room) {
     renderRoomList();
   }
   try {
-    await api('POST', `/_matrix/client/v3/rooms/${enc(room.roomId)}/read_markers`, {
-      'm.fully_read': last,
-      'm.read': last,
-    });
+    // Lesebestätigungen aus -> nur private Read-Receipts (m.read.private)
+    const body = { 'm.fully_read': last };
+    if (settings.readReceipts === false) body['m.read.private'] = last;
+    else body['m.read'] = last;
+    await api('POST', `/_matrix/client/v3/rooms/${enc(room.roomId)}/read_markers`, body);
   } catch (err) { /* nicht kritisch */ }
 }
 
@@ -1697,6 +2119,7 @@ async function putTyping(on) {
 
 function handleTypingSignal() {
   if (!activeRoomId) return;
+  if (settings.typingIndicators === false) return;
   const hasText = composerInput.value.length > 0;
   const now = Date.now();
   if (hasText) {
@@ -1946,9 +2369,13 @@ composerInput.addEventListener('input', () => {
 });
 
 composerInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendCurrentMessage();
+  if (e.key === 'Enter') {
+    const enterSends = settings.enterToSend !== false;
+    // Enter sendet (wenn aktiviert, ohne Shift); Strg/Cmd+Enter sendet immer.
+    if (e.ctrlKey || e.metaKey || (enterSends && !e.shiftKey)) {
+      e.preventDefault();
+      sendCurrentMessage();
+    }
   } else if (e.key === 'Escape' && (replyTarget || editTarget)) {
     cancelBanner();
   }
@@ -1956,6 +2383,290 @@ composerInput.addEventListener('keydown', (e) => {
 
 sendBtn.addEventListener('click', sendCurrentMessage);
 bannerCancel.addEventListener('click', cancelBanner);
+
+/* ========================================================================
+ * Generisches Senden mit Pending-Echo (Uploads, Termin-Nachrichten)
+ * ====================================================================== */
+
+/** Sendet einen m.room.message-Content mit Pending-Echo. In E2EE-Räumen wird
+ *  der Event-Content verschlüsselt (analog sendCurrentMessage). */
+async function sendRoomMessage(room, content) {
+  if (room.isEncrypted && !cryptoReady) {
+    toast('Verschlüsselung nicht verfügbar – Senden in diesem Raum ist derzeit nicht möglich.');
+    throw new ApiError('Verschlüsselung nicht verfügbar', 'MM_NO_CRYPTO', 0);
+  }
+  const txn = txnId();
+  const pending = {
+    eventId: null,
+    sender: session.userId,
+    type: 'm.room.message',
+    content,
+    ts: Date.now(),
+    editedBody: null,
+    redacted: false,
+    reactions: new Map(),
+    pending: true,
+    failed: false,
+    txnId: txn,
+    encrypted: room.isEncrypted,
+  };
+  room.events.push(pending);
+  room.pendingByTxn.set(txn, pending);
+  updateRoomPreview(room, pending);
+  if (activeRoomId === room.roomId) renderTimeline('bottom');
+  renderRoomList();
+
+  try {
+    let sendType = 'm.room.message';
+    let sendContent = content;
+    if (room.isEncrypted) {
+      sendType = 'm.room.encrypted';
+      sendContent = await encryptForRoom(room, content);
+    }
+    const res = await api('PUT',
+      `/_matrix/client/v3/rooms/${enc(room.roomId)}/send/${enc(sendType)}/${enc(txn)}`,
+      sendContent);
+    const eventId = res && res.event_id;
+    if (eventId) {
+      if (room.eventIndex.has(eventId)) {
+        const idx = room.events.indexOf(pending);
+        if (idx >= 0) room.events.splice(idx, 1);
+        room.pendingByTxn.delete(txn);
+      } else {
+        pending.eventId = eventId;
+        room.eventIndex.set(eventId, pending);
+      }
+    }
+    if (activeRoomId === room.roomId) renderTimeline('keep');
+  } catch (err) {
+    pending.failed = true;
+    pending.pending = false;
+    room.pendingByTxn.delete(txn);
+    if (activeRoomId === room.roomId) renderTimeline('keep');
+    throw err;
+  }
+}
+
+/* ========================================================================
+ * Uploads: Dateien & Sprachnachrichten
+ * ====================================================================== */
+
+async function uploadMedia(blob, filename, mime) {
+  if (!session) throw new ApiError('Keine Session', 'MM_NO_SESSION', 0);
+  const res = await fetch(
+    `${session.baseUrl}/_matrix/media/v3/upload?filename=${enc(filename || 'datei')}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + session.accessToken,
+        'Content-Type': mime || 'application/octet-stream',
+      },
+      body: blob,
+    });
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  if (!res.ok || !data || !data.content_uri) {
+    throw new ApiError((data && data.error) || `Upload fehlgeschlagen (HTTP ${res.status})`,
+      data && data.errcode, res.status);
+  }
+  return data.content_uri;
+}
+
+function readImageSize(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const dims = { w: img.naturalWidth, h: img.naturalHeight };
+      URL.revokeObjectURL(url);
+      resolve(dims);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Bildmaße nicht lesbar'));
+    };
+    img.src = url;
+  });
+}
+
+async function uploadAndSendFile(room, file) {
+  const mime = file.type || 'application/octet-stream';
+  let msgtype = 'm.file';
+  if (mime.startsWith('image/')) msgtype = 'm.image';
+  else if (mime.startsWith('video/')) msgtype = 'm.video';
+  else if (mime.startsWith('audio/')) msgtype = 'm.audio';
+
+  const info = { mimetype: mime, size: file.size };
+  if (msgtype === 'm.image') {
+    try {
+      const dims = await readImageSize(file);
+      info.w = dims.w;
+      info.h = dims.h;
+    } catch (e) { /* Maße sind optional */ }
+  }
+
+  const contentUri = await uploadMedia(file, file.name || 'datei', mime);
+  const content = {
+    msgtype,
+    body: file.name || 'Datei',
+    filename: file.name || undefined,
+    info,
+    url: contentUri,
+  };
+  await sendRoomMessage(room, content);
+}
+
+attachBtn.addEventListener('click', () => {
+  const room = rooms.get(activeRoomId);
+  if (!room) return;
+  if (room.isEncrypted) {
+    toast('Medienversand in verschlüsselten Räumen folgt');
+    return;
+  }
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', async () => {
+  const room = rooms.get(activeRoomId);
+  const files = [...(fileInput.files || [])];
+  fileInput.value = '';
+  if (!room || !files.length) return;
+  if (room.isEncrypted) {
+    toast('Medienversand in verschlüsselten Räumen folgt');
+    return;
+  }
+  for (const file of files) {
+    try {
+      toast('Wird gesendet: ' + (file.name || 'Datei'));
+      await uploadAndSendFile(room, file);
+    } catch (err) {
+      toast('Upload fehlgeschlagen: ' + ((err && err.message) || err));
+    }
+  }
+});
+
+/* ---------- Sprachnachrichten ---------- */
+
+let activeRecorder = null;
+
+function teardownRecorder() {
+  if (activeRecorder) {
+    try { activeRecorder.element.remove(); } catch (e) { /* */ }
+    activeRecorder = null;
+  }
+  composerEl.classList.remove('recording');
+}
+
+function voiceFileName(mime) {
+  const m = String(mime || '').toLowerCase();
+  let ext = 'ogg';
+  if (m.includes('webm')) ext = 'webm';
+  else if (m.includes('mp4')) ext = 'm4a';
+  else if (m.includes('mpeg')) ext = 'mp3';
+  return 'sprachnachricht.' + ext;
+}
+
+async function sendVoiceMessage(room, blob, durationMs, mimeType) {
+  if (room.isEncrypted) {
+    toast('Medienversand in verschlüsselten Räumen folgt');
+    return;
+  }
+  const mime = mimeType || blob.type || 'audio/webm';
+  const filename = voiceFileName(mime);
+  const contentUri = await uploadMedia(blob, filename, mime);
+  const content = {
+    msgtype: 'm.audio',
+    body: 'Sprachnachricht',
+    filename,
+    info: {
+      mimetype: mime,
+      size: blob.size,
+      duration: Math.max(0, Math.round(durationMs || 0)),
+    },
+    url: contentUri,
+    'org.matrix.msc3245.voice': {},
+  };
+  await sendRoomMessage(room, content);
+}
+
+micBtn.addEventListener('click', async () => {
+  const room = rooms.get(activeRoomId);
+  if (!room) return;
+  if (room.isEncrypted) {
+    toast('Medienversand in verschlüsselten Räumen folgt');
+    return;
+  }
+  if (activeRecorder) {
+    activeRecorder.cancel();
+    return;
+  }
+  const recorder = createVoiceRecorder({
+    onFinish: async (blob, durationMs, mimeType) => {
+      teardownRecorder();
+      try {
+        await sendVoiceMessage(room, blob, durationMs, mimeType);
+      } catch (err) {
+        toast('Sprachnachricht fehlgeschlagen: ' + ((err && err.message) || err));
+      }
+    },
+    onCancel: () => teardownRecorder(),
+  });
+  activeRecorder = recorder;
+  composerEl.classList.add('recording');
+  composerEl.insertBefore(recorder.element, sendBtn);
+  try {
+    await recorder.start();
+  } catch (err) {
+    teardownRecorder();
+    toast((err && err.message) || 'Aufnahme nicht möglich');
+  }
+});
+
+/* ========================================================================
+ * Emoji-Picker im Composer
+ * ====================================================================== */
+
+function insertEmojiIntoComposer(emoji) {
+  if (composerInput.disabled) return;
+  const start = composerInput.selectionStart != null
+    ? composerInput.selectionStart : composerInput.value.length;
+  const end = composerInput.selectionEnd != null ? composerInput.selectionEnd : start;
+  composerInput.value =
+    composerInput.value.slice(0, start) + emoji + composerInput.value.slice(end);
+  const pos = start + emoji.length;
+  composerInput.focus();
+  composerInput.setSelectionRange(pos, pos);
+  autoGrowComposer();
+  handleTypingSignal();
+}
+
+let composerPicker = null;
+
+emojiBtn.addEventListener('click', () => {
+  if (composerPicker) {
+    composerPicker.close();
+    return;
+  }
+  composerPicker = openEmojiPicker({
+    anchorEl: emojiBtn,
+    onPick: insertEmojiIntoComposer,
+    onClose: () => { composerPicker = null; },
+  });
+});
+
+/* ========================================================================
+ * Kalender: Termin planen & Übersicht
+ * ====================================================================== */
+
+eventBtn.addEventListener('click', () => {
+  const room = rooms.get(activeRoomId);
+  if (!room) return;
+  openEventPlanner({ roomId: room.roomId, roomName: roomDisplayName(room) });
+});
+
+calendarBtn.addEventListener('click', () => {
+  document.body.appendChild(renderCalendarPanel());
+});
 
 /* ========================================================================
  * UI-Verdrahtung: Login, Sidebar, Einstellungen

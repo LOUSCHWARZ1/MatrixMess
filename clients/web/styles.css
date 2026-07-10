@@ -3,6 +3,7 @@
 
 :root {
   --accent: #8B4DF7;
+  --msg-font-size: 15px;
   --bg: #ffffff;
   --bg-secondary: #f2f2f7;
   --bg-tertiary: #e9e9ee;
@@ -514,6 +515,7 @@ input, textarea {
 .bubble {
   padding: 8px 12px;
   border-radius: 18px;
+  font-size: var(--msg-font-size);
   background: var(--bubble-in);
   color: var(--text);
   word-wrap: break-word;
@@ -1034,6 +1036,126 @@ input, textarea {
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===================== Integration: Bereiche, Medien, Kalender, Composer ===================== */
+
+/* Chat-Dichte "Kompakt" (Klasse auf #room-list und #timeline) */
+#room-list.density-compact .room-item { padding: 5px 8px; gap: 8px; }
+#room-list.density-compact .avatar { width: 34px; height: 34px; font-size: 14px; }
+#room-list.density-compact .room-name { font-size: 14px; }
+#room-list.density-compact .room-preview { font-size: 12px; }
+#timeline.density-compact .bubble { padding: 5px 10px; }
+#timeline.density-compact .msg-row.grp-start { margin-top: 7px; }
+#timeline.density-compact .msg-sender { margin-top: 7px; }
+
+/* Kalender-Button mit Badge in der Sidebar */
+#calendar-btn { position: relative; }
+#calendar-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* "📅 Termin"-Button im Chat-Header */
+.header-pill-btn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+.header-pill-btn:hover { background: var(--hover); }
+
+/* Favoriten-Stern + "…"-Button in der Raumzeile */
+.room-star {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--accent);
+}
+.room-more-btn {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: var(--text-secondary);
+}
+.room-item:hover .room-more-btn { display: inline-flex; }
+.room-more-btn:hover { background: var(--hover); color: var(--text); }
+
+/* Kontextmenü der Raumzeile */
+.room-menu {
+  position: fixed;
+  z-index: 320;
+  min-width: 210px;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.room-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: var(--text);
+  transition: background 0.12s ease;
+}
+.room-menu-item:hover { background: var(--hover); }
+
+/* Composer-Zusatzbuttons (Anhang, Emoji, Mikrofon) */
+.composer-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  font-size: 18px;
+}
+.composer-btn:disabled { opacity: 0.4; cursor: default; }
+.composer-btn:disabled:hover { background: none; color: var(--text-secondary); }
+
+/* Sprachaufnahme: Aufnahme-UI ersetzt die Composer-Zeile */
+#composer.recording > #composer-input,
+#composer.recording > #send-btn,
+#composer.recording > .composer-btn { display: none; }
+#composer .mm-recorder { flex: 1; min-width: 0; }
+
+/* Module-Inhalte in Bubbles: kein pre-wrap erben, nicht überlaufen */
+.bubble .mm-embed,
+.bubble .mm-audio,
+.bubble .mm-video,
+.bubble .mm-cal-card { white-space: normal; max-width: 100%; }
+.bubble .mm-embed { overflow-wrap: normal; }
+
+/* Versions-Hinweis im Einstellungs-Panel */
+.settings-version {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
 }
 
 /* ===================== Responsive ===================== */

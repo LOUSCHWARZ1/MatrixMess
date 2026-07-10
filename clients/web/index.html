@@ -2,12 +2,17 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' https:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' https:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src https://www.youtube-nocookie.com https://www.tiktok.com https://www.instagram.com">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>MatrixMess</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="spaces.css">
+<link rel="stylesheet" href="media.css">
+<link rel="stylesheet" href="embeds.css">
+<link rel="stylesheet" href="emoji.css">
+<link rel="stylesheet" href="calendar.css">
 </head>
 <body>
 
@@ -43,11 +48,13 @@
       <header class="sidebar-header">
         <div class="app-badge" aria-hidden="true">💬</div>
         <h2>MatrixMess</h2>
+        <button id="calendar-btn" class="icon-btn" title="Kalender" aria-label="Kalender öffnen">📅<span id="calendar-badge" class="hidden"></span></button>
         <button id="settings-btn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙︎</button>
       </header>
       <div class="search-wrap">
         <input id="room-search" type="search" placeholder="Suchen" aria-label="Räume durchsuchen">
       </div>
+      <div id="space-bar" aria-label="Bereiche"></div>
       <nav id="room-list" aria-label="Raumliste"></nav>
     </aside>
 
@@ -65,6 +72,7 @@
             <div id="chat-name"></div>
             <div id="chat-sub"></div>
           </div>
+          <button id="event-btn" class="header-pill-btn" title="Termin planen" aria-label="Termin planen">📅 Termin</button>
         </header>
 
         <div id="timeline-wrap">
@@ -90,7 +98,11 @@
         </div>
 
         <footer id="composer">
+          <button id="attach-btn" class="icon-btn composer-btn" title="Datei anhängen" aria-label="Datei anhängen">📎</button>
+          <input id="file-input" type="file" multiple class="hidden" tabindex="-1" aria-hidden="true">
           <textarea id="composer-input" rows="1" placeholder="Nachricht" aria-label="Nachricht schreiben"></textarea>
+          <button id="emoji-btn" class="icon-btn composer-btn" title="Emoji einfügen" aria-label="Emoji einfügen">☺</button>
+          <button id="mic-btn" class="icon-btn composer-btn" title="Sprachnachricht aufnehmen" aria-label="Sprachnachricht aufnehmen">🎤</button>
           <button id="send-btn" title="Senden" aria-label="Nachricht senden" disabled>➤</button>
         </footer>
       </div>
@@ -114,6 +126,51 @@
         </div>
         <h4>Akzentfarbe</h4>
         <div id="accent-row" aria-label="Akzentfarbe"></div>
+        <h4>Chat-Dichte</h4>
+        <div id="density-seg" class="segmented" role="radiogroup" aria-label="Chat-Dichte">
+          <button data-density-opt="comfortable" role="radio">Komfortabel</button>
+          <button data-density-opt="compact" role="radio">Kompakt</button>
+        </div>
+        <h4>Textgröße</h4>
+        <div id="textsize-seg" class="segmented" role="radiogroup" aria-label="Textgröße">
+          <button data-textsize-opt="small" role="radio">Klein</button>
+          <button data-textsize-opt="standard" role="radio">Standard</button>
+          <button data-textsize-opt="large" role="radio">Groß</button>
+          <button data-textsize-opt="xlarge" role="radio">Sehr groß</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h4>Chat</h4>
+        <label class="toggle-row">
+          <span>Link-Vorschauen</span>
+          <input id="linkpreview-toggle" type="checkbox">
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </label>
+        <label class="toggle-row">
+          <span>Medien inline anzeigen</span>
+          <input id="inlinemedia-toggle" type="checkbox">
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </label>
+        <label class="toggle-row">
+          <span>Mit Enter senden</span>
+          <input id="entersend-toggle" type="checkbox">
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </label>
+      </section>
+
+      <section class="settings-section">
+        <h4>Privatsphäre</h4>
+        <label class="toggle-row">
+          <span>Lesebestätigungen senden</span>
+          <input id="readreceipt-toggle" type="checkbox">
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </label>
+        <label class="toggle-row">
+          <span>Tippindikatoren senden</span>
+          <input id="typing-toggle" type="checkbox">
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </label>
       </section>
 
       <section class="settings-section">
@@ -142,6 +199,7 @@
         <h4>Konto</h4>
         <div id="settings-user" class="settings-user"></div>
         <button id="logout-btn" class="danger-btn">Abmelden</button>
+        <div class="settings-version">MatrixMess Web · Version 0.5.0</div>
       </section>
     </div>
   </div>
