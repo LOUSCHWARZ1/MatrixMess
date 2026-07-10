@@ -1447,3 +1447,73 @@ html.force-mobile #space-bar { display: block; }
 .room-item.dragging { opacity: .5; }
 .room-item.drop-before { box-shadow: inset 0 2px 0 var(--accent, #8b4df7); }
 .room-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent, #8b4df7); }
+
+/* ---- Vertikale Bereichs-Navigation (Baum) ---- */
+#space-bar { display: none; }
+
+.nav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 4px;
+}
+.nav-head-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #888);
+}
+.nav-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+}
+.nav-add-btn:hover { background: var(--bg-secondary, rgba(0,0,0,.06)); color: var(--accent, #8b4df7); }
+
+.nav-section { margin-bottom: 2px; }
+.nav-section-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #888);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.nav-section-header:hover { color: var(--text, #111); }
+.nav-section-chevron {
+  display: inline-flex;
+  transition: transform .15s ease;
+  color: var(--text-secondary, #999);
+}
+.nav-section.collapsed .nav-section-chevron { transform: rotate(-90deg); }
+.nav-section-emoji { font-size: 14px; text-transform: none; }
+.nav-section-label { flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-section-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, #aaa);
+  background: var(--bg-secondary, rgba(0,0,0,.05));
+  border-radius: 9px;
+  padding: 1px 7px;
+}
+.nav-section-body { display: block; }
+.nav-section.collapsed .nav-section-body { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .nav-section-chevron { transition: none; }
+}
