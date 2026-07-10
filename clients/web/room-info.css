@@ -75,3 +75,5 @@
 
 @media (max-width: 720px) { #roominfo-panel { width: 100%; border-left: none; } }
 .ri-media-cell.ri-media-video { background: var(--bg-tertiary, #ddd); cursor: default; }
+
+.ri-member-list { display: flex; flex-direction: column; }

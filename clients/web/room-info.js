@@ -32,6 +32,13 @@ let bodyEl = null;
 let titleEl = null;
 let activeRoomId = null;
 let activeTab = 'info';
+let thumbUrls = []; // ObjectURLs der Raster-Thumbnails, bei Re-Render freigeben
+
+function trackThumbUrl(url) { thumbUrls.push(url); return url; }
+function revokeThumbUrls() {
+  for (const u of thumbUrls) { try { URL.revokeObjectURL(u); } catch (e) { /* */ } }
+  thumbUrls = [];
+}
 
 const TABS = [
   { id: 'info', label: 'Info', icon: 'user' },
@@ -73,6 +80,7 @@ export function openRoomInfo(roomId) {
 export function closeRoomInfo() {
   if (overlayEl) overlayEl.classList.add('hidden');
   activeRoomId = null;
+  revokeThumbUrls();
 }
 
 export function refreshRoomInfo(roomId) {
@@ -84,6 +92,9 @@ function render() {
   if (!room || !bodyEl) return;
   titleEl.textContent = D.roomDisplayName(room);
 
+  // Alte Thumbnail-ObjectURLs freigeben, bevor der Inhalt ersetzt wird
+  // (verhindert Akkumulation beim Neu-Rendern nach jedem Sync).
+  revokeThumbUrls();
   bodyEl.textContent = '';
 
   // Tab-Leiste
@@ -206,7 +217,7 @@ function renderMedia(room, c) {
       D.getAttachmentBlob(it.content).then((blob) => {
         if (!cell.isConnected) return;
         const img = document.createElement('img');
-        img.alt = ''; img.src = URL.createObjectURL(blob);
+        img.alt = ''; img.src = trackThumbUrl(URL.createObjectURL(blob));
         cell.appendChild(img);
       }).catch(() => { /* Zelle bleibt leer */ });
       cell.addEventListener('click', () => {
