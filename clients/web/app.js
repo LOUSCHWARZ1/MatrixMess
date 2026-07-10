@@ -2433,6 +2433,45 @@ function cancelBanner() {
   if (wasEdit) resetComposer();
 }
 
+/** Verarbeitet /-Befehle. Gibt true zurück, wenn der Text ein Befehl war
+ *  (dann nicht als normale Nachricht senden). Unbekannte /befehle -> false. */
+async function runSlashCommand(room, text) {
+  const sp = text.indexOf(' ');
+  const cmd = (sp === -1 ? text : text.slice(0, sp)).toLowerCase();
+  const rest = sp === -1 ? '' : text.slice(sp + 1).trim();
+
+  const sendPlain = (body) => sendRoomMessage(room, { msgtype: 'm.text', body });
+  const sendEmote = (body) => sendRoomMessage(room, { msgtype: 'm.emote', body });
+
+  switch (cmd) {
+    case '/me':
+      if (!rest) return false;
+      await sendEmote(rest);
+      return true;
+    case '/shrug':
+      await sendPlain((rest ? rest + ' ' : '') + '¯\\_(ツ)_/¯');
+      return true;
+    case '/tableflip':
+      await sendPlain((rest ? rest + ' ' : '') + '(╯°□°)╯︵ ┻━┻');
+      return true;
+    case '/unflip':
+      await sendPlain((rest ? rest + ' ' : '') + '┬─┬ ノ( ゜-゜ノ)');
+      return true;
+    case '/spoiler':
+      if (!rest) return false;
+      await sendPlain('► ' + rest);
+      return true;
+    case '/dice':
+      await sendPlain(rollDice().text);
+      return true;
+    case '/flip':
+      await sendPlain(flipCoin().text);
+      return true;
+    default:
+      return false; // unbekannt -> als normaler Text senden
+  }
+}
+
 async function sendCurrentMessage() {
   const room = rooms.get(activeRoomId);
   if (!room) return;
@@ -2444,6 +2483,12 @@ async function sendCurrentMessage() {
   if (!text.trim()) return;
 
   stopTypingSignal();
+
+  // Slash-Commands (nur bei neuer Nachricht, nicht beim Bearbeiten/Antworten)
+  if (!editTarget && !replyTarget && text.startsWith('/')) {
+    const handled = await runSlashCommand(room, text);
+    if (handled) { resetComposer(); return; }
+  }
 
   /* --- Bearbeiten (m.replace) --- */
   if (editTarget) {
