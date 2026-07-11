@@ -795,6 +795,69 @@ async function doLogin(hsInput, user, password) {
   };
 }
 
+/**
+ * Registrierung per User-Interactive-Auth (m.login.dummy-Flow, wie ihn
+ * Server mit offener Registrierung anbieten). Server, die zusätzliche
+ * Schritte verlangen (E-Mail, Token, Captcha), werden ehrlich abgelehnt.
+ */
+async function doRegister(hsInput, user, password) {
+  const baseUrl = await discoverBaseUrl(hsInput);
+  const username = user.trim().replace(/^@/, '').split(':')[0].toLowerCase();
+
+  // Schritt 1: leere Anfrage liefert Session + erlaubte Flows (401 ist Teil
+  // des Protokolls, kein Fehler).
+  const first = await fetch(baseUrl + '/_matrix/client/v3/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  let flowData = null;
+  try { flowData = await first.json(); } catch (e) { flowData = null; }
+  if (first.status !== 401) {
+    const errcode = flowData && flowData.errcode;
+    if (errcode === 'M_FORBIDDEN' || first.status === 403) {
+      throw new ApiError('Dieser Server erlaubt keine Registrierung über Apps.', 'M_FORBIDDEN', first.status);
+    }
+    throw new ApiError((flowData && flowData.error) || `HTTP ${first.status}`, errcode, first.status);
+  }
+  const flows = (flowData && flowData.flows) || [];
+  const hasDummy = flows.some((f) =>
+    Array.isArray(f.stages) && f.stages.length === 1 && f.stages[0] === 'm.login.dummy');
+  if (!hasDummy) {
+    throw new ApiError(
+      'Dieser Server verlangt zusätzliche Schritte (z. B. E-Mail-Bestätigung, Token oder Captcha). ' +
+      'Bitte registriere dich einmalig über die Webseite des Servers und melde dich dann hier an.',
+      'MM_UIA_UNSUPPORTED', 401);
+  }
+
+  // Schritt 2: eigentliche Registrierung mit Dummy-Auth.
+  const res = await fetch(baseUrl + '/_matrix/client/v3/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username,
+      password,
+      initial_device_display_name: 'MatrixMess Web',
+      auth: { type: 'm.login.dummy', session: flowData.session },
+    }),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  if (!res.ok) {
+    throw new ApiError((data && data.error) || `HTTP ${res.status}`, data && data.errcode, res.status);
+  }
+  if (!data || !data.access_token) {
+    // Manche Server geben kein Token direkt zurück – dann regulär anmelden.
+    return doLogin(baseUrl, username, password);
+  }
+  return {
+    baseUrl,
+    userId: data.user_id,
+    accessToken: data.access_token,
+    deviceId: data.device_id,
+  };
+}
+
 async function doLogout() {
   const old = session;
   stopSync();
@@ -1051,6 +1114,8 @@ async function getJoinedMembers(roomId) {
           membership: 'join',
         });
       }
+      // Bridge-Erkennung über Ghost-/Bot-Mitglieder nachziehen.
+      updateBridgeHint(room, uid);
     }
   }
   memberCache.set(roomId, { ts: Date.now(), userIds });
@@ -1237,27 +1302,63 @@ function getRoom(roomId) {
 /** Räume, für die schon einmal Mitglieder zwecks Namensfindung geladen wurden. */
 const nameFetchAttempted = new Set();
 
+/** Bridge-Service-Konto (Bot)? Solche Konten sind nie namensgebend. */
+function isBridgeBotUser(uid) {
+  const local = String(uid || '').replace(/^@/, '').split(':')[0].toLowerCase();
+  return /^_?(whatsapp|signal|telegram|instagram|discord|facebook|meta|messenger|imessage|gmessages|slack|bridge)[._-]?bot$/.test(local);
+}
+
+/** Bridge-Ghost-Konto (Puppet eines Fremddienst-Nutzers)? */
+function isBridgeGhostUser(uid) {
+  const s = String(uid || '').toLowerCase();
+  return BRIDGE_SENDER_PREFIXES.some(([prefix]) => s.startsWith(prefix));
+}
+
+/** MEIN eigener Bridge-Ghost? In Bridge-DMs sitzt neben der echten Person
+ *  auch ein Puppet des eigenen Kontos – erkennbar am identischen
+ *  Anzeigenamen zum eigenen Profil in diesem Raum. */
+function isOwnGhost(room, uid, member) {
+  if (!session || uid === session.userId) return false;
+  if (!isBridgeGhostUser(uid)) return false;
+  const me = room.members.get(session.userId);
+  const myName = me && me.displayname;
+  return !!myName && !!member && member.displayname === myName;
+}
+
+/** Namensgebende andere Mitglieder: ohne mich, ohne Bridge-Bot, ohne meinen
+ *  eigenen Ghost. strict=false lässt Bot/Ghost-Filter weg (Fallback). */
+function namingMembers(room, strict) {
+  const out = [];
+  for (const [uid, m] of room.members) {
+    if (session && uid === session.userId) continue;
+    if (m && m.membership && m.membership !== 'join' && m.membership !== 'invite') continue;
+    if (strict && (isBridgeBotUser(uid) || isOwnGhost(room, uid, m))) continue;
+    out.push({ uid, name: (m && m.displayname) || String(uid).replace(/^@/, '').split(':')[0] });
+  }
+  return out;
+}
+
 function roomDisplayName(room) {
   if (room.explicitName) return room.explicitName;
   if (room.heroes && room.heroes.length) {
-    const names = room.heroes.slice(0, 3).map((uid) => memberName(room, uid));
+    // Auch bei Heroes: Bridge-Bot und eigenen Ghost herausfiltern, sonst
+    // heißt ein 1:1-Signal-Chat "Signal bridge bot, Lorenz, Lou Schwarz".
+    let heroes = room.heroes.filter((uid) =>
+      !isBridgeBotUser(uid) && !isOwnGhost(room, uid, room.members.get(uid)));
+    if (!heroes.length) heroes = room.heroes;
+    const names = heroes.slice(0, 3).map((uid) => memberName(room, uid));
     let label = names.join(', ');
-    if (room.heroes.length > 3) label += ' …';
+    if (heroes.length > 3) label += ' …';
     if (label) return label;
   }
   // Ohne Namen und Heroes (z. B. Bridge-Bot-Räume, lazy-geladene Syncs):
   // aus den bekannten anderen Mitgliedern benennen – wie Element es tut.
   if (session) {
-    const others = [];
-    for (const [uid, m] of room.members) {
-      if (uid === session.userId) continue;
-      if (m && m.membership && m.membership !== 'join' && m.membership !== 'invite') continue;
-      others.push((m && m.displayname) || String(uid).replace(/^@/, '').split(':')[0]);
-      if (others.length >= 3) break;
-    }
+    let others = namingMembers(room, true);
+    if (!others.length) others = namingMembers(room, false);
     if (others.length) {
-      let label = others.join(', ');
-      if (room.members.size - 1 > 3) label += ' …';
+      let label = others.slice(0, 3).map((o) => o.name).join(', ');
+      if (others.length > 3) label += ' …';
       return label;
     }
   }
@@ -1527,12 +1628,21 @@ function applyEditEvent(room, ev) {
 
 const BRIDGE_SENDER_PREFIXES = [
   ['@whatsapp_', 'whatsapp'],
+  ['@whatsappbot', 'whatsapp'],
   ['@signal_', 'signal'],
+  ['@signalbot', 'signal'],
   ['@telegram_', 'telegram'],
   ['@telegrambot', 'telegram'],
   ['@instagram_', 'instagram'],
+  ['@instagrambot', 'instagram'],
+  ['@meta_', 'bridge'],
   ['@_discord_', 'discord'],
   ['@discord_', 'discord'],
+  ['@discordbot', 'discord'],
+  ['@facebook_', 'bridge'],
+  ['@messenger_', 'bridge'],
+  ['@imessage_', 'bridge'],
+  ['@slack_', 'bridge'],
 ];
 
 function updateBridgeHint(room, sender) {
@@ -1774,7 +1884,12 @@ async function processSync(data, generation) {
     if (jr.summary && typeof jr.summary['m.joined_member_count'] === 'number') {
       room.joinedCount = jr.summary['m.joined_member_count'];
     }
-    for (const ev of (jr.state && jr.state.events) || []) applyStateEvent(room, ev);
+    for (const ev of (jr.state && jr.state.events) || []) {
+      applyStateEvent(room, ev);
+      // Bridge-Erkennung: Ghost-Mitglieder (state_key) sind das stärkste Signal.
+      updateBridgeHint(room, ev.state_key);
+      updateBridgeHint(room, ev.sender);
+    }
 
     const tl = jr.timeline || {};
     if (tl.prev_batch && (room.events.length === 0 || tl.limited)) {
@@ -1783,7 +1898,8 @@ async function processSync(data, generation) {
     for (const ev of tl.events || []) {
       if (ev.state_key !== undefined) {
         applyStateEvent(room, ev);
-        updateBridgeHint(room, ev.sender); // Bridge-Erkennung auch über Member-Events
+        updateBridgeHint(room, ev.state_key); // Ghost-Mitglied = stärkstes Signal
+        updateBridgeHint(room, ev.sender);
         // Sichtbare Systemzeile (Beitritt, Umbenennung …) in die Timeline.
         const sys = makeSystemEventObject(room, ev);
         if (sys) {
@@ -3188,10 +3304,18 @@ function renderChatHeader(room) {
   if (room.isDirect) {
     subParts.push('Direktnachricht');
   } else {
-    // Menschliche Info statt roher Raum-ID (UX-Analyse Kap. 8): Mitgliederzahl.
-    const count = room.joinedCount ||
-      [...room.members.values()].filter((m) => !m.membership || m.membership === 'join').length;
-    if (count > 0) subParts.push(count === 1 ? '1 Mitglied' : count + ' Mitglieder');
+    // Menschliche Info statt roher Raum-ID (UX-Analyse Kap. 8): Mitgliederzahl –
+    // ohne Bridge-Bot und eigenen Ghost (ein Signal-1:1 ist sonst "4 Mitglieder").
+    const real = namingMembers(room, true).length;
+    if (real === 1) {
+      subParts.push('Direktnachricht' + (spaces.detectBridge(room) ? ' (Bridge)' : ''));
+    } else if (real > 1) {
+      subParts.push((real + 1) + ' Mitglieder');
+    } else {
+      const count = room.joinedCount ||
+        [...room.members.values()].filter((m) => !m.membership || m.membership === 'join').length;
+      if (count > 0) subParts.push(count === 1 ? '1 Mitglied' : count + ' Mitglieder');
+    }
   }
   if (!subParts.length && room.lastEventTs) {
     subParts.push('Zuletzt aktiv ' + listTimeLabel(room.lastEventTs));
@@ -5014,13 +5138,54 @@ function showApp() {
   initFeatureModules().catch((e) => console.warn('Feature-Module:', e));
 }
 
+/* ---------- Anmelden / Registrieren umschalten ---------- */
+
+let authMode = 'login'; // 'login' | 'register'
+const loginSubEl = $('#login-sub');
+const pass2Field = $('#pass2-field');
+const loginPass2 = $('#login-pass2');
+const authModeToggle = $('#auth-mode-toggle');
+
+function applyAuthMode() {
+  const reg = authMode === 'register';
+  loginSubEl.textContent = reg
+    ? 'Erstelle ein neues Matrix-Konto auf deinem Homeserver'
+    : 'Melde dich mit deinem Matrix-Konto an';
+  pass2Field.classList.toggle('hidden', !reg);
+  loginPass2.required = reg;
+  loginBtn.textContent = reg ? 'Konto erstellen' : 'Anmelden';
+  authModeToggle.textContent = reg
+    ? 'Schon ein Konto? Anmelden'
+    : 'Neu hier? Konto erstellen';
+  loginPass.setAttribute('autocomplete', reg ? 'new-password' : 'current-password');
+  loginError.classList.add('hidden');
+}
+
+authModeToggle.addEventListener('click', () => {
+  authMode = authMode === 'login' ? 'register' : 'login';
+  applyAuthMode();
+});
+
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   loginError.classList.add('hidden');
+  const registering = authMode === 'register';
+  if (registering && loginPass.value !== loginPass2.value) {
+    loginError.textContent = 'Die Passwörter stimmen nicht überein.';
+    loginError.classList.remove('hidden');
+    return;
+  }
+  if (registering && loginPass.value.length < 8) {
+    loginError.textContent = 'Bitte wähle ein Passwort mit mindestens 8 Zeichen.';
+    loginError.classList.remove('hidden');
+    return;
+  }
   loginBtn.disabled = true;
-  loginBtn.textContent = 'Anmelden …';
+  loginBtn.textContent = registering ? 'Konto wird erstellt …' : 'Anmelden …';
   try {
-    const newSession = await doLogin(loginHs.value, loginUser.value, loginPass.value);
+    const newSession = registering
+      ? await doRegister(loginHs.value, loginUser.value, loginPass.value)
+      : await doLogin(loginHs.value, loginUser.value, loginPass.value);
     clearSessionStorage(); // alten Sync-Token eines früheren Kontos verwerfen
     session = newSession;
     saveSession(session);
@@ -5028,7 +5193,7 @@ loginForm.addEventListener('submit', async (e) => {
     cryptoInitPromise = initCrypto();
     syncLoop();
   } catch (err) {
-    let msg = 'Anmeldung fehlgeschlagen';
+    let msg = registering ? 'Registrierung fehlgeschlagen' : 'Anmeldung fehlgeschlagen';
     // fetch() wirft bei Netzwerk-/CORS-Fehlern einen TypeError ("Failed to fetch"):
     // die Anfrage erreichte den Homeserver gar nicht bzw. der Browser durfte die
     // Antwort nicht lesen. Das ist fast immer eine fehlende CORS-Freigabe des Servers.
@@ -5038,20 +5203,30 @@ loginForm.addEventListener('submit', async (e) => {
       msg = 'Homeserver nicht erreichbar. Meist fehlt dem Server die CORS-Freigabe ' +
             '(Access-Control-Allow-Origin) für Web-Clients, oder die Adresse ist falsch. ' +
             'Prüfe die Adresse; die iPhone-App funktioniert auch ohne CORS.';
+    } else if (err && err.errcode === 'M_USER_IN_USE') {
+      msg = 'Dieser Benutzername ist bereits vergeben.';
+    } else if (err && err.errcode === 'M_INVALID_USERNAME') {
+      msg = 'Ungültiger Benutzername – erlaubt sind Kleinbuchstaben, Zahlen, . _ = - /';
+    } else if (err && err.errcode === 'M_WEAK_PASSWORD') {
+      msg = 'Der Server lehnt das Passwort als zu schwach ab.';
+    } else if (err && err.errcode === 'MM_UIA_UNSUPPORTED') {
+      msg = err.message;
     } else if (err && err.errcode === 'M_FORBIDDEN') {
-      msg = 'Benutzername oder Passwort falsch';
+      msg = registering
+        ? 'Dieser Server erlaubt keine Registrierung über Apps.'
+        : 'Benutzername oder Passwort falsch';
     } else if (err && err.errcode === 'M_USER_DEACTIVATED') {
       msg = 'Dieses Konto wurde deaktiviert';
     } else if (err && err.errcode === 'M_LIMIT_EXCEEDED') {
       msg = 'Zu viele Versuche – bitte kurz warten';
     } else if (err && err.message) {
-      msg = 'Anmeldung fehlgeschlagen: ' + err.message;
+      msg = (registering ? 'Registrierung fehlgeschlagen: ' : 'Anmeldung fehlgeschlagen: ') + err.message;
     }
     loginError.textContent = msg;
     loginError.classList.remove('hidden');
   } finally {
     loginBtn.disabled = false;
-    loginBtn.textContent = 'Anmelden';
+    loginBtn.textContent = authMode === 'register' ? 'Konto erstellen' : 'Anmelden';
   }
 });
 
