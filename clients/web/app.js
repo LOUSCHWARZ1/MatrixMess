@@ -210,6 +210,14 @@ let editTarget = null;       // eigenes Event-Objekt im Bearbeiten-Modus
 
 let unreadMarkerEventId = null; // "N neue Nachrichten"-Trenner beim Raumöffnen
 let unreadMarkerCount = 0;
+
+// DOM-Begrenzung der Timeline: nur die letzten N Zeilen liegen im DOM, der
+// Rest bleibt im Speicher und ist per "Frühere anzeigen" nachladbar. Hält das
+// DOM auch in sehr langen Chats klein (statt bei jeder Aktualisierung tausende
+// Knoten neu zu bauen).
+const RENDER_CAP = 200;
+const RENDER_STEP = 200;
+let renderWindow = RENDER_CAP;
 const expandedSysGroups = new Set(); // aufgeklappte System-Ereignis-Gruppen
 
 let unseenCount = 0;         // neue fremde Nachrichten, während nicht am Ende gescrollt
@@ -3885,6 +3893,8 @@ function openRoom(roomId) {
     if (isRoomInfoOpen()) closeRoomInfo();
     draftMentions.clear(); // Mention-Zuordnungen gelten pro Raum-Entwurf
     closeMentionPopover();
+    // Render-Fenster zurücksetzen; groß genug, dass die Ungelesen-Marke sichtbar ist.
+    renderWindow = Math.max(RENDER_CAP, (room.unread || 0) + 30);
     // Ungelesen-Sprungmarke: VOR dem Read-Receipt bestimmen, wo die ersten
     // neuen Nachrichten beginnen ("N neue Nachrichten"-Trenner).
     unreadMarkerEventId = null;
@@ -4013,7 +4023,22 @@ function renderTimeline(mode) {
   timelineEl.textContent = '';
   closeEmojiPopover();
 
-  if (room.prevBatch) {
+  // Spielstände deterministisch aus allen Events berechnen (idempotent).
+  const games = collectGameState(room.events);
+  // Spielzüge sind unsichtbar – vorab herausfiltern, damit sie Gruppierung
+  // und Datumstrenner nicht verfälschen.
+  const visAll = room.events.filter((e) => !isGameMove(e));
+  // DOM begrenzen: nur die letzten renderWindow Einträge rendern.
+  const startIdx = Math.max(0, visAll.length - renderWindow);
+  const vis = visAll.slice(startIdx);
+  const hasHiddenInMemory = startIdx > 0;
+
+  if (hasHiddenInMemory) {
+    // Es liegen noch geladene (aber nicht gerenderte) Nachrichten im Speicher.
+    const more = el('button', 'load-older-btn', 'Frühere Nachrichten anzeigen');
+    more.addEventListener('click', () => { renderWindow += RENDER_STEP; renderTimeline('prepend'); });
+    timelineEl.appendChild(more);
+  } else if (room.prevBatch) {
     const older = el('button', 'load-older-btn', room.paginating ? 'Lädt …' : 'Ältere Nachrichten laden');
     older.disabled = room.paginating;
     older.addEventListener('click', () => loadOlderMessages(room));
@@ -4036,12 +4061,6 @@ function renderTimeline(mode) {
     intro.appendChild(encLine);
     timelineEl.appendChild(intro);
   }
-
-  // Spielstände deterministisch aus allen Events berechnen (idempotent).
-  const games = collectGameState(room.events);
-  // Spielzüge sind unsichtbar – vorab herausfiltern, damit sie Gruppierung
-  // und Datumstrenner nicht verfälschen.
-  const vis = room.events.filter((e) => !isGameMove(e));
   // Fremde Lesebestätigungen: höchster gelesener Timeline-Index für die
   // Gelesen-Häkchen an eigenen Nachrichten (alles davor gilt als gelesen).
   let maxReadIdx = -1;
@@ -4671,6 +4690,9 @@ async function loadOlderMessages(room) {
     }
     room.events = older.concat(room.events);
     room.prevBatch = res.chunk && res.chunk.length ? (res.end || null) : null;
+    // Render-Fenster erweitern, damit die frisch geladenen älteren Nachrichten
+    // nicht sofort wieder von der DOM-Begrenzung verdeckt werden.
+    if (activeRoomId === room.roomId) renderWindow += older.length + 5;
   } catch (err) {
     toast('Ältere Nachrichten konnten nicht geladen werden');
   } finally {
