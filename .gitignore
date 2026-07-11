@@ -1,0 +1,33 @@
+# Build-Artefakte und Binärdateien gehören in Releases/Actions-Artifacts,
+# nicht in die Git-Historie.
+artifacts/
+_build_logs_latest/
+_build_logs_latest.zip
+*.ipa
+*.apk
+*.aab
+*.zip
+*.log
+
+# Abhängigkeiten / Caches
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+
+# iOS / Xcode
+ios/build/
+ios/DerivedData/
+*.xcuserstate
+ios/*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Android
+clients/android/.gradle/
+clients/android/build/
+clients/android/app/build/
+clients/android/local.properties
+
+# Editor
+.idea/
+.vscode/
+*.swp

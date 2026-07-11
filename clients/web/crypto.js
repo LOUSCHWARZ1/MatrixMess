@@ -510,9 +510,11 @@ export class CryptoEngine {
 
     const result = await machine.importBackedUpRoomKeys(backedUp, undefined, version);
 
-    // Recovery Key merken, damit spätere Sitzungen automatisch wiederherstellen
-    // (gleiche Vertrauensgrenze wie der bereits lokal liegende Pickle-Key).
-    try { localStorage.setItem(this._recoveryKeyStorageKey(), trimmed); } catch (e) { /* */ }
+    // SICHERHEIT: Den Recovery Key NICHT persistent speichern. Die importierten
+    // Raumschlüssel liegen jetzt im (gepickelten) Crypto-Store und bleiben über
+    // Reloads lesbar – der Key selbst muss dafür nicht auf der Platte liegen.
+    // Ein zuvor evtl. gespeicherter Key wird hier entfernt.
+    this.forgetRecoveryKey();
 
     return { imported: result.importedCount, failed };
   }
