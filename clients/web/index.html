@@ -30,7 +30,7 @@
     <div class="login-card">
       <div class="login-icon" aria-hidden="true"></div>
       <h1>MatrixMess</h1>
-      <p class="login-sub">Melde dich mit deinem Matrix-Konto an</p>
+      <p class="login-sub" id="login-sub">Melde dich mit deinem Matrix-Konto an</p>
       <form id="login-form" autocomplete="on">
         <label class="field">
           <span>Homeserver</span>
@@ -44,8 +44,13 @@
           <span>Passwort</span>
           <input id="login-pass" type="password" autocomplete="current-password" required>
         </label>
+        <label class="field hidden" id="pass2-field">
+          <span>Passwort wiederholen</span>
+          <input id="login-pass2" type="password" autocomplete="new-password">
+        </label>
         <div id="login-error" class="login-error hidden" role="alert"></div>
         <button id="login-btn" class="primary-btn" type="submit">Anmelden</button>
+        <button id="auth-mode-toggle" class="login-toggle" type="button">Neu hier? Konto erstellen</button>
       </form>
     </div>
   </div>
