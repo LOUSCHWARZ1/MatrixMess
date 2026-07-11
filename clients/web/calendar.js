@@ -125,7 +125,16 @@ let hooks = {
 /** Persistenter, geräteübergreifender Zustand. */
 let state = {
   events: [], // [Termin] – sortiert nach startTs aufsteigend
+  feeds: [],  // Kalender-Abos: [{ id, url, name }] (Apple/Google/Outlook per ICS-URL)
 };
+
+/** Laufzeit-Cache der Abo-Inhalte (nicht in account_data – nur die URLs syncen).
+ *  feedId -> { events: [], fetchedAt: number, error: string|null } */
+const feedCache = new Map();
+const LS_FEED_CACHE = 'mm.calendarFeedCache';
+const FEED_STALE_MS = 15 * 60 * 1000;   // Panel-Öffnen: nur ältere Abos neu laden
+const FEED_WINDOW_MS = 120 * 24 * 3600 * 1000; // Termine bis 120 Tage voraus
+const FEED_MAX_EVENTS = 300;            // pro Abo
 
 let putTimer = null;
 let activeModal = null;
@@ -166,6 +175,7 @@ function schedulePutAccountData() {
     const payload = {
       version: 1,
       events: state.events.map((evt) => ({ ...evt })),
+      feeds: state.feeds.map((f) => ({ ...f })),
     };
     Promise.resolve(hooks.putAccountData(ACCOUNT_DATA_TYPE, payload)).catch((e) => {
       console.warn('[calendar] account_data konnte nicht geschrieben werden (lokaler Cache bleibt):', e);
@@ -226,16 +236,33 @@ function coerceEvent(raw) {
 
 /** Rohdaten (account_data / localStorage) in einen sauberen Zustand wandeln. */
 function sanitizeState(raw) {
-  const out = { events: [] };
-  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.events)) return out;
-  const seen = new Set();
-  for (const rawEvt of raw.events) {
-    const evt = coerceEvent(rawEvt);
-    if (!evt || seen.has(evt.id)) continue;
-    seen.add(evt.id);
-    out.events.push(evt);
+  const out = { events: [], feeds: [] };
+  if (!raw || typeof raw !== 'object') return out;
+  if (Array.isArray(raw.events)) {
+    const seen = new Set();
+    for (const rawEvt of raw.events) {
+      const evt = coerceEvent(rawEvt);
+      if (!evt || seen.has(evt.id)) continue;
+      seen.add(evt.id);
+      out.events.push(evt);
+    }
+    out.events.sort((a, b) => a.startTs - b.startTs || a.endTs - b.endTs);
   }
-  out.events.sort((a, b) => a.startTs - b.startTs || a.endTs - b.endTs);
+  if (Array.isArray(raw.feeds)) {
+    const seenF = new Set();
+    for (const f of raw.feeds) {
+      if (!f || typeof f !== 'object') continue;
+      const url = normalizeFeedUrl(f.url);
+      if (!url || typeof f.id !== 'string' || !f.id || seenF.has(f.id)) continue;
+      seenF.add(f.id);
+      out.feeds.push({
+        id: f.id,
+        url,
+        name: typeof f.name === 'string' && f.name.trim() ? f.name.trim().slice(0, 60) : 'Kalender',
+      });
+      if (out.feeds.length >= 10) break;
+    }
+  }
   return out;
 }
 
@@ -375,6 +402,10 @@ export async function initCalendar(opts) {
     }
   }
 
+  // 3) Abonnierte Kalender: gecachte Inhalte sofort, dann im Hintergrund laden.
+  loadFeedCache();
+  refreshAllFeeds(false);
+
   notifyChange();
 }
 
@@ -409,6 +440,394 @@ function deleteEvent(id) {
   state.events.splice(idx, 1);
   changed();
   return true;
+}
+
+/* ============================ ICS-Parser ============================ */
+
+/** webcal:// -> https://; nur http(s) zulassen. */
+function normalizeFeedUrl(raw) {
+  if (typeof raw !== 'string') return null;
+  let s = raw.trim();
+  if (!s) return null;
+  s = s.replace(/^webcal:\/\//i, 'https://');
+  try {
+    const u = new URL(s);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    return u.toString();
+  } catch (e) {
+    return null;
+  }
+}
+
+/** ICS-Zeilen entfalten (RFC 5545: Fortsetzungszeilen beginnen mit Space/Tab). */
+function unfoldIcsLines(text) {
+  const rawLines = String(text).split(/\r\n|\n|\r/);
+  const lines = [];
+  for (const line of rawLines) {
+    if ((line.startsWith(' ') || line.startsWith('\t')) && lines.length) {
+      lines[lines.length - 1] += line.slice(1);
+    } else {
+      lines.push(line);
+    }
+  }
+  return lines;
+}
+
+/** "SUMMARY;LANGUAGE=de:Titel" -> { name, params: {LANGUAGE:'de'}, value } */
+function parseIcsLine(line) {
+  const idx = line.indexOf(':');
+  if (idx < 0) return null;
+  const left = line.slice(0, idx);
+  const value = line.slice(idx + 1);
+  const parts = left.split(';');
+  const name = parts[0].toUpperCase();
+  const params = {};
+  for (let i = 1; i < parts.length; i++) {
+    const eq = parts[i].indexOf('=');
+    if (eq > 0) params[parts[i].slice(0, eq).toUpperCase()] = parts[i].slice(eq + 1).replace(/^"|"$/g, '');
+  }
+  return { name, params, value };
+}
+
+function unescapeIcsText(value) {
+  return String(value)
+    .replace(/\\n/gi, '\n')
+    .replace(/\\,/g, ',')
+    .replace(/\\;/g, ';')
+    .replace(/\\\\/g, '\\');
+}
+
+/** ICS-Zeitwert -> { ts, allDay }. TZID wird als lokale Zeit interpretiert
+ *  (korrekt für den Normalfall "eigener Kalender in eigener Zeitzone"). */
+function parseIcsDate(value, params) {
+  const v = String(value).trim();
+  let m = /^(\d{4})(\d{2})(\d{2})$/.exec(v);
+  if (m || (params && params.VALUE === 'DATE')) {
+    m = m || /^(\d{4})(\d{2})(\d{2})/.exec(v);
+    if (!m) return null;
+    return { ts: new Date(+m[1], +m[2] - 1, +m[3]).getTime(), allDay: true };
+  }
+  m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z?)$/.exec(v);
+  if (!m) return null;
+  const sec = m[6] ? +m[6] : 0;
+  if (m[7] === 'Z') {
+    return { ts: Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], sec), allDay: false };
+  }
+  return { ts: new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], sec).getTime(), allDay: false };
+}
+
+/** ISO-8601-Dauer (PT1H30M, P1D …) in Millisekunden. */
+function parseIcsDuration(value) {
+  const m = /^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(value).trim());
+  if (!m) return null;
+  const ms = ((+m[2] || 0) * 7 * 24 * 3600 + (+m[3] || 0) * 24 * 3600 +
+    (+m[4] || 0) * 3600 + (+m[5] || 0) * 60 + (+m[6] || 0)) * 1000;
+  return m[1] === '-' ? -ms : ms;
+}
+
+/** "FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10" -> Objekt. */
+function parseRrule(value) {
+  const out = {};
+  for (const part of String(value).split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0) out[part.slice(0, eq).toUpperCase()] = part.slice(eq + 1);
+  }
+  return out;
+}
+
+/** Alle VEVENTs eines ICS-Texts als Rohobjekte. */
+function parseIcs(text) {
+  const events = [];
+  let cur = null;
+  for (const line of unfoldIcsLines(text)) {
+    if (/^BEGIN:VEVENT/i.test(line)) { cur = { exdates: [] }; continue; }
+    if (/^END:VEVENT/i.test(line)) {
+      if (cur && cur.start) events.push(cur);
+      cur = null;
+      continue;
+    }
+    if (!cur) continue;
+    const p = parseIcsLine(line);
+    if (!p) continue;
+    switch (p.name) {
+      case 'UID': cur.uid = p.value.trim(); break;
+      case 'SUMMARY': cur.title = unescapeIcsText(p.value).trim(); break;
+      case 'DESCRIPTION': cur.note = unescapeIcsText(p.value).trim(); break;
+      case 'LOCATION': cur.location = unescapeIcsText(p.value).trim(); break;
+      case 'DTSTART': cur.start = parseIcsDate(p.value, p.params); break;
+      case 'DTEND': cur.end = parseIcsDate(p.value, p.params); break;
+      case 'DURATION': cur.durationMs = parseIcsDuration(p.value); break;
+      case 'RRULE': cur.rrule = parseRrule(p.value); break;
+      case 'EXDATE':
+        for (const part of p.value.split(',')) {
+          const d = parseIcsDate(part, p.params);
+          if (d) cur.exdates.push(d.ts);
+        }
+        break;
+      case 'STATUS': cur.cancelled = /^CANCELLED$/i.test(p.value.trim()); break;
+    }
+  }
+  return events;
+}
+
+const ICS_WEEKDAYS = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+
+/**
+ * Ein VEVENT in konkrete Vorkommen im Fenster [von, bis] expandieren.
+ * Unterstützt die gängigen RRULEs (DAILY/WEEKLY inkl. BYDAY/MONTHLY/YEARLY
+ * mit INTERVAL, COUNT, UNTIL, EXDATE); Exoten fallen auf das Einzel-Event
+ * zurück. Ergebnis: [{ title, note, startTs, endTs, allDay, uid }]
+ */
+function expandVevent(ve, windowStart, windowEnd, cap) {
+  if (ve.cancelled || !ve.start) return [];
+  const title = ve.title || 'Termin';
+  const note = [ve.location, ve.note].filter(Boolean).join('\n').slice(0, NOTE_MAX_LEN);
+  const allDay = !!ve.start.allDay;
+  let durMs = 0;
+  if (ve.end) durMs = Math.max(0, ve.end.ts - ve.start.ts);
+  else if (Number.isFinite(ve.durationMs)) durMs = Math.max(0, ve.durationMs);
+  else durMs = allDay ? 24 * 3600 * 1000 : DEFAULT_DURATION_MIN * MS_PER_MIN;
+
+  const mk = (startTs) => ({
+    title, note, allDay, uid: ve.uid || null,
+    startTs, endTs: startTs + durMs,
+  });
+  const excluded = (ts) => ve.exdates.some((x) => Math.abs(x - ts) < 1000);
+
+  const r = ve.rrule;
+  if (!r || !r.FREQ) {
+    const one = ve.start.ts;
+    return (one + durMs >= windowStart && one <= windowEnd && !excluded(one)) ? [mk(one)] : [];
+  }
+
+  const freq = String(r.FREQ).toUpperCase();
+  const interval = Math.max(1, parseInt(r.INTERVAL, 10) || 1);
+  const count = r.COUNT ? Math.max(1, parseInt(r.COUNT, 10) || 1) : Infinity;
+  let until = Infinity;
+  if (r.UNTIL) {
+    const u = parseIcsDate(r.UNTIL, {});
+    if (u) until = u.ts + (u.allDay ? 24 * 3600 * 1000 : 0);
+  }
+  const out = [];
+  const startDate = new Date(ve.start.ts);
+  let produced = 0; // zählt ALLE Vorkommen (für COUNT), nicht nur die im Fenster
+
+  if (freq === 'WEEKLY' && r.BYDAY) {
+    const days = String(r.BYDAY).split(',')
+      .map((d) => ICS_WEEKDAYS[d.trim().slice(-2).toUpperCase()])
+      .filter((d) => d !== undefined);
+    if (days.length) {
+      // Wochenweise ab der Woche des Starts iterieren.
+      const weekAnchor = new Date(startDate);
+      weekAnchor.setHours(0, 0, 0, 0);
+      weekAnchor.setDate(weekAnchor.getDate() - weekAnchor.getDay()); // Sonntag
+      for (let w = 0; produced < count; w += interval) {
+        const base = new Date(weekAnchor);
+        base.setDate(base.getDate() + w * 7);
+        if (base.getTime() > Math.min(windowEnd, until)) break;
+        for (const wd of days.slice().sort((a, b) => a - b)) {
+          const occ = new Date(base);
+          occ.setDate(occ.getDate() + wd);
+          occ.setHours(startDate.getHours(), startDate.getMinutes(), startDate.getSeconds(), 0);
+          const ts = occ.getTime();
+          if (ts < ve.start.ts) continue;
+          if (ts > until || produced >= count) break;
+          produced++;
+          if (ts + durMs >= windowStart && ts <= windowEnd && !excluded(ts)) {
+            out.push(mk(ts));
+            if (out.length >= cap) return out;
+          }
+        }
+      }
+      return out;
+    }
+  }
+
+  // DAILY / WEEKLY ohne BYDAY / MONTHLY / YEARLY: Start fortschreiben.
+  const next = (d, i) => {
+    const n = new Date(d);
+    if (freq === 'DAILY') n.setDate(n.getDate() + i);
+    else if (freq === 'WEEKLY') n.setDate(n.getDate() + 7 * i);
+    else if (freq === 'MONTHLY') n.setMonth(n.getMonth() + i);
+    else if (freq === 'YEARLY') n.setFullYear(n.getFullYear() + i);
+    else return null;
+    return n;
+  };
+  for (let i = 0, d = new Date(startDate); d; i++, d = next(startDate, i * interval)) {
+    const ts = d.getTime();
+    if (ts > until || produced >= count) break;
+    if (ts > windowEnd) break;
+    produced++;
+    if (ts + durMs >= windowStart && !excluded(ts)) {
+      out.push(mk(ts));
+      if (out.length >= cap) break;
+    }
+    if (i > 4000) break; // Sicherheitsnetz
+  }
+  return out;
+}
+
+/** Kompletten ICS-Text in Vorkommen im Standard-Fenster wandeln. */
+function icsToOccurrences(text, cap) {
+  const windowStart = Date.now() - 24 * 3600 * 1000;
+  const windowEnd = Date.now() + FEED_WINDOW_MS;
+  const out = [];
+  for (const ve of parseIcs(text)) {
+    for (const occ of expandVevent(ve, windowStart, windowEnd, cap - out.length)) {
+      out.push(occ);
+      if (out.length >= cap) return out;
+    }
+  }
+  out.sort((a, b) => a.startTs - b.startTs);
+  return out;
+}
+
+/* ============================ Kalender-Abos ============================ */
+
+function loadFeedCache() {
+  const raw = loadLocal(LS_FEED_CACHE);
+  if (!raw || typeof raw !== 'object') return;
+  for (const [id, rec] of Object.entries(raw)) {
+    if (rec && Array.isArray(rec.events)) {
+      feedCache.set(id, { events: rec.events, fetchedAt: rec.fetchedAt || 0, error: null });
+    }
+  }
+}
+
+function saveFeedCache() {
+  const obj = {};
+  for (const [id, rec] of feedCache) {
+    if (state.feeds.some((f) => f.id === id)) {
+      obj[id] = { events: rec.events, fetchedAt: rec.fetchedAt };
+    }
+  }
+  saveLocal(LS_FEED_CACHE, obj);
+}
+
+/** Ein Abo abrufen und parsen; Fehler landen im Cache-Eintrag (UI zeigt sie). */
+async function refreshFeed(feed) {
+  try {
+    const res = await fetch(feed.url, {
+      headers: { Accept: 'text/calendar, text/plain, */*' },
+      redirect: 'follow',
+      credentials: 'omit',
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    if (!/BEGIN:VCALENDAR/i.test(text)) throw new Error('Keine ICS-Daten');
+    const events = icsToOccurrences(text, FEED_MAX_EVENTS);
+    feedCache.set(feed.id, { events, fetchedAt: Date.now(), error: null });
+    saveFeedCache();
+  } catch (err) {
+    const prev = feedCache.get(feed.id) || { events: [], fetchedAt: 0 };
+    // "Failed to fetch" ist im Browser fast immer eine CORS-Sperre des Anbieters.
+    const msg = err && /fetch/i.test(String(err.message))
+      ? 'Abruf im Browser blockiert (CORS) – in der Windows-App funktioniert dieses Abo.'
+      : 'Abruf fehlgeschlagen: ' + ((err && err.message) || 'Unbekannt');
+    feedCache.set(feed.id, { events: prev.events, fetchedAt: prev.fetchedAt, error: msg });
+  }
+  refreshPanelIfOpen();
+  if (typeof hooks.onChange === 'function') {
+    try { hooks.onChange(); } catch (e) { /* */ }
+  }
+}
+
+/** Alle Abos laden; ohne force nur veraltete. */
+function refreshAllFeeds(force) {
+  for (const feed of state.feeds) {
+    const rec = feedCache.get(feed.id);
+    if (!force && rec && Date.now() - rec.fetchedAt < FEED_STALE_MS) continue;
+    refreshFeed(feed); // bewusst parallel, Fehler landen im Cache
+  }
+}
+
+function addFeed(url, name) {
+  const clean = normalizeFeedUrl(url);
+  if (!clean) return { ok: false, reason: 'Ungültige URL (https:// oder webcal:// erwartet)' };
+  if (state.feeds.some((f) => f.url === clean)) return { ok: false, reason: 'Dieser Kalender ist bereits abonniert' };
+  if (state.feeds.length >= 10) return { ok: false, reason: 'Maximal 10 Kalender-Abos' };
+  const feed = {
+    id: 'feed-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    url: clean,
+    name: (typeof name === 'string' && name.trim() ? name.trim() : feedNameFromUrl(clean)).slice(0, 60),
+  };
+  state.feeds.push(feed);
+  changed();
+  refreshFeed(feed);
+  return { ok: true, feed };
+}
+
+function removeFeed(id) {
+  const idx = state.feeds.findIndex((f) => f.id === id);
+  if (idx === -1) return;
+  state.feeds.splice(idx, 1);
+  feedCache.delete(id);
+  saveFeedCache();
+  changed();
+}
+
+function feedNameFromUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    if (/icloud\.com$/i.test(host)) return 'Apple Kalender';
+    if (/google\.com$/i.test(host)) return 'Google Kalender';
+    if (/(office365|outlook|live)\.com$/i.test(host)) return 'Outlook Kalender';
+    return host;
+  } catch (e) {
+    return 'Kalender';
+  }
+}
+
+/** Kommende Abo-Termine (read-only), mit Quellenname versehen. */
+function upcomingFeedEvents() {
+  const now = Date.now();
+  const out = [];
+  for (const feed of state.feeds) {
+    const rec = feedCache.get(feed.id);
+    if (!rec) continue;
+    for (const occ of rec.events) {
+      if (occ.endTs >= now) out.push(Object.assign({ feedName: feed.name, feedId: feed.id }, occ));
+    }
+  }
+  return out;
+}
+
+/* ============================ ICS-Datei-Import ============================ */
+
+/**
+ * ICS-Text als eigene Termine importieren (synct dann über Matrix).
+ * Wiederkehrende Termine werden im 120-Tage-Fenster expandiert; erneuter
+ * Import derselben Datei aktualisiert statt zu duplizieren (stabile IDs).
+ */
+function importIcsText(text) {
+  const occs = icsToOccurrences(text, 200);
+  let added = 0;
+  let updated = 0;
+  for (const occ of occs) {
+    const id = occ.uid ? 'ics:' + occ.uid + ':' + occ.startTs : newEventId();
+    const existing = eventById(id);
+    if (existing) {
+      existing.title = occ.title.slice(0, TITLE_MAX_LEN);
+      existing.note = occ.note;
+      existing.startTs = occ.startTs;
+      existing.endTs = occ.endTs;
+      updated++;
+    } else {
+      state.events.push({
+        id,
+        roomId: '',
+        roomName: '',
+        title: occ.title.slice(0, TITLE_MAX_LEN) || 'Termin',
+        note: occ.note,
+        startTs: occ.startTs,
+        endTs: occ.endTs,
+        createdBy: ownUserId(),
+      });
+      added++;
+    }
+  }
+  if (added || updated) changed();
+  return { added, updated, total: occs.length };
 }
 
 /* ============================ Leichtes Modal ============================ */
@@ -689,26 +1108,106 @@ export function renderCalendarPanel() {
   header.append(title, closeBtn);
   panel.append(header);
 
-  // Ehrlicher Hinweis: ICS-Export statt Kalender-Sync
   panel.append(el('div', 'mm-cal-sync-hint',
     'Termine syncen über dein Matrix-Konto zwischen deinen Geräten. '
-    + 'Für Apple-, Google- oder Outlook-Kalender gibt es keinen automatischen '
-    + 'Sync – exportiere Termine als ICS-Datei (.ics) und importiere sie dort manuell.'));
+    + 'Apple-, Google- oder Outlook-Kalender bindest du als Abo (ICS-Link) ein '
+    + 'oder importierst sie als ICS-Datei – Export als .ics gibt es weiterhin.'));
 
-  // Toolbar: Alle als ICS exportieren
+  // Toolbar: Abo hinzufügen, ICS importieren, alle exportieren
   const toolbar = el('div', 'mm-cal-toolbar');
+
+  const subBtn = el('button', 'mm-cal-export-btn');
+  subBtn.type = 'button';
+  const subIcon = el('span', 'mm-cal-export-icon');
+  subIcon.append(icon('plus', 14));
+  subBtn.append(subIcon, el('span', null, 'Kalender abonnieren'));
+  subBtn.title = 'Apple/Google/Outlook-Kalender per ICS-Link einbinden';
+  toolbar.append(subBtn);
+
+  const importBtn = el('button', 'mm-cal-export-btn');
+  importBtn.type = 'button';
+  const importIcon = el('span', 'mm-cal-export-icon');
+  importIcon.append(icon('external', 14));
+  importBtn.append(importIcon, el('span', null, 'ICS importieren'));
+  importBtn.title = 'Termine aus einer .ics-Datei übernehmen (synct dann über Matrix)';
+  const importInput = document.createElement('input');
+  importInput.type = 'file';
+  importInput.accept = '.ics,text/calendar';
+  importInput.style.display = 'none';
+  importBtn.addEventListener('click', () => importInput.click());
+  importInput.addEventListener('change', () => {
+    const file = importInput.files && importInput.files[0];
+    importInput.value = '';
+    if (!file) return;
+    file.text().then((text) => {
+      if (!/BEGIN:VCALENDAR/i.test(text)) {
+        importFeedback.textContent = 'Keine gültige ICS-Datei.';
+        return;
+      }
+      const res = importIcsText(text);
+      importFeedback.textContent = res.total
+        ? res.added + ' neu, ' + res.updated + ' aktualisiert.'
+        : 'Keine (kommenden) Termine in der Datei gefunden.';
+    }).catch(() => { importFeedback.textContent = 'Datei konnte nicht gelesen werden.'; });
+  });
+  toolbar.append(importBtn, importInput);
+
   const exportBtn = el('button', 'mm-cal-export-btn');
   exportBtn.type = 'button';
   const exportIcon = el('span', 'mm-cal-export-icon');
   exportIcon.append(icon('download', 14));
-  exportBtn.append(
-    exportIcon,
-    el('span', null, 'Alle als ICS exportieren'),
-  );
-  exportBtn.title = 'Alle kommenden Termine als .ics-Datei herunterladen';
+  exportBtn.append(exportIcon, el('span', null, 'Als ICS exportieren'));
+  exportBtn.title = 'Alle kommenden eigenen Termine als .ics-Datei herunterladen';
   exportBtn.addEventListener('click', () => exportIcs(upcomingEvents()));
   toolbar.append(exportBtn);
+
   panel.append(toolbar);
+
+  const importFeedback = el('div', 'mm-cal-feedback');
+  panel.append(importFeedback);
+
+  // Abo-Formular (eingeklappt, öffnet über den Button)
+  const subForm = el('div', 'mm-cal-subform');
+  subForm.style.display = 'none';
+  const subUrl = document.createElement('input');
+  subUrl.type = 'url';
+  subUrl.className = 'mm-cal-input';
+  subUrl.placeholder = 'webcal://… oder https://… (ICS-Link)';
+  const subName = document.createElement('input');
+  subName.type = 'text';
+  subName.className = 'mm-cal-input';
+  subName.placeholder = 'Name (optional, z. B. Privat)';
+  subName.maxLength = 60;
+  const subActions = el('div', 'mm-cal-subform-actions');
+  const subAdd = el('button', 'mm-cal-export-btn primary', 'Abonnieren');
+  subAdd.type = 'button';
+  const subHint = el('div', 'mm-cal-subhint',
+    'Apple: iCloud-Kalender „teilen“ → „Öffentlicher Kalender“ → Link kopieren. '
+    + 'Google: Einstellungen → Kalender → „Privatadresse im iCal-Format“. '
+    + 'Outlook: Kalender veröffentlichen → ICS-Link.');
+  subAdd.addEventListener('click', () => {
+    const res = addFeed(subUrl.value, subName.value);
+    if (!res.ok) {
+      importFeedback.textContent = res.reason;
+      return;
+    }
+    subUrl.value = '';
+    subName.value = '';
+    subForm.style.display = 'none';
+    importFeedback.textContent = 'Kalender abonniert – wird geladen …';
+  });
+  subUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); subAdd.click(); } });
+  subActions.append(subAdd);
+  subForm.append(subUrl, subName, subActions, subHint);
+  panel.append(subForm);
+  subBtn.addEventListener('click', () => {
+    subForm.style.display = subForm.style.display === 'none' ? 'flex' : 'none';
+    if (subForm.style.display !== 'none') subUrl.focus();
+  });
+
+  // Liste der Abos mit Status
+  const feedsWrap = el('div', 'mm-cal-feeds');
+  panel.append(feedsWrap);
 
   // Liste
   const listWrap = el('div', 'mm-cal-list');
@@ -743,19 +1242,67 @@ export function renderCalendarPanel() {
   closeBtn.addEventListener('click', close);
   document.addEventListener('keydown', onKeydown, true);
 
-  openPanel = { overlay, listWrap, exportBtn };
+  openPanel = { overlay, listWrap, exportBtn, feedsWrap };
   rebuildPanelList(openPanel);
+  refreshAllFeeds(false); // veraltete Abos beim Öffnen nachladen
 
   return overlay;
 }
 
-/** Liste im offenen Panel (neu) aufbauen. */
+/** Abo-Liste (Name, Status, Aktualisieren/Entfernen) rendern. */
+function rebuildFeedList(p) {
+  if (!p.feedsWrap) return;
+  p.feedsWrap.replaceChildren();
+  for (const feed of state.feeds) {
+    const rec = feedCache.get(feed.id);
+    const row = el('div', 'mm-cal-feed-row');
+    const info = el('div', 'mm-cal-feed-info');
+    info.append(el('div', 'mm-cal-feed-name', feed.name));
+    let status;
+    if (rec && rec.error) status = rec.error;
+    else if (rec && rec.fetchedAt) {
+      status = rec.events.length + ' Termine · aktualisiert ' + fmtTime(new Date(rec.fetchedAt));
+    } else status = 'Wird geladen …';
+    const statusEl = el('div', 'mm-cal-feed-status', status);
+    if (rec && rec.error) statusEl.classList.add('error');
+    info.append(statusEl);
+    row.append(info);
+
+    const reload = el('button', 'mm-cal-feed-btn');
+    reload.type = 'button';
+    reload.title = 'Jetzt aktualisieren';
+    reload.setAttribute('aria-label', 'Kalender aktualisieren: ' + feed.name);
+    reload.append(icon('refresh', 14));
+    reload.addEventListener('click', () => {
+      feedCache.set(feed.id, Object.assign({ events: [], fetchedAt: 0 }, feedCache.get(feed.id), { error: null }));
+      rebuildFeedList(p);
+      refreshFeed(feed);
+    });
+    row.append(reload);
+
+    const del = el('button', 'mm-cal-feed-btn danger');
+    del.type = 'button';
+    del.title = 'Abo entfernen';
+    del.setAttribute('aria-label', 'Kalender-Abo entfernen: ' + feed.name);
+    del.append(icon('trash', 14));
+    del.addEventListener('click', () => removeFeed(feed.id));
+    row.append(del);
+
+    p.feedsWrap.append(row);
+  }
+}
+
+/** Liste im offenen Panel (neu) aufbauen – eigene Termine + Abo-Termine. */
 function rebuildPanelList(p) {
-  const events = upcomingEvents();
-  p.exportBtn.disabled = events.length === 0;
+  const own = upcomingEvents();
+  p.exportBtn.disabled = own.length === 0;
+  rebuildFeedList(p);
   p.listWrap.replaceChildren();
 
-  if (!events.length) {
+  const merged = own.concat(upcomingFeedEvents())
+    .sort((a, b) => a.startTs - b.startTs || a.endTs - b.endTs);
+
+  if (!merged.length) {
     const empty = el('div', 'mm-cal-empty');
     const emptyIcon = el('div', 'mm-cal-empty-icon');
     emptyIcon.append(icon('calendar', 40));
@@ -763,7 +1310,7 @@ function rebuildPanelList(p) {
       emptyIcon,
       el('div', 'mm-cal-empty-title', 'Keine kommenden Termine'),
       el('div', 'mm-cal-empty-hint',
-        'Plane einen Termin direkt aus einem Chat – er erscheint dann hier und als Karte im Chatverlauf.'),
+        'Plane einen Termin direkt aus einem Chat oder binde deinen Apple-/Google-/Outlook-Kalender oben als Abo ein.'),
     );
     p.listWrap.append(empty);
     return;
@@ -771,7 +1318,7 @@ function rebuildPanelList(p) {
 
   let currentKey = null;
   let currentGroup = null;
-  for (const evt of events) {
+  for (const evt of merged) {
     const key = dayKey(evt.startTs);
     if (key !== currentKey) {
       currentKey = key;
@@ -779,8 +1326,40 @@ function rebuildPanelList(p) {
       currentGroup.append(el('div', 'mm-cal-day-label', dayGroupLabel(new Date(evt.startTs))));
       p.listWrap.append(currentGroup);
     }
-    currentGroup.append(buildPanelEntry(evt));
+    currentGroup.append(evt.feedId ? buildFeedEntry(evt) : buildPanelEntry(evt));
   }
+}
+
+/** Read-only-Eintrag eines abonnierten Termins (mit Quellen-Badge). */
+function buildFeedEntry(evt) {
+  const entry = el('div', 'mm-cal-entry mm-cal-entry-feed');
+
+  const time = el('div', 'mm-cal-entry-time');
+  const start = new Date(evt.startTs);
+  const end = new Date(evt.endTs);
+  if (evt.allDay) {
+    time.append(el('div', 'mm-cal-entry-start', 'ganz-'));
+    time.append(el('div', 'mm-cal-entry-end', 'tägig'));
+  } else {
+    time.append(el('div', 'mm-cal-entry-start', fmtTime(start)));
+    const endLabel = isSameLocalDay(start, end)
+      ? 'bis ' + fmtTime(end)
+      : 'bis ' + fmtWeekdayShort(end) + ' ' + fmtTime(end);
+    time.append(el('div', 'mm-cal-entry-end', endLabel));
+  }
+  entry.append(time);
+
+  const main = el('div', 'mm-cal-entry-main');
+  main.append(el('div', 'mm-cal-entry-title', evt.title));
+  const src = el('div', 'mm-cal-entry-room');
+  const srcIcon = el('span', 'mm-cal-entry-room-icon');
+  srcIcon.append(icon('calendar', 11));
+  src.append(srcIcon, el('span', null, evt.feedName || 'Abo'));
+  main.append(src);
+  if (evt.note) main.append(el('div', 'mm-cal-entry-note', evt.note));
+  entry.append(main);
+
+  return entry;
 }
 
 function buildPanelEntry(evt) {
