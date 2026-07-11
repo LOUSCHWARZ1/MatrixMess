@@ -1614,3 +1614,6 @@ export function exportIcs(events) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
+
+/* Für Unit-Tests exportiert (keine DOM-Abhängigkeit). */
+export { parseIcs, icsToOccurrences, normalizeFeedUrl, parseIcsDuration };
