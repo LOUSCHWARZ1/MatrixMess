@@ -1853,9 +1853,11 @@ function buildRoomItem(room) {
 
   item.addEventListener('click', () => openRoom(room.roomId));
   // Rechtsklick = gleiches Menü wie der ⋯-Button (schneller Weg zu Bereichen).
+  // Anker ist die Zeile selbst: Der ⋯-Button ist ohne Hover (Touch) unsichtbar
+  // und hätte ein Null-Rechteck.
   item.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    openRoomMenu(more, room);
+    openRoomMenu(item, room);
   });
   return item;
 }
@@ -2795,6 +2797,7 @@ function openRoom(roomId) {
         const uev = room.events[i];
         if (!uev.eventId || uev.pending) continue;
         if (session && uev.sender === session.userId) continue;
+        if (isGameMove(uev)) continue; // unsichtbar – Trenner würde nie gerendert
         unreadMarkerEventId = uev.eventId;
         n++;
       }
