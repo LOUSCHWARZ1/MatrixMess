@@ -46,27 +46,35 @@ export async function registerServiceWorker() {
 /** Zeigt eine Benachrichtigung – bevorzugt über den Service Worker. */
 export async function showNotification(payload) {
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const onClick = payload && payload.onClick;
+  // Für den Service Worker nur klonbare Daten senden – eine Funktion im
+  // postMessage würde einen DataCloneError werfen und die SW-Anzeige (u. a.
+  // auf iOS) komplett verhindern. Klicks übernimmt der SW über roomId.
+  const clean = {
+    title: (payload && payload.title) || 'MatrixMess',
+    body: (payload && payload.body) || '',
+    tag: (payload && payload.tag) || 'mm',
+    roomId: (payload && payload.roomId) || null,
+  };
   try {
     const reg = swReg || (navigator.serviceWorker && await navigator.serviceWorker.getRegistration());
     if (reg && reg.active) {
       // Über den SW zeigen (funktioniert auch bei Hintergrund-Tab).
-      reg.active.postMessage({ type: 'mm-notify', payload });
+      reg.active.postMessage({ type: 'mm-notify', payload: clean });
       return;
     }
     if (reg && reg.showNotification) {
-      await reg.showNotification(payload.title || 'MatrixMess', {
-        body: payload.body || '', tag: payload.tag || 'mm', icon: './icon.svg',
-        data: { roomId: payload.roomId || null },
+      await reg.showNotification(clean.title, {
+        body: clean.body, tag: clean.tag, icon: './icon.svg',
+        data: { roomId: clean.roomId },
       });
       return;
     }
   } catch (e) { /* Fallback unten */ }
   // Klassische Notification (z. B. Desktop ohne aktiven SW).
   try {
-    const n = new Notification(payload.title || 'MatrixMess', {
-      body: payload.body || '', tag: payload.tag || 'mm', icon: './icon.svg',
-    });
-    if (payload.onClick) n.onclick = payload.onClick;
+    const n = new Notification(clean.title, { body: clean.body, tag: clean.tag, icon: './icon.svg' });
+    if (onClick) n.onclick = onClick;
   } catch (e) { /* WebView ohne Notification */ }
 }
 
@@ -149,9 +157,12 @@ export async function applyKeywords(keywords) {
       }
     }
   } catch (e) { /* */ }
-  // Neue setzen.
+  // Neue setzen. Index-Suffix vermeidet Kollisionen, wenn Stichwörter nach
+  // dem Bereinigen gleich aussehen (z. B. nicht-lateinische Zeichen).
+  let idx = 0;
   for (const kw of clean) {
-    const id = 'mm.kw.' + kw.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 40);
+    const slug = kw.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 30) || 'kw';
+    const id = 'mm.kw.' + (idx++) + '.' + slug;
     await api('PUT',
       `/_matrix/client/v3/pushrules/global/content/${encodeURIComponent(id)}`,
       { pattern: kw, actions: ['notify', { set_tweak: 'sound', value: 'default' }, { set_tweak: 'highlight' }] })
