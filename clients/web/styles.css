@@ -1186,6 +1186,31 @@ input, textarea {
   flex-shrink: 0;
   color: var(--accent);
 }
+.room-pin {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.room-muted {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  opacity: .8;
+}
+/* Stummgeschaltet: Zähler grau statt Akzentfarbe */
+.room-badge.muted, .room-badge-mini.muted {
+  background: var(--text-secondary, #8e8e93);
+}
+/* "Als ungelesen markiert": Punkt statt Zahl */
+.room-badge.room-badge-dot, .room-badge-mini.room-badge-dot {
+  min-width: 10px;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border-radius: 50%;
+}
 .room-more-btn {
   flex-shrink: 0;
   width: 26px;
