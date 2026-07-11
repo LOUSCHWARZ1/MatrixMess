@@ -183,6 +183,7 @@ export async function startCall(roomId, withVideo) {
     localStream: null,
     remoteStream: null,
     pendingCandidates: [],
+    earlyCandidates: [],
     candidateTimer: null,
     incomingOffer: null,
     startedAt: 0,
@@ -227,9 +228,13 @@ export function handleCallEvent(roomId, ev) {
   const type = ev.type;
   const c = ev.content || {};
   if (!c.call_id) return;
-  // Eigene Echos ignorieren.
+  // Eigene Events nie verarbeiten: Der eigene invite/answer/candidate echot
+  // über /sync zurück – ohne diesen Filter würde man sich (z. B. wenn man
+  // vor dem Echo auflegt) selbst anklingeln. In 1:1 kommen alle relevanten
+  // Signale von der Gegenseite; eigene Multi-Device-Answers behandelt
+  // select_answer separat.
   const me = deps.getUserId ? deps.getUserId() : null;
-  if (me && ev.sender === me && call && c.party_id === call.partyId) return;
+  if (me && ev.sender === me) return;
 
   switch (type) {
     case 'm.call.invite': return onInvite(roomId, ev, c);
@@ -262,6 +267,7 @@ function onInvite(roomId, ev, c) {
     localStream: null,
     remoteStream: null,
     pendingCandidates: [],
+    earlyCandidates: [],
     candidateTimer: null,
     incomingOffer: c.offer,
     startedAt: 0,
@@ -293,6 +299,7 @@ export async function acceptCall() {
   try {
     const pc = await createPeer();
     await pc.setRemoteDescription({ type: 'offer', sdp: call.incomingOffer.sdp });
+    await applyEarlyCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await send('m.call.answer', { answer: { type: 'answer', sdp: answer.sdp } });
@@ -312,6 +319,7 @@ async function onAnswer(ev, c) {
   updateCallUI();
   try {
     await call.pc.setRemoteDescription({ type: 'answer', sdp: c.answer.sdp });
+    await applyEarlyCandidates();
     // Anrufer bestätigt die gewählte Antwort (Glare-/Multi-Device-Schutz).
     await send('m.call.select_answer', { selected_party_id: call.remoteParty });
   } catch (err) {
@@ -321,18 +329,35 @@ async function onAnswer(ev, c) {
 }
 
 async function onCandidates(ev, c) {
-  if (!call || !call.pc) return;
+  if (!call) return;
   if (call.remoteParty && c.party_id && call.remoteParty !== c.party_id) return;
   for (const cand of c.candidates || []) {
     if (!cand || !cand.candidate) continue;
-    try {
-      await call.pc.addIceCandidate({
-        candidate: cand.candidate,
-        sdpMid: cand.sdpMid,
-        sdpMLineIndex: cand.sdpMLineIndex,
-      });
-    } catch (err) { /* einzelnen Kandidaten überspringen */ }
+    // Kandidaten können vor der Remote-Description eintreffen (der Anrufer
+    // sendet sie sofort nach dem Invite, der Angerufene hat aber noch keine
+    // PeerConnection). Solche puffern und nach setRemoteDescription anwenden.
+    if (!call.pc || !call.pc.remoteDescription) {
+      call.earlyCandidates.push(cand);
+      continue;
+    }
+    await addRemoteCandidate(cand);
   }
+}
+
+async function addRemoteCandidate(cand) {
+  try {
+    await call.pc.addIceCandidate({
+      candidate: cand.candidate,
+      sdpMid: cand.sdpMid,
+      sdpMLineIndex: cand.sdpMLineIndex,
+    });
+  } catch (err) { /* einzelnen Kandidaten überspringen */ }
+}
+
+async function applyEarlyCandidates() {
+  if (!call || !call.earlyCandidates.length) return;
+  const list = call.earlyCandidates.splice(0);
+  for (const cand of list) await addRemoteCandidate(cand);
 }
 
 function onHangup(ev, c) {
