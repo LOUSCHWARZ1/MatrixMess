@@ -1,208 +1,325 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'">
-  <title>MatrixMess – Dein Messenger. Deine Server. Deine Schlüssel.</title>
-  <meta name="description" content="MatrixMess ist ein Matrix-Messenger mit Ende-zu-Ende-Verschlüsselung für iOS, Android, Windows und Web. Open Source, ohne Tracker, mit Bridges zu WhatsApp, Signal, Telegram und Instagram.">
-  <meta property="og:title" content="MatrixMess – Dein Messenger. Deine Server. Deine Schlüssel.">
-  <meta property="og:description" content="Matrix-Messenger mit Ende-zu-Ende-Verschlüsselung für iOS, Android, Windows und Web. Open Source, ohne Tracker.">
-  <meta property="og:type" content="website">
-  <link rel="stylesheet" href="./styles.css">
-  <script src="./site.js" defer></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="MatrixMess – der Open-Source-Messenger, der WhatsApp, Signal, Telegram & Co. über Matrix-Bridges in einer App vereint. Ende-zu-Ende-verschlüsselt, auf iOS, Android, Windows und im Web.">
+<meta name="theme-color" content="#8B4DF7">
+<meta property="og:title" content="MatrixMess – Alle deine Chats. Eine App.">
+<meta property="og:description" content="WhatsApp, Signal, Telegram & Co. in einer sicheren Open-Source-App – überall synchron.">
+<title>MatrixMess – Alle deine Chats. Eine App.</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238B4DF7'/%3E%3Cstop offset='1' stop-color='%235A2DD0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='12' cy='12' r='12' fill='url(%23g)'/%3E%3Cpath d='M8.2 17.5A6.5 6.5 0 1 0 5.5 14l-1 4Z' fill='none' stroke='white' stroke-width='1.8' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="./styles.css">
 </head>
 <body>
 
-  <header class="site-header">
-    <div class="container header-inner">
-      <a href="#top" class="brand">
-        <span class="logo" aria-hidden="true">💬</span>
-        <span class="brand-name">MatrixMess</span>
+<!-- ===================== Navigation ===================== -->
+<nav id="topnav" aria-label="Hauptnavigation">
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="MatrixMess – nach oben">
+      <span class="brand-glyph" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+      </span>
+      <span class="brand-name">MatrixMess</span>
+    </a>
+    <button id="nav-burger" aria-label="Menü öffnen" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-links" id="nav-links">
+      <a href="#funktionen">Funktionen</a>
+      <a href="#sicherheit">Sicherheit</a>
+      <a href="#plattformen">Plattformen</a>
+      <a href="#faq">FAQ</a>
+      <a class="nav-github" href="https://github.com/LOUSCHWARZ1/MatrixMess" rel="noopener" target="_blank" aria-label="GitHub-Repository">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2.17c-3.2.7-3.87-1.37-3.87-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.26.72-1.55-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .31.2.67.8.55A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
       </a>
-      <nav class="main-nav" aria-label="Hauptnavigation">
-        <a href="#funktionen">Funktionen</a>
-        <a href="#plattformen">Plattformen</a>
-        <a href="#download">Download</a>
-      </nav>
-      <div class="header-actions">
-        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Design umschalten (hell/dunkel)">
-          <span class="icon-sun" aria-hidden="true">☀️</span>
-          <span class="icon-moon" aria-hidden="true">🌙</span>
-        </button>
-        <a href="./app/" class="btn btn-primary btn-header">Web-App öffnen</a>
+      <a class="btn btn-primary btn-nav" href="./app/">Web-App öffnen</a>
+    </div>
+  </div>
+</nav>
+
+<main id="top">
+
+  <!-- ===================== Hero ===================== -->
+  <header class="hero">
+    <div class="hero-bg" aria-hidden="true"></div>
+    <div class="container hero-grid">
+      <div class="hero-copy reveal">
+        <span class="pill">
+          <span class="pill-dot" aria-hidden="true"></span>
+          Open Source · Ende-zu-Ende-verschlüsselt
+        </span>
+        <h1>Alle deine Chats.<br><span class="grad">Eine App.</span></h1>
+        <p class="hero-sub">
+          MatrixMess vereint WhatsApp, Signal, Telegram, Instagram &amp; Discord über
+          Matrix-Bridges in einem modernen Messenger – sicher, synchron und auf
+          allen deinen Geräten.
+        </p>
+        <div class="hero-ctas">
+          <a class="btn btn-primary btn-lg" href="./app/">Web-App öffnen</a>
+          <a class="btn btn-ghost btn-lg" href="#plattformen">Kostenlos laden
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v13"/><path d="m6 13 6 6 6-6"/></svg>
+          </a>
+        </div>
+        <div class="hero-trust">
+          <span>Kein Tracking</span><i aria-hidden="true"></i>
+          <span>Keine Werbung</span><i aria-hidden="true"></i>
+          <span>Dein Server, deine Daten</span>
+        </div>
+      </div>
+
+      <!-- CSS-Gerätemockup -->
+      <div class="hero-visual reveal" aria-hidden="true">
+        <div class="phone">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <div class="mock-head">
+              <span class="mock-title">MatrixMess</span>
+              <span class="mock-dots"><i></i><i></i></span>
+            </div>
+            <div class="mock-seg"><span class="on">Bereiche</span><span>Alle</span></div>
+            <div class="mock-sect"><b>WhatsApp</b><em>3</em></div>
+            <div class="mock-row"><span class="mock-av av1">F</span><div class="mock-lines"><b>Familie</b><i>Bis gleich! 🎉</i></div><u>2</u></div>
+            <div class="mock-row"><span class="mock-av av2">T</span><div class="mock-lines"><b>Team Uni</b><i>Meeting um 10:30</i></div></div>
+            <div class="mock-sect"><b>Signal</b></div>
+            <div class="mock-row"><span class="mock-av av3">A</span><div class="mock-lines"><b>Anna</b><i>Foto gesendet</i></div><u>1</u></div>
+            <div class="mock-sect"><b>Favoriten</b></div>
+            <div class="mock-row"><span class="mock-av av4">P</span><div class="mock-lines"><b>Projekt X</b><i>Du: Erledigt ✓✓</i></div></div>
+            <div class="mock-tabbar"><span class="on"></span><span></span><span></span></div>
+          </div>
+        </div>
+        <div class="float-card fc1">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Ende-zu-Ende-verschlüsselt
+        </div>
+        <div class="float-card fc2">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          Auf 4 Plattformen synchron
+        </div>
       </div>
     </div>
   </header>
 
-  <main id="top">
-
-    <section class="hero" aria-labelledby="hero-title">
-      <div class="container hero-inner">
-        <div class="hero-copy">
-          <h1 id="hero-title">Dein Messenger.<br>Deine Server.<br>Deine Schlüssel.</h1>
-          <p class="hero-sub">MatrixMess ist ein Matrix-Messenger mit Ende-zu-Ende-Verschlüsselung – für iOS, Android, Windows und Web.</p>
-          <div class="hero-ctas">
-            <a href="./app/" class="btn btn-primary btn-lg">Web-App öffnen</a>
-            <a href="#download" class="btn btn-secondary btn-lg">Herunterladen</a>
-          </div>
-        </div>
-
-        <div class="hero-mockup" aria-hidden="true">
-          <div class="phone">
-            <div class="phone-notch"></div>
-            <div class="phone-screen">
-              <div class="chat-header">
-                <span class="chat-avatar">A</span>
-                <span class="chat-title">Anna</span>
-                <span class="chat-lock">🔒</span>
-              </div>
-              <div class="chat-body">
-                <div class="date-pill">Heute</div>
-                <div class="bubble bubble-in">Hey! Schon MatrixMess ausprobiert? 👀</div>
-                <div class="bubble bubble-out">Klar – alle Chats an einem Ort, komplett verschlüsselt. 🔐</div>
-                <div class="bubble bubble-in">Nice. Ich bin über die WhatsApp-Bridge dabei!</div>
-              </div>
-              <div class="chat-composer">
-                <span class="composer-plus">+</span>
-                <span class="composer-field">Nachricht…</span>
-                <span class="composer-send">➤</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="funktionen" class="section" aria-labelledby="funktionen-title">
-      <div class="container">
-        <h2 id="funktionen-title">Funktionen</h2>
-        <p class="section-sub">Alles, was ein moderner Messenger braucht – ohne Kompromisse bei der Privatsphäre.</p>
-        <div class="grid grid-3">
-          <article class="card">
-            <div class="card-icon" aria-hidden="true">🔐</div>
-            <h3>Ende-zu-Ende-Verschlüsselung</h3>
-            <p>Matrix-Rust-Crypto – dieselbe Engine wie Element. Deine Nachrichten kann nur lesen, wer sie lesen soll.</p>
-          </article>
-          <article class="card">
-            <div class="card-icon" aria-hidden="true">🌉</div>
-            <h3>Alle Chats an einem Ort</h3>
-            <p>WhatsApp, Signal, Telegram und Instagram über Matrix-Bridges einbinden – eine App für alles.</p>
-          </article>
-          <article class="card">
-            <div class="card-icon" aria-hidden="true">⭐</div>
-            <h3>Eigene Bereiche</h3>
-            <p>Chats frei in Bereiche gruppieren – per Drag &amp; Drop, Checkliste oder Picker. Favoriten, Anpinnen, Archiv und Stummschalten inklusive.</p>
-          </article>
-          <article class="card">
-            <div class="card-icon" aria-hidden="true">💬</div>
-            <h3>Modernes Timeline-Design</h3>
-            <p>Nachrichten-Gruppierung im Element-X-Stil, Reaktionen, Antworten, Bearbeiten, Weiterleiten, Lese-Häkchen, Chat-Suche, Medien und Sprachnachrichten.</p>
-          </article>
-          <article class="card">
-            <div class="card-icon" aria-hidden="true">🛡️</div>
-            <h3>Privatsphäre</h3>
-            <p>App Lock &amp; Chat Lock mit Face ID, private Lesebestätigungen, blockierte Kontakte – keine Tracker, Open Source.</p>
-          </article>
-          <article class="card">
-            <div class="card-icon" aria-hidden="true">📱</div>
-            <h3>Multi-Plattform</h3>
-            <p>Ein Konto, vier Plattformen: iOS, Android, Windows und Web – überall die gleichen Chats.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <section id="plattformen" class="section section-alt" aria-labelledby="plattformen-title">
-      <div class="container">
-        <h2 id="plattformen-title">Plattformen &amp; Download</h2>
-        <p class="section-sub" id="download">Hol dir MatrixMess für dein Gerät – frisch aus der CI gebaut.</p>
-        <div class="grid grid-4">
-
-          <article class="card card-platform">
-            <div class="card-icon" aria-hidden="true">🌐</div>
-            <h3>Web</h3>
-            <p>Läuft direkt im Browser – nichts zu installieren, sofort loslegen.</p>
-            <a href="./app/" class="btn btn-primary btn-block">Im Browser öffnen</a>
-            <p class="card-note">Funktioniert auf Desktop und Mobilgeräten.</p>
-            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
-          </article>
-
-          <article class="card card-platform">
-            <div class="card-icon" aria-hidden="true">🤖</div>
-            <h3>Android</h3>
-            <p>APK herunterladen, installieren, anmelden – fertig.</p>
-            <a href="https://nightly.link/LOUSCHWARZ1/MatrixMess/workflows/android-build/claude%2Fgifted-sagan-kradma/MatrixMess-Android-APK.zip" class="btn btn-primary btn-block">APK herunterladen</a>
-            <p class="card-note">Neuester Build direkt aus der CI. Installation erfordert „Unbekannte Quellen“.</p>
-            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
-          </article>
-
-          <article class="card card-platform">
-            <div class="card-icon" aria-hidden="true">🪟</div>
-            <h3>Windows</h3>
-            <p>Electron-App mit NSIS-Installer – oder portabel ohne Installation.</p>
-            <a href="https://nightly.link/LOUSCHWARZ1/MatrixMess/workflows/desktop-windows-build/claude%2Fgifted-sagan-kradma/MatrixMess-Windows-Setup.zip" class="btn btn-primary btn-block">Setup herunterladen</a>
-            <p class="card-note">Installer + portable EXE im ZIP.</p>
-            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
-          </article>
-
-          <article class="card card-platform">
-            <div class="card-icon" aria-hidden="true">🍎</div>
-            <h3>iOS</h3>
-            <p>Native SwiftUI-App als unsignierte IPA zum Sideloaden.</p>
-            <a href="https://github.com/LOUSCHWARZ1/MatrixMess/actions/workflows/ios-cloud-build.yml" class="btn btn-primary btn-block">Neuesten Build holen</a>
-            <p class="card-note">Artefakt des neuesten grünen Runs herunterladen und per AltStore sideloaden (Anleitung im Repo).</p>
-            <a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="card-source">Quellcode</a>
-          </article>
-
-        </div>
-      </div>
-    </section>
-
-    <section class="section" aria-labelledby="offen-title">
-      <div class="container narrow">
-        <h2 id="offen-title">Offen &amp; selbstbestimmt</h2>
-        <p>MatrixMess ist Open Source und baut auf dem offenen <strong>Matrix-Standard</strong> auf. Du entscheidest, wo deine Daten liegen: Nutze einen öffentlichen Homeserver wie matrix.org – oder betreibe deinen eigenen. Keine Tracker, keine Werbung, kein Vendor-Lock-in.</p>
-        <p><a href="https://github.com/LOUSCHWARZ1/MatrixMess" class="btn btn-secondary">Zum Repository auf GitHub</a></p>
-      </div>
-    </section>
-
-    <section class="section section-alt" aria-labelledby="faq-title">
-      <div class="container narrow">
-        <h2 id="faq-title">Häufige Fragen</h2>
-
-        <details class="faq-item">
-          <summary>Was ist Matrix?</summary>
-          <p>Matrix ist ein offenes, dezentrales Protokoll für sichere Kommunikation. Statt einem zentralen Anbieter gibt es viele Server (Homeserver), die miteinander föderieren – ähnlich wie E-Mail, nur modern und verschlüsselt.</p>
-        </details>
-
-        <details class="faq-item">
-          <summary>Brauche ich einen Account?</summary>
-          <p>Ja, aber jeder Matrix-Account funktioniert – zum Beispiel ein kostenloser Account auf matrix.org. Du kannst dich mit einem bestehenden Account einfach in MatrixMess anmelden.</p>
-        </details>
-
-        <details class="faq-item">
-          <summary>Ist Ende-zu-Ende-Verschlüsselung überall verfügbar?</summary>
-          <p>Auf iOS vollständig, inklusive Geräte-Verifizierung. Web, Windows und Android nutzen die Verschlüsselung über dieselbe Rust-Engine; die Geräte-Verifizierung folgt dort in Kürze.</p>
-        </details>
-
-        <details class="faq-item">
-          <summary>Warum Sideload auf iOS?</summary>
-          <p>MatrixMess ist (noch) nicht im App Store. Die iOS-App wird als unsignierte IPA aus der CI bereitgestellt und lässt sich z.&nbsp;B. mit AltStore sideloaden. Das hält den Prozess offen und nachvollziehbar – der komplette Build-Weg ist im Repo dokumentiert.</p>
-        </details>
-
-      </div>
-    </section>
-
-  </main>
-
-  <footer class="site-footer">
-    <div class="container footer-inner">
-      <p><span class="logo logo-sm" aria-hidden="true">💬</span> MatrixMess</p>
-      <p><a href="https://github.com/LOUSCHWARZ1/MatrixMess">GitHub-Repository</a> · Open Source · Läuft auf GitHub Pages</p>
+  <!-- ===================== Zahlen ===================== -->
+  <section class="stats reveal" aria-label="Kennzahlen">
+    <div class="container stats-grid">
+      <div class="stat"><b>4</b><span>Plattformen</span></div>
+      <div class="stat"><b>5+</b><span>Bridges</span></div>
+      <div class="stat"><b>E2EE</b><span>Matrix-Rust-Krypto</span></div>
+      <div class="stat"><b>100&thinsp;%</b><span>Open Source</span></div>
     </div>
-  </footer>
+  </section>
 
-<!-- build: pages-redeploy-3 -->
+  <!-- ===================== Funktionen ===================== -->
+  <section id="funktionen" class="section">
+    <div class="container">
+      <h2 class="reveal">Ein Messenger, der <span class="grad">alles kann</span></h2>
+      <p class="section-sub reveal">Alles, was ein moderner Messenger braucht – ohne Kompromisse bei der Privatsphäre.</p>
+      <div class="cards">
+        <article class="card reveal">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></div>
+          <h3>Alle Dienste, eine App</h3>
+          <p>WhatsApp, Signal, Telegram, Instagram und Discord über Matrix-Bridges einbinden – jeder Chat landet in derselben Oberfläche.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2Z"/></svg></div>
+          <h3>Eigene Bereiche</h3>
+          <p>Chats frei gruppieren: per Drag&nbsp;&amp;&nbsp;Drop, Checkliste oder Picker. Alles lässt sich anordnen, anpinnen, archivieren und stummschalten.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></div>
+          <h3>Suche, die findet</h3>
+          <p>Globale Suche über Chats und Nachrichten, Suche im Raum, Sprungmarken zu ungelesenen Nachrichten – nichts geht mehr verloren.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></div>
+          <h3>Kalender integriert</h3>
+          <p>Termine direkt im Chat planen, Apple-/Google-/Outlook-Kalender als Abo einbinden, Termine mit einem Tap in den Systemkalender übernehmen.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 14s1.5 2 4 2 4-2 4-2"/><circle cx="12" cy="12" r="10"/><path d="M9 9h.01M15 9h.01"/></svg></div>
+          <h3>Reaktionen &amp; Spiele</h3>
+          <p>Mit Emojis reagieren, Nachrichten bearbeiten, weiterleiten, zitieren – und zwischendurch eine Runde Tic-Tac-Toe direkt im Chat.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg></div>
+          <h3>Medien &amp; Sprache</h3>
+          <p>Sprachnachrichten mit Player und Tempo-Wahl, Bilder, Videos, Link-Vorschauen und eingebettete YouTube-, TikTok- und Instagram-Player.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Sicherheit (alternierend) ===================== -->
+  <section id="sicherheit" class="section section-alt">
+    <div class="container split reveal">
+      <div class="split-visual" aria-hidden="true">
+        <div class="viz viz-lock">
+          <div class="viz-ring"></div>
+          <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <div class="viz-chips">
+            <span>Recovery Key</span><span>Geräte-Verifizierung</span><span>Verschlüsselter Cache</span>
+          </div>
+        </div>
+      </div>
+      <div class="split-copy">
+        <h2>Sicherheit ist <span class="grad">kein Feature.</span><br>Sie ist die Grundlage.</h2>
+        <ul class="checklist">
+          <li>Ende-zu-Ende-Verschlüsselung mit derselben Rust-Engine wie Element</li>
+          <li>Geräte-Verifizierung per Emoji-Abgleich und Recovery Key</li>
+          <li>Lokaler Cache speichert in E2EE-Räumen nur Ciphertext – nie Klartext</li>
+          <li>Private Lesebestätigungen, App-Lock (iOS), keine Tracker, kein Analytics</li>
+          <li>Der komplette Quellcode ist offen – überprüfbar von allen</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="container split split-rev reveal">
+      <div class="split-visual" aria-hidden="true">
+        <div class="viz viz-sync">
+          <div class="dev dev-phone"></div>
+          <div class="dev dev-laptop"></div>
+          <div class="dev dev-tablet"></div>
+          <svg class="sync-arc" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        </div>
+      </div>
+      <div class="split-copy">
+        <h2>Überall <span class="grad">weiterschreiben</span></h2>
+        <p>
+          Bereiche, Favoriten, Pins, Stummschaltungen, Termine, Einstellungen –
+          alles synchronisiert live über dein Matrix-Konto. Am Handy angefangen,
+          am PC weitergemacht: MatrixMess fühlt sich überall gleich an.
+        </p>
+        <ul class="checklist">
+          <li>Sofortiger Start aus dem lokalen Cache – kein Warten auf den Sync</li>
+          <li>Lese-Häkchen, Entwürfe und Ungelesen-Marker auf jedem Gerät</li>
+          <li>Ein Konto, vier Plattformen – ohne Zusatzdienste</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== So funktioniert's ===================== -->
+  <section class="section">
+    <div class="container">
+      <h2 class="reveal">In drei Schritten <span class="grad">startklar</span></h2>
+      <div class="steps">
+        <div class="step reveal"><span class="step-n">1</span><h3>Anmelden</h3><p>Mit deinem Matrix-Konto einloggen – bei matrix.org oder deinem eigenen Homeserver.</p></div>
+        <div class="step reveal"><span class="step-n">2</span><h3>Bridges verbinden</h3><p>WhatsApp &amp; Co. einmalig per QR-Code koppeln. Deine Chats erscheinen automatisch in Bereichen.</p></div>
+        <div class="step reveal"><span class="step-n">3</span><h3>Loslegen</h3><p>Schreiben, planen, reagieren – auf iPhone, Android, Windows und im Browser, immer synchron.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Plattformen ===================== -->
+  <section id="plattformen" class="section section-alt">
+    <div class="container">
+      <h2 class="reveal">Für <span class="grad">jedes Gerät</span></h2>
+      <p class="section-sub reveal">Ein Konto, überall die gleichen Chats.</p>
+      <div class="platforms">
+        <article class="plat reveal">
+          <div class="plat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20"/></svg></div>
+          <h3>Web</h3>
+          <p>Sofort loslegen – ohne Installation, direkt im Browser. Auch als App installierbar (PWA).</p>
+          <a class="btn btn-primary btn-block" href="./app/">Im Browser öffnen</a>
+        </article>
+        <article class="plat reveal">
+          <div class="plat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg></div>
+          <h3>Android</h3>
+          <p>Signierte APK, direkt installierbar. Benachrichtigungen, Kamera-Upload, alles dabei.</p>
+          <a class="btn btn-primary btn-block" href="https://nightly.link/LOUSCHWARZ1/MatrixMess/workflows/android-build/claude%2Fgifted-sagan-kradma/MatrixMess-Android-APK.zip" rel="noopener">APK herunterladen</a>
+        </article>
+        <article class="plat reveal">
+          <div class="plat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+          <h3>Windows</h3>
+          <p>Vollwertige Desktop-App mit nativen Benachrichtigungen und Kalender-Abos ohne Grenzen.</p>
+          <a class="btn btn-primary btn-block" href="https://nightly.link/LOUSCHWARZ1/MatrixMess/workflows/desktop-windows-build/claude%2Fgifted-sagan-kradma/MatrixMess-Windows-Setup.zip" rel="noopener">Setup herunterladen</a>
+        </article>
+        <article class="plat reveal">
+          <div class="plat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.94c1.5 0 2.75-.67 4-.67s2.04.62 3.12.38C21.85 20 23 15.5 23 13.5c0-2.89-2.23-4.37-4.25-4.37-1.9 0-3 1-4.75 1s-2.6-1-4.5-1C7.1 9.13 5 10.8 5 13.88 5 17.5 7.5 20.94 9.13 20.94c1.12 0 1.62-.67 2.87-.67Z"/><path d="M15 5.5C15.83 4.5 16.5 3 16.4 1.5c-1.3.15-2.6.94-3.4 1.94-.74.9-1.4 2.4-1.25 3.81 1.4.06 2.62-.75 3.25-1.75Z"/></svg></div>
+          <h3>iOS</h3>
+          <p>Native SwiftUI-App mit Face-ID-Lock. Über den GitHub-Build selbst installieren oder Web-App als PWA nutzen.</p>
+          <a class="btn btn-ghost btn-block" href="https://github.com/LOUSCHWARZ1/MatrixMess/actions/workflows/ios-cloud-build.yml" rel="noopener">iOS-Build ansehen</a>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== FAQ ===================== -->
+  <section id="faq" class="section">
+    <div class="container container-narrow">
+      <h2 class="reveal">Häufige <span class="grad">Fragen</span></h2>
+      <div class="faq reveal">
+        <details>
+          <summary>Was brauche ich, um MatrixMess zu nutzen?<i aria-hidden="true"></i></summary>
+          <p>Nur ein Matrix-Konto. Das gibt es kostenlos bei matrix.org oder – für volle Kontrolle – auf deinem eigenen Homeserver. Beim ersten Start meldest du dich einfach mit Benutzername und Passwort an.</p>
+        </details>
+        <details>
+          <summary>Wie kommen WhatsApp, Signal &amp; Co. in die App?<i aria-hidden="true"></i></summary>
+          <p>Über Matrix-Bridges, die auf deinem Homeserver laufen (z.&nbsp;B. mautrix-whatsapp). Einmal per QR-Code gekoppelt, erscheinen alle Chats automatisch – MatrixMess erkennt die Herkunft und sortiert sie in passende Bereiche.</p>
+        </details>
+        <details>
+          <summary>Sind meine Nachrichten wirklich sicher?<i aria-hidden="true"></i></summary>
+          <p>Matrix-eigene Chats sind Ende-zu-Ende-verschlüsselt – mit derselben Rust-Bibliothek, die auch Element nutzt. Der lokale Cache speichert in verschlüsselten Räumen ausschließlich Ciphertext. Bridge-Chats sind zwischen deinem Server und dem Fremddienst so sicher wie der jeweilige Dienst; auf deinem Server bleiben sie unter deiner Kontrolle.</p>
+        </details>
+        <details>
+          <summary>Synchronisieren sich meine Einstellungen zwischen Geräten?<i aria-hidden="true"></i></summary>
+          <p>Ja. Bereiche, Favoriten, Pins, Stummschaltungen, Archiv, Termine, Kalender-Abos und Design-Einstellungen syncen live über dein Matrix-Konto – ohne zusätzlichen Cloud-Dienst.</p>
+        </details>
+        <details>
+          <summary>Was kostet MatrixMess?<i aria-hidden="true"></i></summary>
+          <p>Nichts. MatrixMess ist Open Source, ohne Werbung, ohne Tracking, ohne Abo. Der Quellcode liegt öffentlich auf GitHub.</p>
+        </details>
+        <details>
+          <summary>Kann ich meinen Apple- oder Google-Kalender einbinden?<i aria-hidden="true"></i></summary>
+          <p>Ja – als Abo per ICS-Link (aktualisiert sich automatisch) oder per Datei-Import. Umgekehrt übernimmst du jeden MatrixMess-Termin mit einem Tap in deinen Systemkalender.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Abschluss-CTA ===================== -->
+  <section class="section cta-final">
+    <div class="container">
+      <div class="cta-panel reveal">
+        <h2>Bereit für einen Posteingang<br>statt fünf Apps?</h2>
+        <div class="hero-ctas">
+          <a class="btn btn-invert btn-lg" href="./app/">Web-App öffnen</a>
+          <a class="btn btn-outline btn-lg" href="#plattformen">Downloads ansehen</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ===================== Footer ===================== -->
+<footer>
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <span class="brand-glyph" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+      </span>
+      <div>
+        <b>MatrixMess</b>
+        <p>Open-Source-Messenger auf Matrix-Basis.<br>Kein Tracking. Keine Werbung. Deine Daten.</p>
+      </div>
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="#funktionen">Funktionen</a>
+      <a href="#sicherheit">Sicherheit</a>
+      <a href="#plattformen">Downloads</a>
+      <a href="https://github.com/LOUSCHWARZ1/MatrixMess" rel="noopener" target="_blank">GitHub</a>
+      <a href="https://matrix.org" rel="noopener" target="_blank">Über Matrix</a>
+    </nav>
+  </div>
+  <div class="container footer-meta">
+    <span>© <span id="year">2026</span> MatrixMess · Open Source</span>
+    <span>Gebaut auf dem offenen Matrix-Protokoll</span>
+  </div>
+</footer>
+
+<script src="./site.js"></script>
 </body>
 </html>

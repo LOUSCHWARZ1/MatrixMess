@@ -1,62 +1,51 @@
-/* MatrixMess Landing Page – kleine Interaktionen (Theme-Toggle) */
+/* MatrixMess Landing Page – Interaktionen
+   (Scroll-Reveal, Nav-Zustand, mobiles Menü; ohne Abhängigkeiten) */
 (function () {
-  "use strict";
+  'use strict';
 
-  var STORAGE_KEY = "matrixmess-theme";
-  var root = document.documentElement;
+  // Jahr im Footer
+  var year = document.getElementById('year');
+  if (year) year.textContent = String(new Date().getFullYear());
 
-  function storedTheme() {
-    try {
-      return localStorage.getItem(STORAGE_KEY);
-    } catch (e) {
-      return null;
-    }
+  // Nav bekommt Schatten, sobald gescrollt wurde
+  var nav = document.getElementById('topnav');
+  function onScroll() {
+    if (nav) nav.classList.toggle('scrolled', window.scrollY > 8);
   }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
 
-  function storeTheme(theme) {
-    try {
-      localStorage.setItem(STORAGE_KEY, theme);
-    } catch (e) {
-      /* localStorage nicht verfügbar – Theme gilt nur für diese Seite */
-    }
-  }
-
-  function systemPrefersDark() {
-    return (
-      window.matchMedia &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches
-    );
-  }
-
-  function currentTheme() {
-    var explicit = root.getAttribute("data-theme");
-    if (explicit === "dark" || explicit === "light") {
-      return explicit;
-    }
-    return systemPrefersDark() ? "dark" : "light";
-  }
-
-  function applyTheme(theme) {
-    root.setAttribute("data-theme", theme);
-  }
-
-  // Gespeichertes Theme so früh wie möglich anwenden (Script ist "defer",
-  // läuft also vor dem ersten Paint-relevanten Nutzer-Interaktionsfenster).
-  var saved = storedTheme();
-  if (saved === "dark" || saved === "light") {
-    applyTheme(saved);
-  }
-
-  document.addEventListener("DOMContentLoaded", function () {
-    var toggle = document.getElementById("theme-toggle");
-    if (!toggle) {
-      return;
-    }
-
-    toggle.addEventListener("click", function () {
-      var next = currentTheme() === "dark" ? "light" : "dark";
-      applyTheme(next);
-      storeTheme(next);
+  // Mobiles Menü
+  var burger = document.getElementById('nav-burger');
+  var links = document.getElementById('nav-links');
+  if (burger && links) {
+    burger.addEventListener('click', function () {
+      var open = links.classList.toggle('open');
+      burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      burger.setAttribute('aria-label', open ? 'Menü schließen' : 'Menü öffnen');
     });
-  });
+    // Nach Klick auf einen Link schließen
+    links.addEventListener('click', function (e) {
+      if (e.target.closest('a')) {
+        links.classList.remove('open');
+        burger.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  // Scroll-Reveal (respektiert prefers-reduced-motion via CSS)
+  var revealEls = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+    revealEls.forEach(function (elm) { io.observe(elm); });
+  } else {
+    revealEls.forEach(function (elm) { elm.classList.add('in'); });
+  }
 })();
