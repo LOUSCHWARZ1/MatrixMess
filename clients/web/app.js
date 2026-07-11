@@ -23,6 +23,7 @@ import {
   renderEventCard,
   getUpcomingCount,
   applyRemoteState as applyRemoteCalendar,
+  ingestSharedEvent,
   CALENDAR_ACCOUNT_DATA_TYPE,
 } from './calendar.js';
 import {
@@ -1080,6 +1081,7 @@ async function retryPendingDecryption() {
           obj.encrypted = true;
           obj.rawContent = raw.content || null;
           updateRoomPreview(room, obj);
+          maybeIngestSharedContent(obj);
         }
       }
     }
@@ -1323,6 +1325,23 @@ function isOwnGhost(room, uid, member) {
   const me = room.members.get(session.userId);
   const myName = me && me.displayname;
   return !!myName && !!member && member.displayname === myName;
+}
+
+/** Bin das ich? Zählt auch den eigenen Bridge-Ghost: Wer direkt über die
+ *  Signal-/WhatsApp-App schreibt, erscheint sonst als fremde Nachricht. */
+function isSelfSender(room, senderId) {
+  if (!session || !senderId) return false;
+  if (senderId === session.userId) return true;
+  return isOwnGhost(room, senderId, room.members.get(senderId));
+}
+
+/** Geteilte Inhalte aus Chat-Nachrichten übernehmen (Termin-Karten anderer
+ *  Teilnehmer landen so auch im eigenen Kalender). */
+function maybeIngestSharedContent(obj) {
+  const shared = obj && obj.content && obj.content['io.matrixmess.event'];
+  if (shared && typeof shared === 'object') {
+    try { ingestSharedEvent(shared); } catch (e) { /* Kalender optional */ }
+  }
 }
 
 /** Namensgebende andere Mitglieder: ohne mich, ohne Bridge-Bot, ohne meinen
@@ -1699,8 +1718,9 @@ function applyTimelineEvent(room, ev, live) {
   room.events.push(obj);
   if (obj.eventId) room.eventIndex.set(obj.eventId, obj);
   updateRoomPreview(room, obj);
+  maybeIngestSharedContent(obj);
 
-  if (live && session && obj.sender !== session.userId) {
+  if (live && !isSelfSender(room, obj.sender)) {
     maybeNotify(room, obj);
     if (room.roomId === activeRoomId) newRemoteInActive++;
   }
@@ -1917,14 +1937,15 @@ async function processSync(data, generation) {
     for (const ev of (jr.ephemeral && jr.ephemeral.events) || []) {
       if (ev.type === 'm.typing') {
         room.typing = ((ev.content && ev.content.user_ids) || [])
-          .filter((u) => !session || u !== session.userId);
+          .filter((u) => !isSelfSender(room, u));
       } else if (ev.type === 'm.receipt') {
         // Fremde Lesebestätigungen: pro Nutzer den neuesten Stand behalten
-        // (für die Gelesen-Häkchen an eigenen Nachrichten).
+        // (für die Gelesen-Häkchen an eigenen Nachrichten). Der eigene
+        // Bridge-Ghost zählt als ich und markiert nichts als "gelesen".
         for (const [eid, types] of Object.entries(ev.content || {})) {
           const readers = (types && types['m.read']) || {};
           for (const [uid, info] of Object.entries(readers)) {
-            if (session && uid === session.userId) continue;
+            if (isSelfSender(room, uid)) continue;
             const ts = (info && info.ts) || 0;
             const prev = room.readReceipts.get(uid);
             if (!prev || ts >= prev.ts) room.readReceipts.set(uid, { eventId: eid, ts });
@@ -2097,7 +2118,7 @@ function buildRoomItem(room) {
     row2.appendChild(dp);
   } else {
     let preview = room.lastPreview || '';
-    if (preview && session && room.lastPreviewSender === session.userId) {
+    if (preview && isSelfSender(room, room.lastPreviewSender)) {
       preview = 'Du: ' + preview;
     }
     row2.appendChild(el('div', 'room-preview', preview));
@@ -3256,7 +3277,7 @@ function openRoom(roomId) {
       for (let i = room.events.length - 1; i >= 0 && n < room.unread; i--) {
         const uev = room.events[i];
         if (!uev.eventId || uev.pending) continue;
-        if (session && uev.sender === session.userId) continue;
+        if (isSelfSender(room, uev.sender)) continue; // inkl. eigener Bridge-Ghost
         if (isGameMove(uev)) continue; // unsichtbar – Trenner würde nie gerendert
         if (uev.type === 'mm.system') continue; // Systemzeilen zählen nicht als ungelesen
         unreadMarkerEventId = uev.eventId;
@@ -3497,7 +3518,7 @@ function renderTimeline(mode) {
     const endsGroup = !nextEv || nextIsCard || nextEv.sender !== ev.sender ||
       nextEv.ts - ev.ts > GROUP_GAP_MS || startOfDay(nextEv.ts) !== startOfDay(ev.ts);
 
-    const mineRow = session && ev.sender === session.userId;
+    const mineRow = isSelfSender(room, ev.sender);
     const readState = mineRow && ev.eventId && !ev.pending && !ev.failed
       ? (i <= maxReadIdx ? 'read' : 'sent')
       : null;
@@ -3540,7 +3561,9 @@ function buildGameRow(room, ev, games) {
 }
 
 function buildMessageRow(room, ev, startsGroup, endsGroup, readState) {
-  const mine = session && ev.sender === session.userId;
+  // Eigener Bridge-Ghost zählt als "ich": über Signal/WhatsApp selbst
+  // geschriebene Nachrichten gehören auf die eigene Seite.
+  const mine = isSelfSender(room, ev.sender);
   const frag = document.createDocumentFragment();
 
   if (!mine && startsGroup) {
@@ -4022,6 +4045,7 @@ async function loadOlderMessages(room) {
         const obj = makeEventObject(ev);
         older.push(obj);
         if (obj.eventId) room.eventIndex.set(obj.eventId, obj);
+        maybeIngestSharedContent(obj);
       } else if (type === 'm.reaction') {
         applyReactionEvent(room, ev);
       } else if (type === 'm.room.redaction') {
