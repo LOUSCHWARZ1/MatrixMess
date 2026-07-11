@@ -6,6 +6,7 @@
 
 import { icon, ICON_NAMES } from './icons.js';
 import * as spaces from './spaces.js';
+import * as roomprefs from './roomprefs.js';
 import {
   renderAudioPlayer,
   renderVideoPlayer,
@@ -585,6 +586,12 @@ function putAccountData(type, content) {
     `/_matrix/client/v3/user/${enc(session.userId)}/account_data/${enc(type)}`, content);
 }
 
+function putRoomAccountData(roomId, type, content) {
+  return api('PUT',
+    `/_matrix/client/v3/user/${enc(session.userId)}/rooms/${enc(roomId)}/account_data/${enc(type)}`,
+    content);
+}
+
 /* ---------- Feature-Module: Bereiche (Spaces) & Kalender ---------- */
 
 async function initFeatureModules() {
@@ -599,6 +606,17 @@ async function initFeatureModules() {
     });
   } catch (err) {
     console.warn('Bereiche konnten nicht initialisiert werden:', err);
+  }
+  try {
+    await roomprefs.initRoomPrefs({
+      getAccountData,
+      putAccountData,
+      onChange: () => {
+        renderRoomList();
+      },
+    });
+  } catch (err) {
+    console.warn('Raum-Präferenzen konnten nicht initialisiert werden:', err);
   }
   renderRoomList();
   try {
@@ -1181,6 +1199,7 @@ function getRoom(roomId) {
       prevBatch: null,
       paginating: false,
       lastReceiptEventId: null,
+      markedUnread: false,      // m.marked_unread (manuell als ungelesen markiert)
       bridgeProtocol: null,     // aus m.bridge / uk.half-shot.bridge
       bridgeHint: null,         // aus Sender-Prefixen (@whatsapp_ …)
     };
@@ -1604,6 +1623,12 @@ async function processSync(data, generation) {
         try { localStorage.setItem(LS_ROOM_ORDER, JSON.stringify(roomOrder)); } catch (e) { /* */ }
         renderRoomList();
       }
+    } else if (ev.type === spaces.SPACES_ACCOUNT_DATA_TYPE) {
+      // Bereichs-Änderungen anderer Geräte live übernehmen (Echo-sicher).
+      spaces.applyRemoteState(ev.content);
+    } else if (ev.type === roomprefs.ROOMPREFS_ACCOUNT_DATA_TYPE) {
+      // Stumm/Pin/Archiv-Änderungen anderer Geräte live übernehmen.
+      roomprefs.applyRemoteState(ev.content);
     }
   }
 
@@ -1641,7 +1666,10 @@ async function processSync(data, generation) {
       }
     }
     for (const ev of (jr.account_data && jr.account_data.events) || []) {
-      void ev; // Raum-Account-Data derzeit ungenutzt
+      // "Als ungelesen markiert" (MSC2867 / Matrix 1.12) – synct über Geräte.
+      if (ev.type === 'm.marked_unread') {
+        room.markedUnread = !!(ev.content && ev.content.unread);
+      }
     }
     changed.add(roomId);
   }
@@ -1682,6 +1710,7 @@ async function processSync(data, generation) {
 
 function maybeNotify(room, ev) {
   if (!settings.notifications) return;
+  if (roomprefs.isMuted(room.roomId)) return;
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (!document.hidden) return;
   if (ev.type !== 'm.room.message' && ev.type !== 'm.room.encrypted') return;
@@ -1742,10 +1771,20 @@ function buildRoomItem(room) {
     row1.appendChild(lock);
   }
   row1.appendChild(el('div', 'room-name', name));
+  if (roomprefs.isPinned(room.roomId)) {
+    const pinEl = el('span', 'room-pin');
+    pinEl.appendChild(icon('pin', 12));
+    row1.appendChild(pinEl);
+  }
   if (spaces.isFavorite(room.roomId)) {
     const star = el('span', 'room-star');
     star.appendChild(icon('star-filled', 12));
     row1.appendChild(star);
+  }
+  if (roomprefs.isMuted(room.roomId)) {
+    const muteEl = el('span', 'room-muted');
+    muteEl.appendChild(icon('bell-off', 12));
+    row1.appendChild(muteEl);
   }
   row1.appendChild(el('div', 'room-time', listTimeLabel(room.lastEventTs)));
   main.appendChild(row1);
@@ -1764,15 +1803,23 @@ function buildRoomItem(room) {
     }
     row2.appendChild(el('div', 'room-preview', preview));
   }
+  const mutedRoom = roomprefs.isMuted(room.roomId);
   if (room.unread > 0) {
-    row2.appendChild(el('div', 'room-badge', room.unread > 99 ? '99+' : String(room.unread)));
+    const badge = el('div', 'room-badge', room.unread > 99 ? '99+' : String(room.unread));
+    if (mutedRoom) badge.classList.add('muted');
+    row2.appendChild(badge);
+  } else if (room.markedUnread) {
+    row2.appendChild(el('div', 'room-badge room-badge-dot'));
   }
   main.appendChild(row2);
   item.appendChild(main);
 
   if (room.unread > 0) {
     const mini = el('div', 'room-badge-mini', room.unread > 99 ? '99+' : String(room.unread));
+    if (mutedRoom) mini.classList.add('muted');
     item.appendChild(mini);
+  } else if (room.markedUnread) {
+    item.appendChild(el('div', 'room-badge-mini room-badge-dot'));
   }
 
   const more = el('button', 'room-more-btn');
@@ -1821,6 +1868,86 @@ function openRoomMenu(anchor, room) {
   });
   menu.appendChild(fav);
 
+  // --- Anpinnen (max. 5, immer ganz oben) ---
+  const pinnedNow = roomprefs.isPinned(room.roomId);
+  const pin = el('button', 'room-menu-item');
+  pin.appendChild(icon('pin', 16));
+  pin.appendChild(el('span', null, pinnedNow ? 'Lospinnen' : 'Anpinnen'));
+  pin.addEventListener('click', () => {
+    closeRoomMenu();
+    const res = roomprefs.togglePin(room.roomId);
+    if (!res.ok && !res.pinned) {
+      toast('Maximal ' + roomprefs.MAX_PINS + ' Chats können angepinnt werden');
+    }
+  });
+  menu.appendChild(pin);
+
+  // --- Stummschalten mit Dauer (8 h / 1 Woche / immer) ---
+  const mutedNow = roomprefs.isMuted(room.roomId);
+  const mute = el('button', 'room-menu-item');
+  mute.appendChild(icon(mutedNow ? 'bell' : 'bell-off', 16));
+  mute.appendChild(el('span', null, mutedNow ? 'Stummschaltung aufheben' : 'Stummschalten'));
+  if (mutedNow) {
+    const lbl = roomprefs.muteLabel(room.roomId);
+    if (lbl) mute.appendChild(el('span', 'room-menu-hint', lbl));
+    mute.addEventListener('click', () => {
+      closeRoomMenu();
+      roomprefs.setMute(room.roomId, 0);
+    });
+  } else {
+    mute.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Menü-Inhalt durch die Dauer-Auswahl ersetzen (kein verschachteltes Untermenü).
+      menu.textContent = '';
+      menu.appendChild(el('div', 'room-menu-label', 'Stummschalten für …'));
+      const opts = [
+        ['8 Stunden', () => Date.now() + 8 * 3600 * 1000],
+        ['1 Woche', () => Date.now() + 7 * 24 * 3600 * 1000],
+        ['Immer', () => -1],
+      ];
+      for (const [label, val] of opts) {
+        const b = el('button', 'room-menu-item');
+        b.appendChild(icon('bell-off', 16));
+        b.appendChild(el('span', null, label));
+        b.addEventListener('click', () => {
+          closeRoomMenu();
+          roomprefs.setMute(room.roomId, val());
+          toast('„' + roomDisplayName(room) + '“ stummgeschaltet');
+        });
+        menu.appendChild(b);
+      }
+    });
+  }
+  menu.appendChild(mute);
+
+  // --- Gelesen / Ungelesen ---
+  const hasUnread = room.unread > 0 || room.markedUnread;
+  const readBtn = el('button', 'room-menu-item');
+  readBtn.appendChild(icon(hasUnread ? 'check-double' : 'chat', 16));
+  readBtn.appendChild(el('span', null, hasUnread ? 'Als gelesen markieren' : 'Als ungelesen markieren'));
+  readBtn.addEventListener('click', () => {
+    closeRoomMenu();
+    if (hasUnread) markRoomRead(room);
+    else markRoomUnread(room);
+  });
+  menu.appendChild(readBtn);
+
+  // --- Archivieren ---
+  const archivedNow = roomprefs.isArchived(room.roomId);
+  const arch = el('button', 'room-menu-item');
+  arch.appendChild(icon('archive', 16));
+  arch.appendChild(el('span', null, archivedNow ? 'Aus dem Archiv holen' : 'Archivieren'));
+  arch.addEventListener('click', () => {
+    closeRoomMenu();
+    roomprefs.setArchived(room.roomId, !archivedNow);
+    if (!archivedNow) {
+      toastAction('„' + roomDisplayName(room) + '“ archiviert', 'Rückgängig', () => {
+        roomprefs.setArchived(room.roomId, false);
+      });
+    }
+  });
+  menu.appendChild(arch);
+
   // --- Bereichs-Checkliste: direkt im Menü an-/abwählen, ohne Modal.
   // Das Menü bleibt beim Umschalten offen, damit sich mehrere Bereiche in
   // einem Zug zuordnen lassen (UX-Analyse Kap. 5).
@@ -1866,6 +1993,29 @@ function openRoomMenu(anchor, room) {
     openSpaceCreate(anchor, { assignRoomId: room.roomId });
   });
   menu.appendChild(create);
+
+  // --- Raum verlassen (mit Inline-Bestätigung) ---
+  const leave = el('button', 'room-menu-item danger');
+  leave.appendChild(icon('logout', 16));
+  leave.appendChild(el('span', null, 'Raum verlassen'));
+  let leaveConfirm = false;
+  leave.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!leaveConfirm) {
+      leaveConfirm = true;
+      leave.replaceChildren(icon('logout', 16), el('span', null, 'Wirklich verlassen?'));
+      setTimeout(() => {
+        if (leave.isConnected && leaveConfirm) {
+          leaveConfirm = false;
+          leave.replaceChildren(icon('logout', 16), el('span', null, 'Raum verlassen'));
+        }
+      }, 3000);
+      return;
+    }
+    closeRoomMenu();
+    leaveRoom(room.roomId);
+  });
+  menu.appendChild(leave);
 
   document.body.appendChild(menu);
   const rect = anchor.getBoundingClientRect();
@@ -2193,16 +2343,59 @@ function saveRoomOrder() {
 
 /** Sortierung: noch nicht manuell angeordnete Räume (z. B. brandneue Chats)
  *  oben nach Aktivität, damit sie nicht unter der manuellen Liste verschwinden;
- *  darunter die manuell angeordneten Räume in gespeicherter Reihenfolge. */
+ *  darunter die manuell angeordneten Räume in gespeicherter Reihenfolge.
+ *  Angepinnte Chats stehen immer ganz oben (neueste Pins zuerst). */
 function sortRooms(list) {
   const pos = new Map();
   roomOrder.forEach((id, i) => pos.set(id, i));
-  const pinned = [];
+  const ordered = [];
   const fresh = [];
-  for (const r of list) (pos.has(r.roomId) ? pinned : fresh).push(r);
-  pinned.sort((a, b) => pos.get(a.roomId) - pos.get(b.roomId));
+  for (const r of list) (pos.has(r.roomId) ? ordered : fresh).push(r);
+  ordered.sort((a, b) => pos.get(a.roomId) - pos.get(b.roomId));
   fresh.sort((a, b) => b.lastEventTs - a.lastEventTs);
-  return fresh.concat(pinned);
+  const merged = fresh.concat(ordered);
+  const pinned = merged.filter((r) => roomprefs.isPinned(r.roomId))
+    .sort((a, b) => roomprefs.pinOrder(b.roomId) - roomprefs.pinOrder(a.roomId));
+  if (!pinned.length) return merged;
+  return pinned.concat(merged.filter((r) => !roomprefs.isPinned(r.roomId)));
+}
+
+/** Chat als gelesen markieren (Menüpunkt): Zähler weg + Read-Marker setzen. */
+function markRoomRead(room) {
+  if (room.markedUnread) {
+    room.markedUnread = false;
+    putRoomAccountData(room.roomId, 'm.marked_unread', { unread: false }).catch(() => {});
+  }
+  room.unread = 0;
+  sendReadReceipt(room);
+  renderRoomList();
+}
+
+/** Chat als ungelesen markieren (m.marked_unread, MSC2867): Punkt statt Zahl. */
+function markRoomUnread(room) {
+  room.markedUnread = true;
+  putRoomAccountData(room.roomId, 'm.marked_unread', { unread: true }).catch(() => {});
+  renderRoomList();
+}
+
+/** Raum auf dem Server verlassen und lokal entfernen. */
+async function leaveRoom(roomId) {
+  const room = rooms.get(roomId);
+  const name = room ? roomDisplayName(room) : roomId;
+  try {
+    await api('POST', `/_matrix/client/v3/rooms/${enc(roomId)}/leave`, {});
+  } catch (err) {
+    toast('Verlassen fehlgeschlagen: ' + ((err && err.message) || 'Unbekannter Fehler'));
+    return;
+  }
+  rooms.delete(roomId);
+  if (activeRoomId === roomId) {
+    activeRoomId = null;
+    showChatPlaceholder();
+  }
+  renderRoomList();
+  scheduleRoomCacheSave();
+  toast('„' + name + '“ verlassen');
 }
 
 let draggedRoomId = null;
@@ -2267,6 +2460,7 @@ const navCollapsed = new Set();
   try {
     const raw = localStorage.getItem(LS_NAV_COLLAPSED);
     if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) arr.forEach((k) => navCollapsed.add(k)); }
+    else navCollapsed.add('archive'); // Archiv startet eingeklappt
   } catch (e) { /* */ }
 })();
 function toggleNavCollapsed(key) {
@@ -2343,7 +2537,11 @@ function appendNavSection(key, opts, title, roomsArr, emptyText) {
 
   // Ungelesen-Zähler statt Chat-Anzahl (UX-Analyse Kap. 5): Die Zahl der
   // Chats trägt keine Information – die Zahl ungelesener Nachrichten schon.
-  const unread = roomsArr.reduce((n, r) => n + (r.unread || 0), 0);
+  // Stummgeschaltete Chats zählen nicht mit; "als ungelesen markiert" zählt 1.
+  const unread = roomsArr.reduce((n, r) => {
+    if (roomprefs.isMuted(r.roomId)) return n;
+    return n + (r.unread || 0) + (r.markedUnread && !r.unread ? 1 : 0);
+  }, 0);
   if (unread > 0) {
     header.appendChild(el('span', 'nav-section-unread', unread > 99 ? '99+' : String(unread)));
   }
@@ -2479,14 +2677,19 @@ function renderRoomList() {
   head.appendChild(addBtn);
   roomListEl.appendChild(head);
 
+  // Archivierte Chats erscheinen nur in der Archiv-Sektion ganz unten.
+  const active = all.filter((r) => !roomprefs.isArchived(r.roomId));
+  const archived = all.filter((r) => roomprefs.isArchived(r.roomId));
+
   // "Alle"-Ansicht: eine flache Liste ohne Gruppierung (WhatsApp-Muster) –
   // der schnellste Weg zu "wo ist der Chat?"; Bereiche bleiben einen Klick weit weg.
   if (navView === 'flat') {
-    for (const room of all) {
+    for (const room of active) {
       const item = buildRoomItem(room);
       attachRoomDrag(item, room, 'flat');
       roomListEl.appendChild(item);
     }
+    if (archived.length) appendNavSection('archive', { iconName: 'archive' }, 'Archiv', archived);
     return;
   }
 
@@ -2497,23 +2700,26 @@ function renderRoomList() {
   // Leere Bridge-Bereiche verstecken; leere EIGENE Bereiche anzeigen,
   // sonst wirkt das Erstellen wie ein Fehlschlag.
   for (const sp of spaceList) {
-    const roomsIn = all.filter((r) => roomInSpaceId(r, sp.id));
+    const roomsIn = active.filter((r) => roomInSpaceId(r, sp.id));
     if (!roomsIn.length && sp.kind !== 'custom') continue;
     appendNavSection('sp:' + sp.id, { sp, assignId: sp.id, menu: sp.kind === 'custom' }, sp.title, roomsIn,
       'Noch keine Chats – per + hinzufügen oder Chats hierher ziehen');
   }
 
   // Favoriten (können zusätzlich in Bereichen liegen – Mehrfachzuordnung ist gewollt).
-  const favorites = all.filter((r) => spaces.isFavorite(r.roomId));
+  const favorites = active.filter((r) => spaces.isFavorite(r.roomId));
   if (favorites.length) appendNavSection('fav', { iconName: 'star-filled', favDrop: true }, 'Favoriten', favorites);
 
   // Direktnachrichten (nicht in einem Bereich, keine Favoriten).
-  const dms = all.filter((r) => r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
+  const dms = active.filter((r) => r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
   if (dms.length) appendNavSection('dm', { iconName: 'user' }, 'Direktnachrichten', dms);
 
   // Weitere Räume.
-  const other = all.filter((r) => !r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
+  const other = active.filter((r) => !r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
   if (other.length) appendNavSection('other', { iconName: 'folder' }, 'Weitere', other);
+
+  // Archiv (standardmäßig eingeklappt).
+  if (archived.length) appendNavSection('archive', { iconName: 'archive' }, 'Archiv', archived);
 }
 
 /* ========================================================================
@@ -2575,6 +2781,11 @@ function openRoom(roomId) {
   renderTimeline('bottom');
   updateScrollDownBtn();
   updateDecryptionBanner();
+  // Öffnen hebt "als ungelesen markiert" auf.
+  if (room.markedUnread) {
+    room.markedUnread = false;
+    putRoomAccountData(roomId, 'm.marked_unread', { unread: false }).catch(() => {});
+  }
   renderRoomList();
   sendReadReceipt(room);
   if (window.innerWidth >= 720) composerInput.focus();

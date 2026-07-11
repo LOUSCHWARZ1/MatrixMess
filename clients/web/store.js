@@ -185,6 +185,7 @@ export function serializeRoom(room) {
     reactionIndex,
     prevBatch: truncated ? null : (room.prevBatch || null),
     lastReceiptEventId: room.lastReceiptEventId || null,
+    markedUnread: !!room.markedUnread,
     bridgeProtocol: room.bridgeProtocol || null,
     bridgeHint: room.bridgeHint || null,
   };
@@ -216,6 +217,7 @@ export function deserializeRoom(obj) {
     prevBatch: obj.prevBatch || null,
     paginating: false,
     lastReceiptEventId: obj.lastReceiptEventId || null,
+    markedUnread: !!obj.markedUnread,
     bridgeProtocol: obj.bridgeProtocol || null,
     bridgeHint: obj.bridgeHint || null,
   };
