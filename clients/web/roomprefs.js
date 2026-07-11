@@ -16,6 +16,8 @@
  *   togglePin(roomId)    -> { pinned, ok }  // ok=false: Pin-Limit erreicht
  *   isArchived(roomId)   -> boolean
  *   setArchived(roomId, value)
+ *   getNotifyMode(roomId) -> 'all' | 'mentions'
+ *   setNotifyMode(roomId, mode)
  *   applyRemoteState(content)    // account_data-Update aus /sync (Echo-sicher)
  *   MAX_PINS, ROOMPREFS_ACCOUNT_DATA_TYPE
  */
@@ -32,7 +34,8 @@ let hooks = {
   onChange: null,
 };
 
-/* roomId -> { muteUntil: number (0|-1|ts), pinned: number (0|ts), archived: bool } */
+/* roomId -> { muteUntil: number (0|-1|ts), pinned: number (0|ts), archived: bool,
+ *             notify: 'all'|'mentions' } */
 let state = { rooms: {} };
 
 let putTimer = null;
@@ -62,8 +65,11 @@ function sanitizeState(raw) {
       muteUntil: typeof p.muteUntil === 'number' && (p.muteUntil === -1 || p.muteUntil > 0) ? p.muteUntil : 0,
       pinned: typeof p.pinned === 'number' && p.pinned > 0 ? p.pinned : 0,
       archived: !!p.archived,
+      notify: p.notify === 'mentions' ? 'mentions' : 'all',
     };
-    if (entry.muteUntil || entry.pinned || entry.archived) out.rooms[roomId] = entry;
+    if (entry.muteUntil || entry.pinned || entry.archived || entry.notify !== 'all') {
+      out.rooms[roomId] = entry;
+    }
   }
   return out;
 }
@@ -93,7 +99,7 @@ function changed() {
 }
 
 function entryFor(roomId) {
-  return state.rooms[roomId] || { muteUntil: 0, pinned: 0, archived: false };
+  return state.rooms[roomId] || { muteUntil: 0, pinned: 0, archived: false, notify: 'all' };
 }
 
 function setEntry(roomId, patch) {
@@ -101,8 +107,11 @@ function setEntry(roomId, patch) {
   const next = Object.assign({}, cur, patch);
   // Abgelaufene Stummschaltungen bei Gelegenheit mit aufräumen.
   if (next.muteUntil > 0 && next.muteUntil <= Date.now()) next.muteUntil = 0;
-  if (!next.muteUntil && !next.pinned && !next.archived) delete state.rooms[roomId];
-  else state.rooms[roomId] = next;
+  if (!next.muteUntil && !next.pinned && !next.archived && next.notify !== 'mentions') {
+    delete state.rooms[roomId];
+  } else {
+    state.rooms[roomId] = next;
+  }
   changed();
 }
 
@@ -191,6 +200,15 @@ export function isArchived(roomId) {
 export function setArchived(roomId, value) {
   if (typeof roomId !== 'string' || !roomId) return;
   setEntry(roomId, { archived: !!value });
+}
+
+export function getNotifyMode(roomId) {
+  return entryFor(roomId).notify === 'mentions' ? 'mentions' : 'all';
+}
+
+export function setNotifyMode(roomId, mode) {
+  if (typeof roomId !== 'string' || !roomId) return;
+  setEntry(roomId, { notify: mode === 'mentions' ? 'mentions' : 'all' });
 }
 
 /** account_data-Update aus /sync übernehmen; eigenes Echo wird ignoriert. */
