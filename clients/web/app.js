@@ -51,6 +51,7 @@ import {
   deserializeRoom,
 } from './store.js';
 import * as calls from './calls.js';
+import * as notify from './notify.js';
 
 // Clickjacking-Schutz: GitHub Pages kann kein frame-ancestors als HTTP-Header
 // senden (Meta-CSP ignoriert die Direktive) - Framebusting als Best-Effort.
@@ -128,6 +129,12 @@ const settingsUserEl = $('#settings-user');
 const themeSeg = $('#theme-seg');
 const accentRow = $('#accent-row');
 const notifToggle = $('#notif-toggle');
+const notifDetail = $('#notif-detail');
+const notifModeSeg = $('#notifmode-seg');
+const notifPreviewToggle = $('#notifpreview-toggle');
+const notifKeywordsInput = $('#notif-keywords');
+const areaNotifyList = $('#area-notify-list');
+const notifPushHint = $('#notif-push-hint');
 const logoutBtn = $('#logout-btn');
 const emojiPopover = $('#emoji-popover');
 const toastContainer = $('#toast-container');
@@ -339,6 +346,11 @@ function loadSettings() {
     typingIndicators: true,
     enterToSend: true,
     forceMobile: false,
+    // Benachrichtigungen (synchronisiert, außer 'notifications' selbst)
+    notifyMode: 'all',           // 'all' | 'mentions' | 'off'
+    notifyPreview: true,         // Nachrichtentext in der Benachrichtigung zeigen
+    notifyKeywords: [],          // Stichwörter, die zusätzlich benachrichtigen
+    areaNotify: {},              // spaceId -> 'all' | 'mentions' | 'off'
   };
   try {
     const raw = localStorage.getItem(LS_SETTINGS);
@@ -453,6 +465,7 @@ function renderSettingsPanel() {
   typingToggle.checked = settings.typingIndicators !== false;
   notifToggle.checked = !!settings.notifications &&
     ('Notification' in window) && Notification.permission === 'granted';
+  renderNotifySettings();
   settingsUserEl.textContent = session ? `Angemeldet als ${session.userId}` : '';
   renderCryptoSection();
   renderSessions();
@@ -598,6 +611,72 @@ function renderCryptoSection() {
   recoveryBtn.disabled = !cryptoReady;
   if (verifyBtn) verifyBtn.disabled = !cryptoReady;
   if (!cryptoReady) recoveryForm.classList.add('hidden');
+}
+
+/* ---------- Benachrichtigungs-Einstellungen ---------- */
+
+function renderNotifySettings() {
+  if (!notifDetail) return;
+  const on = notifToggle.checked;
+  notifDetail.classList.toggle('hidden', !on);
+  if (notifModeSeg) {
+    for (const b of notifModeSeg.querySelectorAll('button')) {
+      const sel = b.dataset.notifmode === (settings.notifyMode || 'all');
+      b.classList.toggle('selected', sel);
+      b.setAttribute('aria-checked', sel ? 'true' : 'false');
+    }
+  }
+  if (notifPreviewToggle) notifPreviewToggle.checked = settings.notifyPreview !== false;
+  if (notifKeywordsInput && document.activeElement !== notifKeywordsInput) {
+    notifKeywordsInput.value = (settings.notifyKeywords || []).join(', ');
+  }
+  renderAreaNotifyList();
+  if (notifPushHint) {
+    notifPushHint.textContent = ('serviceWorker' in navigator)
+      ? 'Diese Regeln gelten geräteübergreifend (auch für andere Matrix-Apps). Benachrichtigungen erscheinen, solange die App im Hinter- oder Vordergrund läuft. Echtes Push bei komplett geschlossener App hängt vom Push-Dienst deines Servers ab.'
+      : 'Dieser Browser unterstützt keine Hintergrund-Benachrichtigungen.';
+  }
+}
+
+function renderAreaNotifyList() {
+  if (!areaNotifyList) return;
+  areaNotifyList.textContent = '';
+  const areas = spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge');
+  if (!areas.length) {
+    areaNotifyList.appendChild(el('div', 'settings-hint', 'Noch keine Bereiche vorhanden.'));
+    return;
+  }
+  const modes = settings.areaNotify || {};
+  for (const sp of areas) {
+    const row = el('div', 'area-notify-row');
+    row.appendChild(spaceIconNode(sp, 16));
+    row.appendChild(el('span', 'area-notify-name', sp.title));
+    const seg = el('div', 'segmented mini');
+    const cur = modes[sp.id] || 'all';
+    for (const [val, label] of [['all', 'Alle'], ['mentions', '@'], ['off', 'Aus']]) {
+      const b = el('button', null, label);
+      b.type = 'button';
+      if (val === cur) b.classList.add('selected');
+      b.title = val === 'mentions' ? 'Nur Erwähnungen' : label;
+      b.addEventListener('click', () => {
+        const next = Object.assign({}, settings.areaNotify || {});
+        if (val === 'all') delete next[sp.id]; else next[sp.id] = val;
+        settings.areaNotify = next;
+        saveSettings();
+        renderAreaNotifyList();
+      });
+      seg.appendChild(b);
+    }
+    row.appendChild(seg);
+    areaNotifyList.appendChild(row);
+  }
+}
+
+/** Serverseitige Push-Regeln an die aktuellen Einstellungen angleichen. */
+function syncPushRules() {
+  if (!session) return;
+  notify.applyGlobalMode(settings.notifyMode || 'all').catch(() => {});
+  notify.applyKeywords(settings.notifyKeywords || []).catch(() => {});
 }
 
 /* ---------- Sitzungen & Geräte ---------- */
@@ -2214,7 +2293,9 @@ async function syncLoop() {
       if (generation !== syncGeneration || !session) return;
       syncToken = data.next_batch;
       try { localStorage.setItem(LS_SYNC_TOKEN, syncToken); } catch (e) { /* */ }
+      const firstSync = !syncedOnce;
       syncedOnce = true;
+      if (firstSync) openRoomFromHash(); // Benachrichtigungs-Klick bei geschlossener App
       backoff = 1000;
       // P0: Raumbestand lokal sichern, damit der nächste Start aus dem Cache kommt.
       scheduleRoomCacheSave();
@@ -2413,23 +2494,62 @@ function eventMentionsMe(ev) {
   return !!local && body.toLowerCase().includes('@' + local.toLowerCase());
 }
 
+/** Stichwort-Treffer im Nachrichtentext? */
+function eventMatchesKeyword(ev) {
+  const list = settings.notifyKeywords || [];
+  if (!list.length) return false;
+  const body = (ev.content && typeof ev.content.body === 'string') ? ev.content.body.toLowerCase() : '';
+  if (!body) return false;
+  return list.some((kw) => kw && body.includes(String(kw).toLowerCase()));
+}
+
+/** Effektiver Benachrichtigungsmodus für einen Raum: die restriktivste Regel
+ *  aus global, Bereich(en) und Chat gewinnt ('off' > 'mentions' > 'all'). */
+function effectiveNotifyMode(room) {
+  const rank = { all: 0, mentions: 1, off: 2 };
+  let level = rank[settings.notifyMode] !== undefined ? rank[settings.notifyMode] : 0;
+  // Bereiche des Raums berücksichtigen.
+  const areaModes = settings.areaNotify || {};
+  for (const spaceId of (spaces.getRoomSpaceIds(room.roomId) || [])) {
+    const m = areaModes[spaceId];
+    if (m && rank[m] > level) level = rank[m];
+  }
+  // Auto-Bridge-Bereich
+  const bridge = spaces.detectBridge(room);
+  if (bridge) {
+    const m = areaModes['bridge:' + bridge];
+    if (m && rank[m] > level) level = rank[m];
+  }
+  // Chat-eigener Modus.
+  if (roomprefs.getNotifyMode(room.roomId) === 'mentions' && rank.mentions > level) level = rank.mentions;
+  return ['all', 'mentions', 'off'][level];
+}
+
 function maybeNotify(room, ev) {
   if (!settings.notifications) return;
   if (roomprefs.isMuted(room.roomId)) return;
-  if (roomprefs.getNotifyMode(room.roomId) === 'mentions' && !eventMentionsMe(ev)) return;
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  if (!document.hidden) return;
   if (ev.type !== 'm.room.message' && ev.type !== 'm.room.encrypted') return;
   if (isGameMove(ev)) return; // versteckte Spielzüge nicht als Push melden
-  try {
-    const body = memberName(room, ev.sender) + ': ' + truncate(eventDisplayBody(ev), 120);
-    const n = new Notification(roomDisplayName(room), { body, tag: 'mm-' + room.roomId });
-    n.onclick = () => {
-      try { window.focus(); } catch (e) { /* */ }
-      openRoom(room.roomId);
-      n.close();
-    };
-  } catch (e) { /* Notification kann in WebViews fehlen */ }
+
+  const mode = effectiveNotifyMode(room);
+  if (mode === 'off') return;
+  if (mode === 'mentions' && !eventMentionsMe(ev) && !eventMatchesKeyword(ev)) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  // Nur benachrichtigen, wenn der Tab nicht sichtbar ist (aktiver Tab: die
+  // Nachricht ist ohnehin sichtbar).
+  if (!document.hidden) return;
+
+  const preview = settings.notifyPreview !== false;
+  const body = preview
+    ? memberName(room, ev.sender) + ': ' + truncate(eventDisplayBody(ev), 140)
+    : 'Neue Nachricht';
+  notify.showNotification({
+    title: roomDisplayName(room),
+    body,
+    roomId: room.roomId,
+    tag: 'mm-' + room.roomId,
+    onClick: () => { try { window.focus(); } catch (e) { /* */ } openRoom(room.roomId); },
+  });
 }
 
 /** App-Badge (Taskleiste/Dock/Homescreen) mit der Gesamt-Ungelesen-Zahl. */
@@ -2616,6 +2736,7 @@ function openRoomMenu(anchor, room) {
     mute.addEventListener('click', () => {
       closeRoomMenu();
       roomprefs.setMute(room.roomId, 0);
+      notify.applyRoomMute(room.roomId, false).catch(() => {}); // auf allen Geräten
     });
   } else {
     mute.addEventListener('click', (e) => {
@@ -2635,6 +2756,7 @@ function openRoomMenu(anchor, room) {
         b.addEventListener('click', () => {
           closeRoomMenu();
           roomprefs.setMute(room.roomId, val());
+          notify.applyRoomMute(room.roomId, true).catch(() => {}); // auf allen Geräten
           toast('„' + roomDisplayName(room) + '“ stummgeschaltet');
         });
         menu.appendChild(b);
@@ -5564,6 +5686,9 @@ function showApp() {
   // Spaces + Kalender initialisieren (account_data laden, Space-Leiste rendern).
   // Fire-and-forget: Fehler duerfen Login/Sync nie blockieren.
   initFeatureModules().catch((e) => console.warn('Feature-Module:', e));
+  // Benachrichtigungen: Service Worker registrieren (für Hintergrund-Anzeige).
+  notify.initNotify({ api, getUserId: () => (session ? session.userId : null) });
+  if (settings.notifications) notify.registerServiceWorker().catch(() => {});
 }
 
 /* ---------- Anmelden / Registrieren umschalten ---------- */
@@ -5994,12 +6119,40 @@ notifToggle.addEventListener('change', async () => {
       settings.notifications = false;
     } else {
       settings.notifications = true;
+      notify.registerServiceWorker().catch(() => {});
+      syncPushRules();
     }
   } else {
     settings.notifications = false;
   }
   saveSettings();
+  renderNotifySettings();
 });
+
+if (notifModeSeg) notifModeSeg.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-notifmode]');
+  if (!btn) return;
+  settings.notifyMode = btn.dataset.notifmode;
+  saveSettings();
+  renderNotifySettings();
+  notify.applyGlobalMode(settings.notifyMode).catch(() => {});
+});
+
+if (notifPreviewToggle) notifPreviewToggle.addEventListener('change', () => {
+  settings.notifyPreview = notifPreviewToggle.checked;
+  saveSettings();
+});
+
+if (notifKeywordsInput) {
+  const commitKeywords = () => {
+    const list = notifKeywordsInput.value.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    settings.notifyKeywords = list;
+    saveSettings();
+    notify.applyKeywords(list).catch(() => {});
+  };
+  notifKeywordsInput.addEventListener('change', commitKeywords);
+  notifKeywordsInput.addEventListener('blur', commitKeywords);
+}
 
 logoutBtn.addEventListener('click', async () => {
   settingsOverlay.classList.add('hidden');
@@ -6015,6 +6168,29 @@ recoveryBtn.addEventListener('click', () => {
 });
 
 if (cryptoReloadBtn) cryptoReloadBtn.addEventListener('click', reloadCrypto);
+
+/* Antippen einer Benachrichtigung (aus dem Service Worker): Raum öffnen. */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const msg = e.data || {};
+    if (msg.type === 'mm-open-room' && msg.roomId && rooms.has(msg.roomId)) {
+      openRoom(msg.roomId);
+    }
+  });
+}
+
+/** Raum aus einem #room=…-Hash öffnen (Klick auf Benachrichtigung bei
+ *  zuvor geschlossener App). Wird nach jedem Sync erneut geprüft. */
+function openRoomFromHash() {
+  const m = /#room=([^&]+)/.exec(location.hash || '');
+  if (!m) return;
+  let roomId;
+  try { roomId = decodeURIComponent(m[1]); } catch (e) { return; }
+  if (roomId && rooms.has(roomId)) {
+    openRoom(roomId);
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* */ }
+  }
+}
 
 decryptBannerBtn.addEventListener('click', openRecoveryKeyEntry);
 
