@@ -98,7 +98,8 @@ import { icon } from './icons.js';
 
 /* ============================ Konstanten ============================ */
 
-const ACCOUNT_DATA_TYPE = 'io.matrixmess.calendar';
+export const CALENDAR_ACCOUNT_DATA_TYPE = 'io.matrixmess.calendar';
+const ACCOUNT_DATA_TYPE = CALENDAR_ACCOUNT_DATA_TYPE;
 const LS_STATE = 'mm.calendar';
 
 const PUT_DEBOUNCE_MS = 600;
@@ -138,6 +139,7 @@ const FEED_MAX_EVENTS = 300;            // pro Abo
 
 let putTimer = null;
 let activeModal = null;
+let lastSentJson = null; // eigenes Echo aus /sync erkennen (Lost-Update-Schutz)
 
 /** Aktuell offenes Kalender-Panel (für Live-Refresh bei Änderungen). */
 let openPanel = null; // { overlay, listWrap, exportBtn }
@@ -177,6 +179,7 @@ function schedulePutAccountData() {
       events: state.events.map((evt) => ({ ...evt })),
       feeds: state.feeds.map((f) => ({ ...f })),
     };
+    lastSentJson = JSON.stringify(sanitizeState(payload));
     Promise.resolve(hooks.putAccountData(ACCOUNT_DATA_TYPE, payload)).catch((e) => {
       console.warn('[calendar] account_data konnte nicht geschrieben werden (lokaler Cache bleibt):', e);
     });
@@ -411,6 +414,18 @@ export async function initCalendar(opts) {
 
 export function getUpcomingCount() {
   return upcomingEvents().length;
+}
+
+/** account_data-Update aus /sync live übernehmen; eigenes Echo wird ignoriert. */
+export function applyRemoteState(content) {
+  const incoming = sanitizeState(content);
+  const json = JSON.stringify(incoming);
+  if (json === lastSentJson) return;
+  if (json === JSON.stringify(sanitizeState(state))) return; // keine Änderung
+  state = incoming;
+  saveLocal(LS_STATE, state);
+  refreshAllFeeds(false); // neue Abos anderer Geräte gleich laden
+  notifyChange();
 }
 
 /* ============================ Interne Mutationen ============================ */

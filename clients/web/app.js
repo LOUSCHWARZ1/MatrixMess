@@ -22,6 +22,8 @@ import {
   renderCalendarPanel,
   renderEventCard,
   getUpcomingCount,
+  applyRemoteState as applyRemoteCalendar,
+  CALENDAR_ACCOUNT_DATA_TYPE,
 } from './calendar.js';
 import {
   initGames,
@@ -1651,6 +1653,10 @@ async function processSync(data, generation) {
     } else if (ev.type === roomprefs.ROOMPREFS_ACCOUNT_DATA_TYPE) {
       // Stumm/Pin/Archiv-Änderungen anderer Geräte live übernehmen.
       roomprefs.applyRemoteState(ev.content);
+    } else if (ev.type === CALENDAR_ACCOUNT_DATA_TYPE) {
+      // Termine/Kalender-Abos anderer Geräte live übernehmen.
+      applyRemoteCalendar(ev.content);
+      updateCalendarBadge();
     }
   }
 
