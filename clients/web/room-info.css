@@ -77,3 +77,23 @@
 .ri-media-cell.ri-media-video { background: var(--bg-tertiary, #ddd); cursor: default; }
 
 .ri-member-list { display: flex; flex-direction: column; }
+
+/* Ab 1200px: echte dritte Spalte statt Overlay (UX-Analyse Kap. 8) –
+   der Chat bleibt sichtbar und bedienbar, kein abdunkelnder Backdrop. */
+@media (min-width: 1200px) {
+  html:not(.force-mobile) #roominfo-overlay {
+    position: static;
+    inset: auto;
+    z-index: auto;
+    display: block;
+    width: 360px;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  html:not(.force-mobile) #roominfo-panel {
+    width: 100%;
+    box-shadow: none;
+    animation: none;
+  }
+}

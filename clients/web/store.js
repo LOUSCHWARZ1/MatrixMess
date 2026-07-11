@@ -193,6 +193,7 @@ export function serializeRoom(room) {
     lastReceiptEventId: room.lastReceiptEventId || null,
     readReceipts,
     markedUnread: !!room.markedUnread,
+    joinedCount: room.joinedCount || 0,
     bridgeProtocol: room.bridgeProtocol || null,
     bridgeHint: room.bridgeHint || null,
   };
@@ -226,6 +227,7 @@ export function deserializeRoom(obj) {
     lastReceiptEventId: obj.lastReceiptEventId || null,
     readReceipts: new Map(obj.readReceipts || []),
     markedUnread: !!obj.markedUnread,
+    joinedCount: obj.joinedCount || 0,
     bridgeProtocol: obj.bridgeProtocol || null,
     bridgeHint: obj.bridgeHint || null,
   };
