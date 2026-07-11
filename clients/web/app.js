@@ -1218,6 +1218,7 @@ function getRoom(roomId) {
       prevBatch: null,
       paginating: false,
       lastReceiptEventId: null,
+      readReceipts: new Map(),  // userId -> { eventId, ts } (fremde m.read)
       markedUnread: false,      // m.marked_unread (manuell als ungelesen markiert)
       bridgeProtocol: null,     // aus m.bridge / uk.half-shot.bridge
       bridgeHint: null,         // aus Sender-Prefixen (@whatsapp_ …)
@@ -1682,6 +1683,18 @@ async function processSync(data, generation) {
       if (ev.type === 'm.typing') {
         room.typing = ((ev.content && ev.content.user_ids) || [])
           .filter((u) => !session || u !== session.userId);
+      } else if (ev.type === 'm.receipt') {
+        // Fremde Lesebestätigungen: pro Nutzer den neuesten Stand behalten
+        // (für die Gelesen-Häkchen an eigenen Nachrichten).
+        for (const [eid, types] of Object.entries(ev.content || {})) {
+          const readers = (types && types['m.read']) || {};
+          for (const [uid, info] of Object.entries(readers)) {
+            if (session && uid === session.userId) continue;
+            const ts = (info && info.ts) || 0;
+            const prev = room.readReceipts.get(uid);
+            if (!prev || ts >= prev.ts) room.readReceipts.set(uid, { eventId: eid, ts });
+          }
+        }
       }
     }
     for (const ev of (jr.account_data && jr.account_data.events) || []) {
@@ -1727,9 +1740,26 @@ async function processSync(data, generation) {
  * Desktop-Benachrichtigungen
  * ====================================================================== */
 
+/** Erwähnt das Event mich? (m.mentions bevorzugt, Body-Heuristik als Fallback) */
+function eventMentionsMe(ev) {
+  if (!session) return false;
+  const c = ev.content || {};
+  const m = c['m.mentions'];
+  if (m && typeof m === 'object') {
+    if (Array.isArray(m.user_ids) && m.user_ids.includes(session.userId)) return true;
+    if (m.room) return true; // @room-Erwähnung
+  }
+  const body = typeof c.body === 'string' ? c.body : '';
+  if (!body) return false;
+  if (body.includes(session.userId)) return true;
+  const local = session.userId.replace(/^@/, '').split(':')[0];
+  return !!local && body.toLowerCase().includes('@' + local.toLowerCase());
+}
+
 function maybeNotify(room, ev) {
   if (!settings.notifications) return;
   if (roomprefs.isMuted(room.roomId)) return;
+  if (roomprefs.getNotifyMode(room.roomId) === 'mentions' && !eventMentionsMe(ev)) return;
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (!document.hidden) return;
   if (ev.type !== 'm.room.message' && ev.type !== 'm.room.encrypted') return;
@@ -1940,6 +1970,22 @@ function openRoomMenu(anchor, room) {
     });
   }
   menu.appendChild(mute);
+
+  // --- Benachrichtigungen: nur bei Erwähnungen ---
+  const mentionsOnly = roomprefs.getNotifyMode(room.roomId) === 'mentions';
+  const notifyBtn = el('button', 'room-menu-item');
+  notifyBtn.appendChild(icon('bell', 16));
+  notifyBtn.appendChild(el('span', null, 'Nur bei Erwähnungen'));
+  if (mentionsOnly) {
+    const check = el('span', 'room-menu-hint');
+    check.appendChild(icon('check', 12));
+    notifyBtn.appendChild(check);
+  }
+  notifyBtn.addEventListener('click', () => {
+    closeRoomMenu();
+    roomprefs.setNotifyMode(room.roomId, mentionsOnly ? 'all' : 'mentions');
+  });
+  menu.appendChild(notifyBtn);
 
   // --- Gelesen / Ungelesen ---
   const hasUnread = room.unread > 0 || room.markedUnread;
@@ -2909,6 +2955,18 @@ function renderTimeline(mode) {
   // Spielzüge sind unsichtbar – vorab herausfiltern, damit sie Gruppierung
   // und Datumstrenner nicht verfälschen.
   const vis = room.events.filter((e) => !isGameMove(e));
+  // Fremde Lesebestätigungen: höchster gelesener Timeline-Index für die
+  // Gelesen-Häkchen an eigenen Nachrichten (alles davor gilt als gelesen).
+  let maxReadIdx = -1;
+  if (room.readReceipts && room.readReceipts.size) {
+    const posByEid = new Map();
+    vis.forEach((e2, i2) => { if (e2.eventId) posByEid.set(e2.eventId, i2); });
+    for (const rec of room.readReceipts.values()) {
+      const p = posByEid.get(rec.eventId);
+      if (p !== undefined && p > maxReadIdx) maxReadIdx = p;
+    }
+  }
+
   let prevEv = null;
   for (let i = 0; i < vis.length; i++) {
     const ev = vis[i];
@@ -2945,7 +3003,11 @@ function renderTimeline(mode) {
     const endsGroup = !nextEv || nextIsCard || nextEv.sender !== ev.sender ||
       nextEv.ts - ev.ts > GROUP_GAP_MS || startOfDay(nextEv.ts) !== startOfDay(ev.ts);
 
-    timelineEl.appendChild(buildMessageRow(room, ev, startsGroup, endsGroup));
+    const mineRow = session && ev.sender === session.userId;
+    const readState = mineRow && ev.eventId && !ev.pending && !ev.failed
+      ? (i <= maxReadIdx ? 'read' : 'sent')
+      : null;
+    timelineEl.appendChild(buildMessageRow(room, ev, startsGroup, endsGroup, readState));
     prevEv = ev;
   }
 
@@ -2983,7 +3045,7 @@ function buildGameRow(room, ev, games) {
   return row;
 }
 
-function buildMessageRow(room, ev, startsGroup, endsGroup) {
+function buildMessageRow(room, ev, startsGroup, endsGroup, readState) {
   const mine = session && ev.sender === session.userId;
   const frag = document.createDocumentFragment();
 
@@ -3004,7 +3066,7 @@ function buildMessageRow(room, ev, startsGroup, endsGroup) {
 
   const wrap = el('div', 'bubble-wrap');
   const bubble = el('div', 'bubble');
-  fillBubbleContent(room, ev, bubble, endsGroup);
+  fillBubbleContent(room, ev, bubble, endsGroup, readState);
   wrap.appendChild(bubble);
 
   // Reaktions-Chips
@@ -3038,7 +3100,7 @@ function buildMessageRow(room, ev, startsGroup, endsGroup) {
   return container;
 }
 
-function fillBubbleContent(room, ev, bubble, endsGroup) {
+function fillBubbleContent(room, ev, bubble, endsGroup, readState) {
   const meta = el('span', 'msg-meta');
   if (ev.failed) {
     meta.appendChild(el('span', null, '⚠︎'));
@@ -3048,6 +3110,13 @@ function fillBubbleContent(room, ev, bubble, endsGroup) {
     meta.appendChild(pend);
   } else if (endsGroup) {
     meta.appendChild(el('span', null, formatTime(ev.ts)));
+    // Zustell-/Lese-Häkchen an eigenen Nachrichten (✓ gesendet, ✓✓ gelesen).
+    if (readState) {
+      const st = el('span', 'msg-read-state' + (readState === 'read' ? ' read' : ''));
+      st.appendChild(icon(readState === 'read' ? 'check-double' : 'check', 12));
+      st.title = readState === 'read' ? 'Gelesen' : 'Gesendet';
+      meta.appendChild(st);
+    }
   }
   if (ev.editedBody !== undefined && ev.editedBody !== null && !ev.redacted) {
     meta.insertBefore(el('span', 'edited-tag', '(bearbeitet)'), meta.firstChild);

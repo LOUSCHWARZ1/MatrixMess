@@ -1392,6 +1392,17 @@ input, textarea {
 .mm-pick-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .mm-pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Zustell-/Lese-Häkchen an eigenen Nachrichten */
+.msg-read-state {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
+  opacity: .85;
+}
+.msg-read-state.read { color: var(--accent); opacity: 1; }
+.mine .bubble .msg-read-state { color: color-mix(in srgb, var(--on-accent, #fff) 75%, transparent); }
+.mine .bubble .msg-read-state.read { color: var(--on-accent, #fff); }
+
 /* "N neue Nachrichten"-Trenner in der Timeline */
 .unread-divider {
   display: flex;

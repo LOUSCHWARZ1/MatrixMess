@@ -167,6 +167,12 @@ export function serializeRoom(room) {
       reactionIndex.push([rid, { targetId: info.targetId, key: info.key, sender: info.sender }]);
     }
   }
+  const readReceipts = [];
+  if (room.readReceipts instanceof Map) {
+    for (const [uid, rec] of room.readReceipts) {
+      readReceipts.push([uid, { eventId: (rec && rec.eventId) || null, ts: (rec && rec.ts) || 0 }]);
+    }
+  }
   return {
     roomId: room.roomId,
     explicitName: room.explicitName || null,
@@ -185,6 +191,7 @@ export function serializeRoom(room) {
     reactionIndex,
     prevBatch: truncated ? null : (room.prevBatch || null),
     lastReceiptEventId: room.lastReceiptEventId || null,
+    readReceipts,
     markedUnread: !!room.markedUnread,
     bridgeProtocol: room.bridgeProtocol || null,
     bridgeHint: room.bridgeHint || null,
@@ -217,6 +224,7 @@ export function deserializeRoom(obj) {
     prevBatch: obj.prevBatch || null,
     paginating: false,
     lastReceiptEventId: obj.lastReceiptEventId || null,
+    readReceipts: new Map(obj.readReceipts || []),
     markedUnread: !!obj.markedUnread,
     bridgeProtocol: obj.bridgeProtocol || null,
     bridgeHint: obj.bridgeHint || null,
