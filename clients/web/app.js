@@ -39,6 +39,13 @@ import {
   isRoomInfoOpen,
   refreshRoomInfo,
 } from './room-info.js';
+import {
+  loadRoomCache,
+  saveRoomCache,
+  clearRoomCache,
+  serializeRoom,
+  deserializeRoom,
+} from './store.js';
 
 // Clickjacking-Schutz: GitHub Pages kann kein frame-ancestors als HTTP-Header
 // senden (Meta-CSP ignoriert die Direktive) - Framebusting als Best-Effort.
@@ -760,7 +767,10 @@ async function doLogout() {
 /** Session lokal verwerfen und Login zeigen (z. B. bei M_UNKNOWN_TOKEN). */
 function hardLogout() {
   stopSync();
-  clearCryptoState(session && session.userId);
+  const oldUserId = session && session.userId;
+  clearCryptoState(oldUserId);
+  if (oldUserId) clearRoomCache(oldUserId);
+  clearTimeout(roomCacheSaveTimer);
   session = null;
   clearSessionStorage();
   rooms.clear();
@@ -1505,10 +1515,12 @@ async function syncLoop() {
         if (generation !== syncGeneration || !session) return;
       }
 
-      processSync(data);
+      await processSync(data);
       syncToken = data.next_batch;
       try { localStorage.setItem(LS_SYNC_TOKEN, syncToken); } catch (e) { /* */ }
       backoff = 1000;
+      // P0: Raumbestand lokal sichern, damit der nächste Start aus dem Cache kommt.
+      scheduleRoomCacheSave();
 
       // Kamen to_device-Events (potenzielle Room-Keys), erneut versuchen,
       // bislang unentschlüsselbare Events zu entschlüsseln.
@@ -1537,9 +1549,13 @@ async function syncLoop() {
   }
 }
 
-function processSync(data) {
+async function processSync(data) {
   const changed = new Set();
   newRemoteInActive = 0;
+  // Initial-Sync (viele Räume auf einmal): Verarbeitung in Häppchen, damit der
+  // Main-Thread atmen kann und der Tab nicht einfriert (Doherty-Schwelle).
+  const isInitial = !syncToken;
+  let processedRooms = 0;
 
   for (const ev of (data.account_data && data.account_data.events) || []) {
     if (ev.type === 'm.direct') {
@@ -1562,6 +1578,12 @@ function processSync(data) {
 
   const joined = (data.rooms && data.rooms.join) || {};
   for (const [roomId, jr] of Object.entries(joined)) {
+    // Beim Initial-Sync alle 8 Räume kurz an den Browser abgeben (Rendering,
+    // Eingaben), statt minutenlang zu blockieren.
+    if (isInitial && ++processedRooms % 8 === 0) {
+      await new Promise((r) => setTimeout(r, 0));
+      if (!session) return;
+    }
     const room = getRoom(roomId);
 
     if (jr.summary && Array.isArray(jr.summary['m.heroes'])) {
@@ -1956,7 +1978,17 @@ function renderRoomList() {
   }
 
   if (!rooms.size) {
-    roomListEl.appendChild(el('div', 'room-list-empty', 'Noch keine Räume – warte auf den ersten Sync …'));
+    // Skeleton-Chatliste statt Textzeile: Platzhalter verbessern die
+    // wahrgenommene Geschwindigkeit messbar (UX-Analyse, Kap. 4).
+    for (let i = 0; i < 8; i++) {
+      const sk = el('div', 'room-skeleton');
+      sk.appendChild(el('div', 'sk-avatar'));
+      const lines = el('div', 'sk-lines');
+      lines.appendChild(el('div', 'sk-line sk-line-1'));
+      lines.appendChild(el('div', 'sk-line sk-line-2'));
+      sk.appendChild(lines);
+      roomListEl.appendChild(sk);
+    }
     return;
   }
 
@@ -3781,10 +3813,49 @@ function init() {
   if (session) {
     showApp();
     cryptoInitPromise = initCrypto();
-    syncLoop();
+    // P0: Räume sofort aus dem lokalen Cache rendern (gefühlter Start < 1 s),
+    // der Sync läuft danach nur noch inkrementell weiter.
+    restoreRoomsFromCache().finally(() => { syncLoop(); });
   } else {
     showLogin();
   }
+}
+
+/** Lädt den persistierten Raumbestand und rendert ihn sofort. */
+async function restoreRoomsFromCache() {
+  if (!session) return;
+  try {
+    const cached = await loadRoomCache(session.userId);
+    if (!cached || !cached.rooms.length) return;
+    for (const obj of cached.rooms) {
+      try {
+        const room = deserializeRoom(obj);
+        if (room && room.roomId) rooms.set(room.roomId, room);
+      } catch (e) { /* einzelnen kaputten Raum überspringen */ }
+    }
+    if (rooms.size) {
+      renderRoomList();
+      console.info('[store] ' + rooms.size + ' Räume aus dem Cache geladen');
+    }
+  } catch (e) {
+    console.warn('Raum-Cache konnte nicht geladen werden:', e);
+  }
+}
+
+let roomCacheSaveTimer = null;
+/** Debounced: aktuellen Raumbestand in IndexedDB sichern. */
+function scheduleRoomCacheSave() {
+  if (!session) return;
+  clearTimeout(roomCacheSaveTimer);
+  roomCacheSaveTimer = setTimeout(() => {
+    if (!session) return;
+    try {
+      const arr = [...rooms.values()].map(serializeRoom);
+      saveRoomCache(session.userId, arr);
+    } catch (e) {
+      console.warn('Raum-Cache konnte nicht gespeichert werden:', e);
+    }
+  }, 2000);
 }
 
 init();
