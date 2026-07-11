@@ -1633,6 +1633,7 @@ function mxcToObjectURL(mxc, thumb) {
       : '';
     // 1. Versuch: authentifizierte Medien-Endpunkte (Matrix 1.11)
     const authUrl = `${session.baseUrl}/_matrix/client/v1/media/${kind}/${server}/${mediaId}${query}`;
+    let authStatus = 0;
     try {
       const res = await fetch(authUrl, {
         headers: { Authorization: 'Bearer ' + session.accessToken },
@@ -1642,8 +1643,15 @@ function mxcToObjectURL(mxc, thumb) {
         createdObjectURLs.push(url);
         return url;
       }
-    } catch (e) { /* weiter zum Fallback */ }
-    // 2. Fallback: Legacy-Endpunkt ohne Auth
+      authStatus = res.status;
+    } catch (e) { /* Netzwerkfehler: Fallback versuchen */ }
+    // 2. Fallback auf den Legacy-Endpunkt NUR, wenn der authentifizierte gar
+    // nicht existiert (alter Server: 400/404) oder unerreichbar war. Bei
+    // 401/403/429/5xx den Fehler durchreichen, statt ihn mit einem zweiten,
+    // unautorisierten Request zu maskieren.
+    if (authStatus !== 0 && authStatus !== 404 && authStatus !== 400) {
+      throw new Error('Medien-Download fehlgeschlagen (' + authStatus + ')');
+    }
     const legacyUrl = `${session.baseUrl}/_matrix/media/v3/${kind}/${server}/${mediaId}${query}`;
     const res2 = await fetch(legacyUrl);
     if (!res2.ok) throw new Error('Medien-Download fehlgeschlagen (' + res2.status + ')');
