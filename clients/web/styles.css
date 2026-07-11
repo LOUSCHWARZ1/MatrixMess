@@ -1159,6 +1159,35 @@ html.force-mobile .settings-header {
   line-height: 1.45;
 }
 
+/* Benachrichtigungs-Einstellungen */
+.settings-subhead {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.segmented.mini { flex: 0 0 auto; padding: 2px; gap: 2px; }
+.segmented.mini button { padding: 4px 10px; font-size: 12px; flex: 0 0 auto; }
+.area-notify-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.area-notify-row:last-child { border-bottom: none; }
+.area-notify-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.area-notify-row > svg { flex-shrink: 0; color: var(--text-secondary); }
+
 .ghost-btn {
   display: inline-flex;
   align-items: center;

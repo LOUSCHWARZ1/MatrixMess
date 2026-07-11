@@ -248,10 +248,32 @@
       <section class="settings-section">
         <h4>Benachrichtigungen</h4>
         <label class="toggle-row">
-          <span>Desktop-Benachrichtigungen</span>
+          <span>Benachrichtigungen aktivieren</span>
           <input id="notif-toggle" type="checkbox">
           <span class="toggle-slider" aria-hidden="true"></span>
         </label>
+        <div id="notif-detail" class="hidden">
+          <h5 class="settings-subhead">Wofür benachrichtigen</h5>
+          <div id="notifmode-seg" class="segmented" role="radiogroup" aria-label="Benachrichtigungsmodus">
+            <button data-notifmode="all" role="radio">Alle</button>
+            <button data-notifmode="mentions" role="radio">Nur Erwähnungen</button>
+            <button data-notifmode="off" role="radio">Aus</button>
+          </div>
+          <label class="toggle-row">
+            <span>Nachrichtentext in der Benachrichtigung zeigen</span>
+            <input id="notifpreview-toggle" type="checkbox">
+            <span class="toggle-slider" aria-hidden="true"></span>
+          </label>
+          <h5 class="settings-subhead">Stichwörter</h5>
+          <p class="settings-hint">Benachrichtigt zusätzlich, wenn eines dieser Wörter vorkommt (mit Komma trennen).</p>
+          <label class="field">
+            <input id="notif-keywords" type="text" placeholder="z. B. dringend, meeting, geburtstag" spellcheck="false">
+          </label>
+          <h5 class="settings-subhead">Pro Bereich</h5>
+          <p class="settings-hint">Eigene Regel je Bereich (Chats einzeln regelst du über das ⋯-Menü des Chats).</p>
+          <div id="area-notify-list"></div>
+          <p class="settings-hint" id="notif-push-hint"></p>
+        </div>
       </section>
 
       <section class="settings-section">
@@ -301,7 +323,7 @@
           <button id="password-submit" class="primary-btn" type="submit">Passwort ändern</button>
         </form>
         <button id="logout-btn" class="danger-btn">Abmelden</button>
-        <div class="settings-version">MatrixMess Web · Version 0.9.4</div>
+        <div class="settings-version">MatrixMess Web · Version 0.10.0</div>
       </section>
     </div>
   </div>
