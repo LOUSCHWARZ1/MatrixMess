@@ -266,7 +266,20 @@ struct AppSnapshotStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(snapshot)
-        try data.write(to: url, options: .atomic)
+        // NSFileProtectionComplete: Die Datei (Nachrichten, Entwuerfe, Anrufe,
+        // Kalender) ist auf der Platte verschluesselt und nur lesbar, solange
+        // das Geraet entsperrt ist. Ohne dieses Flag lag der Inhalt als
+        // Klartext-JSON in Application Support.
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        excludeFromICloudBackup(url)
+    }
+
+    /// Lokalen Cache nicht in iCloud/iTunes-Backups sichern (privat halten).
+    private func excludeFromICloudBackup(_ url: URL) {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutable = url
+        try? mutable.setResourceValues(values)
     }
 
     func clear() throws {

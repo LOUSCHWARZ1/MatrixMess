@@ -1858,6 +1858,35 @@ final class AppState: ObservableObject {
         return matrixService.mediaDownloadURL(for: contentURI, session: currentSession)
     }
 
+    /// Authorization-Header fuer authentifizierte Medien-Requests (Bearer-Token).
+    /// Ersetzt das frueher an die URL gehaengte access_token.
+    var mediaAuthorizationHeaders: [String: String]? {
+        guard let token = currentSession?.accessToken else { return nil }
+        return ["Authorization": "Bearer \(token)"]
+    }
+
+    private let mediaImageCache = NSCache<NSString, UIImage>()
+
+    /// Laedt ein Bild (Avatar/Anhang) ueber den authentifizierten Endpunkt mit
+    /// Bearer-Header. Kleiner In-Memory-Cache; Token bleibt aus der URL heraus.
+    func loadMediaImage(for contentURI: String?) async -> UIImage? {
+        guard let contentURI, !contentURI.isEmpty else { return nil }
+        if let cached = mediaImageCache.object(forKey: contentURI as NSString) { return cached }
+        guard let url = mediaDownloadURL(for: contentURI),
+              let headers = mediaAuthorizationHeaders else { return nil }
+        var request = URLRequest(url: url)
+        for (field, value) in headers { request.setValue(value, forHTTPHeaderField: field) }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let image = UIImage(data: data) else { return nil }
+            mediaImageCache.setObject(image, forKey: contentURI as NSString)
+            return image
+        } catch {
+            return nil
+        }
+    }
+
     func event(withID eventID: UUID) -> ScheduledChatEvent? {
         scheduledEvents.first { $0.id == eventID }
     }

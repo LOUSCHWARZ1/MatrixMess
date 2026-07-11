@@ -374,11 +374,14 @@ actor MatrixSDKContext {
         guard parts.count == 2 else { return nil }
 
         var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
+        // Authentifizierter Medien-Endpunkt (Matrix 1.11). Das Access-Token wird
+        // NICHT mehr als Query-Parameter angehaengt (Leak-Gefahr in Logs/kopierten
+        // URLs, laut Spec deprecated), sondern von den Consumern als
+        // Authorization-Header gesetzt.
         components?.path = combinedPath(
             basePath: homeserver.path,
-            endpointPath: "/_matrix/media/v3/download/\(encodedPathSegment(parts[0]))/\(encodedPathSegment(parts[1]))"
+            endpointPath: "/_matrix/client/v1/media/download/\(encodedPathSegment(parts[0]))/\(encodedPathSegment(parts[1]))"
         )
-        components?.queryItems = [URLQueryItem(name: "access_token", value: session.accessToken)]
         return components?.url
     }
 

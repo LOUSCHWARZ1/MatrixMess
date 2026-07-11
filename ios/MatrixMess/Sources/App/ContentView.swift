@@ -514,6 +514,55 @@ private struct AppLockOverlayView: View {
     }
 }
 
+/// Sicht-Schutz fuer den App-Switcher: iOS erstellt beim Wechsel in den
+/// Hintergrund ein Vorschaubild. Diese Ansicht wird eingeblendet, sobald die
+/// Szene nicht mehr aktiv ist (bereits bei .inactive, VOR dem Snapshot), sodass
+/// im Multitasking-Umschalter keine Chat-Inhalte sichtbar sind.
+private struct PrivacyShieldView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+            Circle()
+                .fill(appState.appAccent.gradient)
+                .frame(width: 84, height: 84)
+                .overlay(
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundColor(.white)
+                )
+        }
+    }
+}
+
+/// Laedt ein Remote-Bild (Avatar/Anhang) ueber den authentifizierten Endpunkt
+/// mit Bearer-Header (kein Token in der URL). Zeigt bis dahin `fallback`.
+private struct AuthenticatedRemoteImage<Fallback: View>: View {
+    let contentURI: String?
+    @ViewBuilder var fallback: () -> Fallback
+    @EnvironmentObject private var appState: AppState
+    @State private var uiImage: UIImage?
+
+    var body: some View {
+        Group {
+            if let uiImage {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                fallback()
+            }
+        }
+        .task(id: contentURI) {
+            uiImage = nil
+            uiImage = await appState.loadMediaImage(for: contentURI)
+        }
+    }
+}
+
 private struct MessengerShellView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.scenePhase) private var scenePhase
@@ -544,6 +593,9 @@ private struct MessengerShellView: View {
         .overlay {
             if appState.isAppLocked {
                 AppLockOverlayView()
+            } else if scenePhase != .active {
+                // Vor dem App-Switcher-Snapshot Inhalte verdecken.
+                PrivacyShieldView()
             }
         }
         .onChange(of: scenePhase) { phase in
@@ -1373,22 +1425,11 @@ private struct ThreadAvatarView: View {
                 .fill(thread.accent.gradient)
                 .frame(width: size, height: size)
 
-            if let avatarURL = appState.mediaDownloadURL(for: thread.avatarContentURI) {
-                AsyncImage(url: avatarURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        fallback
-                    }
-                }
-                .frame(width: size, height: size)
-                .clipShape(Circle())
-            } else {
+            AuthenticatedRemoteImage(contentURI: thread.avatarContentURI) {
                 fallback
             }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
         }
     }
 
@@ -2045,12 +2086,14 @@ private struct ConversationDetailView: View {
         }
 
         if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
+            let headers = appState.mediaAuthorizationHeaders
             await MainActor.run {
                 if effectiveMessage.kind == .video || effectiveMessage.kind == .voice {
                     mediaPlaybackItem = MediaPlaybackItem(
                         url: remoteURL,
                         title: attachment.title.isEmpty ? "Anhang" : attachment.title,
-                        kind: effectiveMessage.kind == .video ? .video : .audio
+                        kind: effectiveMessage.kind == .video ? .video : .audio,
+                        headers: headers
                     )
                 }
             }
@@ -2538,6 +2581,8 @@ private struct MediaPlaybackItem: Identifiable {
     let url: URL
     let title: String
     let kind: Kind
+    /// HTTP-Header (z. B. Authorization) fuer Remote-URLs; nil bei lokalen Dateien.
+    var headers: [String: String]? = nil
 }
 
 private struct QuickLookItem: Identifiable {
@@ -2585,7 +2630,15 @@ private struct MediaPlaybackSheet: View {
             }
         }
         .onAppear {
-            let avPlayer = AVPlayer(url: item.url)
+            // Bei Remote-URLs den Authorization-Header ueber ein AVURLAsset setzen
+            // (Token gehoert nicht in die URL). Lokale Dateien haben keine Header.
+            let avPlayer: AVPlayer
+            if let headers = item.headers, !headers.isEmpty {
+                let asset = AVURLAsset(url: item.url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+                avPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            } else {
+                avPlayer = AVPlayer(url: item.url)
+            }
             avPlayer.automaticallyWaitsToMinimizeStalling = true
             player = avPlayer
             configureDuration(for: avPlayer)
@@ -3123,20 +3176,11 @@ private struct InlineImageAttachment: View {
                     Image(uiImage: uiImage)
                         .resizable()
                         .scaledToFill()
-                } else if let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) {
-                    AsyncImage(url: remoteURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        case .failure:
-                            imagePlaceholder(icon: "photo.slash")
-                        default:
-                            ZStack {
-                                imagePlaceholder(icon: "photo")
-                                ProgressView()
-                            }
+                } else if attachment.contentURI != nil {
+                    AuthenticatedRemoteImage(contentURI: attachment.contentURI) {
+                        ZStack {
+                            imagePlaceholder(icon: "photo")
+                            ProgressView()
                         }
                     }
                 } else {
@@ -3210,13 +3254,18 @@ private struct InlineVideoAttachment: View {
                   let remoteURL = appState.mediaDownloadURL(for: attachment.contentURI) else {
                 return
             }
-            remoteThumbnail = await generateVideoThumbnail(from: remoteURL)
+            remoteThumbnail = await generateVideoThumbnail(from: remoteURL, headers: appState.mediaAuthorizationHeaders)
         }
     }
 
-    private func generateVideoThumbnail(from url: URL) async -> UIImage? {
+    private func generateVideoThumbnail(from url: URL, headers: [String: String]? = nil) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
-            let asset = AVURLAsset(url: url)
+            let asset: AVURLAsset
+            if let headers, !headers.isEmpty {
+                asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            } else {
+                asset = AVURLAsset(url: url)
+            }
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
             let time = CMTime(seconds: 0, preferredTimescale: 600)
