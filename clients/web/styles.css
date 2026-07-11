@@ -253,8 +253,10 @@ input, textarea {
   display: grid;
   /* Dritte (auto-)Spalte: Raum-Info-Panel ab 1200px; eingeklappt = 0. */
   grid-template-columns: 320px 1fr auto;
-  height: 100vh;
-  height: 100dvh;
+  /* height:100% kettet exakt an html/body (= sichtbares Fenster). 100dvh weicht
+     im iOS-PWA-Standalone davon ab und hinterliess unter der Tab-Leiste einen
+     dunklen Streifen. */
+  height: 100%;
   background: var(--bg);
   overflow: hidden;
 }
@@ -1982,7 +1984,8 @@ html.force-mobile .settings-header {
   display: none;
   align-items: stretch;
   justify-content: space-around;
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  /* Schlank halten: nur so viel Bodenabstand wie der Home-Indicator braucht. */
+  padding: 4px 8px calc(4px + env(safe-area-inset-bottom, 0px));
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
 }
