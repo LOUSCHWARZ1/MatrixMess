@@ -3834,6 +3834,14 @@ async function restoreRoomsFromCache() {
       } catch (e) { /* einzelnen kaputten Raum überspringen */ }
     }
     if (rooms.size) {
+      // Sync exakt ab dem Stand des Caches fortsetzen: Der localStorage-Token
+      // wird bei jedem Sync sofort geschrieben, der Cache aber nur debounced –
+      // ohne diesen Abgleich würden Nachrichten aus der Lücke dauerhaft fehlen.
+      // (Doppelt gelieferte Events fängt die eventIndex-Dedupe ab.)
+      try {
+        if (cached.syncToken) localStorage.setItem(LS_SYNC_TOKEN, cached.syncToken);
+        else localStorage.removeItem(LS_SYNC_TOKEN); // alter Cache ohne Token: lieber voll syncen als Lücken riskieren
+      } catch (e) { /* */ }
       renderRoomList();
       console.info('[store] ' + rooms.size + ' Räume aus dem Cache geladen');
     }
@@ -3851,7 +3859,7 @@ function scheduleRoomCacheSave() {
     if (!session) return;
     try {
       const arr = [...rooms.values()].map(serializeRoom);
-      saveRoomCache(session.userId, arr);
+      saveRoomCache(session.userId, arr, syncToken);
     } catch (e) {
       console.warn('Raum-Cache konnte nicht gespeichert werden:', e);
     }
