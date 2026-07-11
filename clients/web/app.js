@@ -816,6 +816,7 @@ function hardLogout() {
   session = null;
   clearSessionStorage();
   rooms.clear();
+  updateAppBadge();
   directRoomIds = new Set();
   activeRoomId = null;
   syncToken = null;
@@ -1220,6 +1221,7 @@ function getRoom(roomId) {
       lastReceiptEventId: null,
       readReceipts: new Map(),  // userId -> { eventId, ts } (fremde m.read)
       markedUnread: false,      // m.marked_unread (manuell als ungelesen markiert)
+      joinedCount: 0,           // m.joined_member_count aus dem Sync-Summary
       bridgeProtocol: null,     // aus m.bridge / uk.half-shot.bridge
       bridgeHint: null,         // aus Sender-Prefixen (@whatsapp_ …)
     };
@@ -1665,6 +1667,9 @@ async function processSync(data, generation) {
     if (jr.summary && Array.isArray(jr.summary['m.heroes'])) {
       room.heroes = jr.summary['m.heroes'];
     }
+    if (jr.summary && typeof jr.summary['m.joined_member_count'] === 'number') {
+      room.joinedCount = jr.summary['m.joined_member_count'];
+    }
     for (const ev of (jr.state && jr.state.events) || []) applyStateEvent(room, ev);
 
     const tl = jr.timeline || {};
@@ -1773,6 +1778,21 @@ function maybeNotify(room, ev) {
       n.close();
     };
   } catch (e) { /* Notification kann in WebViews fehlen */ }
+}
+
+/** App-Badge (Taskleiste/Dock/Homescreen) mit der Gesamt-Ungelesen-Zahl. */
+function updateAppBadge() {
+  if (typeof navigator === 'undefined' || typeof navigator.setAppBadge !== 'function') return;
+  let total = 0;
+  for (const r of rooms.values()) {
+    if (roomprefs.isMuted(r.roomId) || roomprefs.isArchived(r.roomId)) continue;
+    total += r.unread || 0;
+    if (r.markedUnread && !r.unread) total += 1;
+  }
+  try {
+    const p = total > 0 ? navigator.setAppBadge(total) : navigator.clearAppBadge();
+    Promise.resolve(p).catch(() => {});
+  } catch (e) { /* Badging API optional */ }
 }
 
 /* ========================================================================
@@ -2682,6 +2702,7 @@ function appendNavSection(key, opts, title, roomsArr, emptyText) {
 }
 
 function renderRoomList() {
+  updateAppBadge();
   const query = roomSearchEl.value.trim().toLowerCase();
   roomListEl.textContent = '';
   const all = sortRooms([...rooms.values()]);
@@ -2886,11 +2907,20 @@ function renderChatHeader(room) {
   chatNameEl.textContent = name;
   const subParts = [];
   if (room.isEncrypted) subParts.push('Ende-zu-Ende-verschlüsselt');
-  if (room.isDirect) subParts.push('Direktnachricht');
+  if (room.isDirect) {
+    subParts.push('Direktnachricht');
+  } else {
+    // Menschliche Info statt roher Raum-ID (UX-Analyse Kap. 8): Mitgliederzahl.
+    const count = room.joinedCount ||
+      [...room.members.values()].filter((m) => !m.membership || m.membership === 'join').length;
+    if (count > 0) subParts.push(count === 1 ? '1 Mitglied' : count + ' Mitglieder');
+  }
+  if (!subParts.length && room.lastEventTs) {
+    subParts.push('Zuletzt aktiv ' + listTimeLabel(room.lastEventTs));
+  }
   chatSubEl.textContent = '';
   if (room.isEncrypted) chatSubEl.appendChild(icon('lock', 10));
-  chatSubEl.appendChild(el('span', null,
-    subParts.length ? subParts.join(' · ') : room.roomId));
+  chatSubEl.appendChild(el('span', null, subParts.length ? subParts.join(' · ') : 'Raum'));
   setAvatar(chatAvatarEl, room.roomId, name, roomAvatarMxc(room));
 
   // In E2EE-Raeumen niemals unverschluesselt senden: Composer nur sperren,
@@ -4809,6 +4839,28 @@ settingsBtn.addEventListener('click', () => {
   renderSettingsPanel();
   settingsOverlay.classList.remove('hidden');
 });
+
+/* Mobile Bottom-Tab-Bar: Icons montieren und verdrahten. */
+(function initTabBar() {
+  const tabChats = $('#tab-chats');
+  const tabCalendar = $('#tab-calendar');
+  const tabSettings = $('#tab-settings');
+  if (!tabChats || !tabCalendar || !tabSettings) return;
+  tabChats.insertBefore(icon('chat', 22), tabChats.firstChild);
+  tabCalendar.insertBefore(icon('calendar', 22), tabCalendar.firstChild);
+  tabSettings.insertBefore(icon('settings', 22), tabSettings.firstChild);
+  tabChats.addEventListener('click', () => {
+    // Chats ist die Grundansicht: nur nach oben scrollen.
+    try { roomListEl.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { /* */ }
+  });
+  tabCalendar.addEventListener('click', () => {
+    document.body.appendChild(renderCalendarPanel());
+  });
+  tabSettings.addEventListener('click', () => {
+    renderSettingsPanel();
+    settingsOverlay.classList.remove('hidden');
+  });
+})();
 
 settingsClose.addEventListener('click', () => settingsOverlay.classList.add('hidden'));
 

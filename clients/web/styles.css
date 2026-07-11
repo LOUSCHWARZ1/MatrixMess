@@ -251,7 +251,8 @@ input, textarea {
 
 #app {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  /* Dritte (auto-)Spalte: Raum-Info-Panel ab 1200px; eingeklappt = 0. */
+  grid-template-columns: 320px 1fr auto;
   height: 100vh;
   height: 100dvh;
   background: var(--bg);
@@ -1546,7 +1547,7 @@ input, textarea {
 
 @media (min-width: 900px) {
   /* Sidebar-Breite steuert die Spalte; width ist animierbar. */
-  #app { grid-template-columns: auto 1fr; }
+  #app { grid-template-columns: auto 1fr auto; }
 
   #sidebar {
     width: 340px;
@@ -1613,7 +1614,48 @@ input, textarea {
   .mine .msg-actions { right: calc(100% + 4px); }
 }
 
+/* ---- Mobile Bottom-Tab-Bar (nur schmales Layout / Handy-Modus) ---- */
+#tab-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 150;
+  display: none;
+  align-items: stretch;
+  justify-content: space-around;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border);
+}
+.tab-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.tab-btn:active { transform: scale(0.96); }
+.tab-btn.active { color: var(--accent); }
+@media (max-width: 719px) {
+  #app:not(.show-chat) #tab-bar { display: flex; }
+  #app:not(.show-chat) #room-list { padding-bottom: 76px; }
+}
+
 /* ---- Erzwungener Handy-Modus (per Einstellung umschaltbar) ---- */
+html.force-mobile #app:not(.show-chat) #tab-bar { display: flex; }
+html.force-mobile #app:not(.show-chat) #room-list { padding-bottom: 76px; }
 html.force-mobile #app { grid-template-columns: 1fr; }
 html.force-mobile #sidebar { display: flex; }
 html.force-mobile #chat { display: none; }

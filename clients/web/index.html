@@ -123,17 +123,24 @@
         </footer>
       </div>
     </main>
-  </div>
 
-  <!-- ===== Raum-Info-Panel ===== -->
-  <div id="roominfo-overlay" class="hidden">
-    <div id="roominfo-panel" role="dialog" aria-modal="true" aria-labelledby="roominfo-title">
-      <header class="roominfo-header">
-        <h3 id="roominfo-title"></h3>
-        <button id="roominfo-close" class="icon-btn" title="Schließen" aria-label="Schließen"></button>
-      </header>
-      <div id="roominfo-body"></div>
+    <!-- ===== Raum-Info-Panel (ab 1200px echte dritte Spalte, sonst Overlay) ===== -->
+    <div id="roominfo-overlay" class="hidden">
+      <div id="roominfo-panel" role="dialog" aria-modal="true" aria-labelledby="roominfo-title">
+        <header class="roominfo-header">
+          <h3 id="roominfo-title"></h3>
+          <button id="roominfo-close" class="icon-btn" title="Schließen" aria-label="Schließen"></button>
+        </header>
+        <div id="roominfo-body"></div>
+      </div>
     </div>
+
+    <!-- ===== Mobile Bottom-Tab-Bar (nur schmales Layout / Handy-Modus) ===== -->
+    <nav id="tab-bar" aria-label="Hauptnavigation">
+      <button id="tab-chats" class="tab-btn active" type="button"><span>Chats</span></button>
+      <button id="tab-calendar" class="tab-btn" type="button"><span>Kalender</span></button>
+      <button id="tab-settings" class="tab-btn" type="button"><span>Einstellungen</span></button>
+    </nav>
   </div>
 
   <!-- ===== Geräte-Verifizierung ===== -->
@@ -243,7 +250,7 @@
         <h4>Konto</h4>
         <div id="settings-user" class="settings-user"></div>
         <button id="logout-btn" class="danger-btn">Abmelden</button>
-        <div class="settings-version">MatrixMess Web · Version 0.5.0</div>
+        <div class="settings-version">MatrixMess Web · Version 0.6.0</div>
       </section>
     </div>
   </div>
