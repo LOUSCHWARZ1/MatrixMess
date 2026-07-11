@@ -1,6 +1,7 @@
 # Build-Artefakte und Binärdateien gehören in Releases/Actions-Artifacts,
 # nicht in die Git-Historie.
 artifacts/
+downloads/
 _build_logs_latest/
 _build_logs_latest.zip
 *.ipa
