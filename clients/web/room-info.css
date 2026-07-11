@@ -15,7 +15,9 @@
 @media (prefers-reduced-motion: reduce) { #roominfo-panel { animation: none; } }
 .roominfo-header {
   display: flex; align-items: center; gap: 10px;
-  padding: 14px 16px; border-bottom: 1px solid var(--border, rgba(0,0,0,.08));
+  /* Safe-Area: als Vollbild-Overlay auf dem Handy nicht unter die Statusleiste */
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 14px;
+  border-bottom: 1px solid var(--border, rgba(0,0,0,.08));
 }
 .roominfo-header h3 { margin: 0; font-size: 16px; font-weight: 700; flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

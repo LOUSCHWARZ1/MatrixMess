@@ -274,7 +274,10 @@ input, textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 14px 8px;
+  /* Safe-Area: Im PWA-Vollbild (iOS black-translucent) liegt die Statusleiste
+     ÜBER der App – ohne dieses Polster verschwinden Titel und Buttons
+     unter Uhr/Batterie und sind nicht antippbar. */
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 14px 8px;
 }
 
 .app-badge {
@@ -476,7 +479,8 @@ input, textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  /* Safe-Area oben – siehe .sidebar-header */
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   flex-shrink: 0;
