@@ -56,10 +56,37 @@ let modPromise = null;
  * @returns {Promise<void>}
  */
 async function loadModuleAsync(url) {
-    const { instance } = await WebAssembly.instantiateStreaming(fetch(url), {
+    const imports = {
         // @ts-expect-error: The bindings don't exactly match the 'ExportValue' type
         "./matrix_sdk_crypto_wasm_bg.js": bindings,
-    });
+    };
+
+    let instance;
+    // Bevorzugt Streaming-Instanziierung – schnellste Variante. Sie verlangt
+    // aber exakt Content-Type "application/wasm". Manche Server, Proxys oder
+    // Safari-Versionen liefern das nicht, dann wirft instantiateStreaming.
+    // MatrixMess-Fix: In diesem Fall (oder wenn die API fehlt) über
+    // arrayBuffer() ausweichen – funktioniert unabhängig vom MIME-Typ.
+    try {
+        if (typeof WebAssembly.instantiateStreaming === "function") {
+            const result = await WebAssembly.instantiateStreaming(fetch(url), imports);
+            instance = result.instance;
+        } else {
+            throw new Error("instantiateStreaming nicht verfügbar");
+        }
+    } catch (streamErr) {
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error("WASM HTTP " + resp.status);
+            const bytes = await resp.arrayBuffer();
+            const result = await WebAssembly.instantiate(bytes, imports);
+            instance = result.instance;
+        } catch (fallbackErr) {
+            // Beide Wege gescheitert: Ursache klar weitergeben.
+            const msg = (fallbackErr && fallbackErr.message) || String(fallbackErr);
+            throw new Error("WASM konnte nicht geladen werden: " + msg);
+        }
+    }
 
     bindings.__wbg_set_wasm(instance.exports);
     // @ts-expect-error: Typescript doesn't know what the module exports are
@@ -76,7 +103,16 @@ async function loadModuleAsync(url) {
  */
 export async function initAsync(url = defaultURL) {
     if (!modPromise) modPromise = loadModuleAsync(url);
-    await modPromise;
+    try {
+        await modPromise;
+    } catch (err) {
+        // MatrixMess-Fix: Eine gescheiterte Ladung darf nicht dauerhaft
+        // zwischengespeichert bleiben – sonst würde jeder "erneut laden"-
+        // Versuch sofort dieselbe Rejection liefern. Zurücksetzen, damit
+        // der nächste initAsync() wirklich neu lädt.
+        modPromise = null;
+        throw err;
+    }
 }
 
 // Re-export everything from the generated javascript wrappers
