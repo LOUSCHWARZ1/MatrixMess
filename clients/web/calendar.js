@@ -409,11 +409,48 @@ export async function initCalendar(opts) {
   loadFeedCache();
   refreshAllFeeds(false);
 
+  // 4) Vor der Initialisierung eingetroffene Termin-Karten nachziehen.
+  calReady = true;
+  while (pendingIngest.length) ingestSharedEvent(pendingIngest.shift());
+
   notifyChange();
 }
 
 export function getUpcomingCount() {
   return upcomingEvents().length;
+}
+
+/* Termin-Karten anderer Teilnehmer: Die Chat-Nachricht ist der gemeinsame
+ * Transport. Trifft eine io.matrixmess.event-Karte ein (egal von wem),
+ * wird der Termin in den EIGENEN Kalender übernommen – account_data ist
+ * privat und synct sonst nur beim Ersteller. Vor der Initialisierung
+ * eingehende Karten werden gepuffert (initCalendar überschreibt state). */
+let calReady = false;
+const pendingIngest = [];
+
+export function ingestSharedEvent(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || !raw.id) return;
+  if (!calReady) {
+    if (pendingIngest.length < 500) pendingIngest.push(raw);
+    return;
+  }
+  const evt = coerceEvent(raw);
+  if (!evt) return;
+  const existing = eventById(evt.id);
+  if (existing) {
+    if (existing.title === evt.title && existing.note === evt.note &&
+        existing.startTs === evt.startTs && existing.endTs === evt.endTs) {
+      return; // unverändert – keine Schreib-Schleife auslösen
+    }
+    existing.title = evt.title;
+    existing.note = evt.note;
+    existing.startTs = evt.startTs;
+    existing.endTs = evt.endTs;
+    changed();
+    return;
+  }
+  state.events.push(evt);
+  changed();
 }
 
 /** account_data-Update aus /sync live übernehmen; eigenes Echo wird ignoriert. */
