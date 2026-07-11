@@ -17,7 +17,8 @@
   align-items: center;
   justify-content: center;
   z-index: 300;
-  padding: 20px;
+  /* Safe-Area: nicht unter iOS-Statusleiste/Home-Balken geraten */
+  padding: calc(20px + env(safe-area-inset-top, 0px)) 20px calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
 .mm-cal-modal-overlay { z-index: 320; }
@@ -572,3 +573,21 @@ input.mm-cal-input[type="datetime-local"] {
 .mm-cal-feed-btn:hover { background: var(--hover); color: var(--text); }
 .mm-cal-feed-btn.danger:hover { color: var(--danger, #ff3b30); }
 .mm-cal-entry-feed { opacity: .92; }
+
+/* "Zum Kalender hinzufügen" auf der Terminkarte im Chat */
+.mm-cal-card-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mm-cal-card-add:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }

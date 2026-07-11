@@ -2388,14 +2388,13 @@ function openSpaceMenu(sp, anchor) {
     placePopover(pop, anchor);
   });
 
-  // Reihenfolge der eigenen Bereiche: expliziter Weg über Buttons
-  // (Ziehen des Bereichskopfs geht zusätzlich). Menü bleibt offen,
-  // damit sich mehrere Schritte hintereinander machen lassen.
+  // Reihenfolge: expliziter Weg über Buttons (Ziehen des Kopfs geht
+  // zusätzlich). Menü bleibt offen für mehrere Schritte hintereinander.
   addItem('chevron-up', 'Nach oben', () => {
-    spaces.moveCustomSpace(sp.id, -1);
+    moveSection('sp:' + sp.id, -1);
   });
   addItem('chevron-down', 'Nach unten', () => {
-    spaces.moveCustomSpace(sp.id, 1);
+    moveSection('sp:' + sp.id, 1);
   });
 
   let confirming = false;
@@ -2502,7 +2501,7 @@ async function leaveRoom(roomId) {
 }
 
 let draggedRoomId = null;
-let draggedSpaceId = null;   // gezogener Bereichskopf (Neuanordnung)
+let draggedNavKey = null;    // gezogener Sektionskopf (Neuanordnung aller Sektionen)
 let draggedSectionKey = null;
 
 function attachRoomDrag(item, room, sectionKey) {
@@ -2617,8 +2616,69 @@ function assignRoomViaDrop(roomId, opts, title) {
   });
 }
 
+/* ---------- Globale Sektionsreihenfolge (alle Sektionen anordbar) ---------- */
+
+/** Schlüssel der zuletzt gerenderten, anordbaren Sektionen (in Reihenfolge). */
+let renderedSectionKeys = [];
+
+/** Sektion per Menü-Button verschieben (±1). */
+function moveSection(key, delta) {
+  const keys = renderedSectionKeys.slice();
+  const i = keys.indexOf(key);
+  if (i < 0) return;
+  const t = i + delta;
+  if (t < 0 || t >= keys.length) return;
+  keys.splice(i, 1);
+  keys.splice(t, 0, key);
+  spaces.setSectionOrder(keys); // synct + onChange rendert neu
+}
+
+/** Sektion per Drag vor eine andere setzen (beforeKey null = ans Ende). */
+function moveSectionBefore(key, beforeKey) {
+  const keys = renderedSectionKeys.filter((k) => k !== key);
+  const idx = beforeKey ? keys.indexOf(beforeKey) : -1;
+  if (idx >= 0) keys.splice(idx, 0, key);
+  else keys.push(key);
+  spaces.setSectionOrder(keys);
+}
+
+/** Sektionsliste nach gespeicherter Reihenfolge sortieren (stabil):
+ *  unbekannte/neue Sektionen behalten ihre natürliche Position dahinter. */
+function orderSections(sections) {
+  const stored = spaces.getSectionOrder();
+  const pos = new Map();
+  stored.forEach((k, i) => pos.set(k, i));
+  return sections
+    .map((s, i) => ({ s, rank: pos.has(s.key) ? pos.get(s.key) : 1000 + i }))
+    .sort((a, b) => a.rank - b.rank)
+    .map((x) => x.s);
+}
+
+/** Kleines Menü für Sektionen ohne eigenen Bereich (Bridges, Favoriten …):
+ *  nur Anordnen (+ Chats hinzufügen, wo zuordbar). */
+function openSectionMenu(key, title, anchor, assignId) {
+  const pop = openPopoverShell('space-menu');
+  const addItem = (iconName, label, fn) => {
+    const b = el('button', 'room-menu-item');
+    b.type = 'button';
+    b.appendChild(icon(iconName, 16));
+    b.appendChild(el('span', null, label));
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+    pop.appendChild(b);
+  };
+  if (assignId) {
+    addItem('plus', 'Chats hinzufügen', () => {
+      closePopover();
+      openSpacePicker(assignId, title, anchor);
+    });
+  }
+  addItem('chevron-up', 'Nach oben', () => moveSection(key, -1));
+  addItem('chevron-down', 'Nach unten', () => moveSection(key, 1));
+  placePopover(pop, anchor);
+}
+
 /** Hängt eine einklappbare Navigations-Sektion an die Raumliste an.
- *  opts: { iconName?, sp?, assignId?, menu?, favDrop? } */
+ *  opts: { iconName?, sp?, assignId?, menu?, favDrop?, orderable? } */
 function appendNavSection(key, opts, title, roomsArr, emptyText) {
   const o = opts || {};
   const collapsed = navCollapsed.has(key);
@@ -2662,39 +2722,48 @@ function appendNavSection(key, opts, title, roomsArr, emptyText) {
     });
     header.appendChild(add);
   }
-  if (o.menu && o.sp) {
+  // ⋯-Menü: eigene Bereiche bekommen das volle Menü (Umbenennen, Icon,
+  // Löschen, Anordnen), alle anderen anordbaren Sektionen ein kleines
+  // Menü mit Nach-oben/unten (+ Chats hinzufügen bei Bridges).
+  if (o.menu || o.orderable) {
     const more = el('button', 'nav-section-btn');
     more.type = 'button';
-    more.title = 'Bereich verwalten';
-    more.setAttribute('aria-label', 'Bereich verwalten: ' + title);
+    more.title = o.menu ? 'Bereich verwalten' : 'Sektion anordnen';
+    more.setAttribute('aria-label', (o.menu ? 'Bereich verwalten: ' : 'Sektion anordnen: ') + title);
     more.appendChild(icon('more-h', 14));
+    const openMenu = (anchor) => {
+      if (o.menu && o.sp) openSpaceMenu(o.sp, anchor);
+      else openSectionMenu(key, title, anchor, o.assignId || null);
+    };
     more.addEventListener('click', (e) => {
       e.stopPropagation();
-      openSpaceMenu(o.sp, more);
+      openMenu(more);
     });
     header.appendChild(more);
     header.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      openSpaceMenu(o.sp, header);
+      openMenu(header);
     });
+  }
 
-    // Bereichskopf ziehen = eigenen Bereich neu anordnen (zusätzlich zu den
-    // expliziten "Nach oben/unten"-Buttons im Menü).
+  // Sektionskopf ziehen = Sektion neu anordnen (gilt für ALLE anordbaren
+  // Sektionen: Bridges, eigene Bereiche, Favoriten, DMs, Weitere).
+  if (o.orderable) {
     header.draggable = true;
     header.addEventListener('dragstart', (e) => {
-      draggedSpaceId = o.sp.id;
+      draggedNavKey = key;
       draggedRoomId = null;
       header.classList.add('dragging');
-      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', o.sp.id); } catch (err) { /* */ }
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } catch (err) { /* */ }
     });
     header.addEventListener('dragend', () => {
-      draggedSpaceId = null;
+      draggedNavKey = null;
       header.classList.remove('dragging');
       document.querySelectorAll('.nav-section-header.drop-before, .nav-section-header.drop-after')
         .forEach((n) => n.classList.remove('drop-before', 'drop-after'));
     });
     header.addEventListener('dragover', (e) => {
-      if (!draggedSpaceId || draggedSpaceId === o.sp.id) return;
+      if (!draggedNavKey || draggedNavKey === key) return;
       e.preventDefault();
       const r = header.getBoundingClientRect();
       const after = (e.clientY - r.top) > r.height / 2;
@@ -2702,18 +2771,17 @@ function appendNavSection(key, opts, title, roomsArr, emptyText) {
       header.classList.toggle('drop-before', !after);
     });
     header.addEventListener('drop', (e) => {
-      if (!draggedSpaceId) return;
+      if (!draggedNavKey) return;
       e.preventDefault();
       const after = header.classList.contains('drop-after');
       header.classList.remove('drop-before', 'drop-after');
-      const ids = spaces.getSpacesList().filter((s) => s.kind === 'custom').map((s) => s.id);
-      let beforeId = o.sp.id;
+      let beforeKey = key;
       if (after) {
-        const i = ids.indexOf(o.sp.id);
-        beforeId = i >= 0 && i + 1 < ids.length ? ids[i + 1] : '__ende__'; // unbekannt = ans Ende
+        const i = renderedSectionKeys.indexOf(key);
+        beforeKey = i >= 0 && i + 1 < renderedSectionKeys.length ? renderedSectionKeys[i + 1] : null;
       }
-      spaces.moveCustomSpace(draggedSpaceId, { beforeId });
-      draggedSpaceId = null;
+      moveSectionBefore(draggedNavKey, beforeKey);
+      draggedNavKey = null;
     });
   }
 
@@ -2839,29 +2907,49 @@ function renderRoomList() {
   const spaceList = spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge');
   const inAnySpace = (r) => spaceList.some((s) => roomInSpaceId(r, s.id));
 
+  // Alle Sektionen erst sammeln, dann nach gespeicherter Reihenfolge
+  // sortieren – so lassen sich AUCH Bridges, Favoriten, DMs und "Weitere"
+  // frei anordnen (Kopf ziehen oder ⋯ → Nach oben/unten).
+  const sections = [];
+
   // Bereiche (Bridges + eigene) mit ihren zugeordneten Räumen.
   // Leere Bridge-Bereiche verstecken; leere EIGENE Bereiche anzeigen,
   // sonst wirkt das Erstellen wie ein Fehlschlag.
   for (const sp of spaceList) {
     const roomsIn = active.filter((r) => roomInSpaceId(r, sp.id));
     if (!roomsIn.length && sp.kind !== 'custom') continue;
-    appendNavSection('sp:' + sp.id, { sp, assignId: sp.id, menu: sp.kind === 'custom' }, sp.title, roomsIn,
-      'Noch keine Chats – per + hinzufügen oder Chats hierher ziehen');
+    sections.push({
+      key: 'sp:' + sp.id,
+      opts: { sp, assignId: sp.id, menu: sp.kind === 'custom', orderable: true },
+      title: sp.title,
+      rooms: roomsIn,
+      empty: 'Noch keine Chats – per + hinzufügen oder Chats hierher ziehen',
+    });
   }
 
   // Favoriten (können zusätzlich in Bereichen liegen – Mehrfachzuordnung ist gewollt).
   const favorites = active.filter((r) => spaces.isFavorite(r.roomId));
-  if (favorites.length) appendNavSection('fav', { iconName: 'star-filled', favDrop: true }, 'Favoriten', favorites);
+  if (favorites.length) {
+    sections.push({ key: 'fav', opts: { iconName: 'star-filled', favDrop: true, orderable: true }, title: 'Favoriten', rooms: favorites });
+  }
 
   // Direktnachrichten (nicht in einem Bereich, keine Favoriten).
   const dms = active.filter((r) => r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
-  if (dms.length) appendNavSection('dm', { iconName: 'user' }, 'Direktnachrichten', dms);
+  if (dms.length) {
+    sections.push({ key: 'dm', opts: { iconName: 'user', orderable: true }, title: 'Direktnachrichten', rooms: dms });
+  }
 
   // Weitere Räume.
   const other = active.filter((r) => !r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
-  if (other.length) appendNavSection('other', { iconName: 'folder' }, 'Weitere', other);
+  if (other.length) {
+    sections.push({ key: 'other', opts: { iconName: 'folder', orderable: true }, title: 'Weitere', rooms: other });
+  }
 
-  // Archiv (standardmäßig eingeklappt).
+  const ordered = orderSections(sections);
+  renderedSectionKeys = ordered.map((s) => s.key);
+  for (const s of ordered) appendNavSection(s.key, s.opts, s.title, s.rooms, s.empty);
+
+  // Archiv (standardmäßig eingeklappt, bleibt immer unten).
   if (archived.length) appendNavSection('archive', { iconName: 'archive' }, 'Archiv', archived);
 }
 

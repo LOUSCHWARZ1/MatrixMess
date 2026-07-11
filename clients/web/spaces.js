@@ -121,6 +121,7 @@ let state = {
   favorites: [],     // [roomId]
   assignments: {},   // roomId -> [spaceId]
   customSpaces: [],  // [{ id, title, icon, accent }]
+  sectionOrder: [],  // Anzeige-Reihenfolge ALLER Sektionen ('sp:…', 'fav', 'dm', 'other')
 };
 
 let putTimer = null;
@@ -189,8 +190,13 @@ function newSpaceId() {
 
 /** Rohdaten (account_data / localStorage) in einen sauberen Zustand wandeln. */
 function sanitizeState(raw) {
-  const out = { favorites: [], assignments: {}, customSpaces: [] };
+  const out = { favorites: [], assignments: {}, customSpaces: [], sectionOrder: [] };
   if (!raw || typeof raw !== 'object') return out;
+  if (Array.isArray(raw.sectionOrder)) {
+    out.sectionOrder = raw.sectionOrder
+      .filter((k) => typeof k === 'string' && k)
+      .slice(0, 60);
+  }
 
   if (Array.isArray(raw.favorites)) {
     out.favorites = raw.favorites.filter((s) => typeof s === 'string' && s);
@@ -231,6 +237,7 @@ function schedulePutAccountData() {
       favorites: state.favorites.slice(),
       assignments: { ...state.assignments },
       customSpaces: state.customSpaces.map((s) => ({ ...s })),
+      sectionOrder: state.sectionOrder.slice(),
     };
     lastSentJson = JSON.stringify(sanitizeState(payload));
     Promise.resolve(hooks.putAccountData(ACCOUNT_DATA_TYPE, payload)).catch((e) => {
@@ -410,27 +417,17 @@ export function updateCustomSpace(id, patch) {
   return true;
 }
 
-/** Verschiebt einen eigenen Bereich in der Reihenfolge (delta ±1, oder
- *  gezielt vor einen anderen Bereich mit { beforeId }). */
-export function moveCustomSpace(id, deltaOrOpts) {
-  const idx = state.customSpaces.findIndex((s) => s.id === id);
-  if (idx === -1) return false;
-  let target;
-  if (deltaOrOpts && typeof deltaOrOpts === 'object' && typeof deltaOrOpts.beforeId === 'string') {
-    const [sp] = state.customSpaces.splice(idx, 1);
-    let at = state.customSpaces.findIndex((s) => s.id === deltaOrOpts.beforeId);
-    if (at === -1) at = state.customSpaces.length; // ans Ende
-    state.customSpaces.splice(at, 0, sp);
-    changed();
-    return true;
-  }
-  const delta = typeof deltaOrOpts === 'number' ? deltaOrOpts : 0;
-  target = idx + delta;
-  if (delta === 0 || target < 0 || target >= state.customSpaces.length) return false;
-  const [sp] = state.customSpaces.splice(idx, 1);
-  state.customSpaces.splice(target, 0, sp);
+/** Gespeicherte Anzeige-Reihenfolge der Sektionen (Kopie). */
+export function getSectionOrder() {
+  return state.sectionOrder.slice();
+}
+
+/** Komplette Sektionsreihenfolge setzen (der Integrator liefert die
+ *  aktuell gerenderten Schlüssel in gewünschter Reihenfolge). */
+export function setSectionOrder(keys) {
+  if (!Array.isArray(keys)) return;
+  state.sectionOrder = keys.filter((k) => typeof k === 'string' && k).slice(0, 60);
   changed();
-  return true;
 }
 
 export function deleteCustomSpace(id) {
@@ -442,6 +439,7 @@ export function deleteCustomSpace(id) {
     if (filtered.length) state.assignments[roomId] = filtered;
     else delete state.assignments[roomId];
   }
+  state.sectionOrder = state.sectionOrder.filter((k) => k !== 'sp:' + id);
   changed();
   return true;
 }

@@ -1100,6 +1100,22 @@ export function renderEventCard(evtLike) {
     card.append(el('div', 'mm-cal-card-note', evt.note));
   }
 
+  // Ausgehende Richtung: Termin in den Systemkalender übernehmen. Die
+  // .ics-Datei öffnet auf iOS/Android/Windows direkt den Kalender-Import.
+  if (Number.isFinite(evt.startTs)) {
+    const add = el('button', 'mm-cal-card-add');
+    add.type = 'button';
+    const addIcon = el('span', 'mm-cal-export-icon');
+    addIcon.append(icon('calendar-plus', 13));
+    add.append(addIcon, el('span', null, 'Zum Kalender hinzufügen'));
+    add.title = 'Termin in Apple-/Google-/Outlook-Kalender übernehmen (.ics)';
+    add.addEventListener('click', (e) => {
+      e.stopPropagation();
+      exportIcs([evt]);
+    });
+    card.append(add);
+  }
+
   return card;
 }
 
@@ -1125,8 +1141,8 @@ export function renderCalendarPanel() {
 
   panel.append(el('div', 'mm-cal-sync-hint',
     'Termine syncen über dein Matrix-Konto zwischen deinen Geräten. '
-    + 'Apple-, Google- oder Outlook-Kalender bindest du als Abo (ICS-Link) ein '
-    + 'oder importierst sie als ICS-Datei – Export als .ics gibt es weiterhin.'));
+    + 'Apple/Google/Outlook in beide Richtungen: eingehend als Abo (ICS-Link) '
+    + 'oder Datei-Import, ausgehend über „Zum Kalender“ an jedem Termin.'));
 
   // Toolbar: Abo hinzufügen, ICS importieren, alle exportieren
   const toolbar = el('div', 'mm-cal-toolbar');
@@ -1431,9 +1447,9 @@ function buildPanelEntry(evt) {
     }
   });
 
-  const icsBtn = el('button', 'mm-cal-action-btn', 'ICS');
+  const icsBtn = el('button', 'mm-cal-action-btn', 'Zum Kalender');
   icsBtn.type = 'button';
-  icsBtn.title = 'Diesen Termin als .ics-Datei herunterladen';
+  icsBtn.title = 'Termin in Apple-/Google-/Outlook-Kalender übernehmen (.ics)';
   icsBtn.addEventListener('click', () => exportIcs([evt]));
 
   actions.append(editBtn, delBtn, icsBtn);
