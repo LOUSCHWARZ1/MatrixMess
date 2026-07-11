@@ -53,6 +53,7 @@ import {
   EncryptionSettings,
   BackupDecryptionKey,
 } from './vendor/matrix-sdk-crypto-wasm/index.mjs';
+import { getSecret, setSecret } from './secretstore.js';
 
 const LS_PICKLE = 'mm.cryptoPickle';
 
@@ -68,22 +69,31 @@ function deleteCryptoStore(base) {
   })));
 }
 
-/** Liest den Store-Passphrase-Schlüssel oder erzeugt ihn einmalig
- *  (32 zufällige Bytes, Base64, in localStorage gehalten). */
-function getOrCreatePickleKey() {
-  let key = null;
-  try {
-    key = localStorage.getItem(LS_PICKLE);
-  } catch (e) { /* localStorage nicht verfügbar -> unten neu erzeugen */ }
+/** Liest den Store-Passphrase-Schlüssel oder erzeugt ihn einmalig (32 zufällige
+ *  Bytes, Base64). Liegt jetzt VERSCHLÜSSELT im secretstore statt als Klartext
+ *  in localStorage; alte Klartext-Keys werden einmalig migriert. */
+async function getOrCreatePickleKey() {
+  // 1) Verschlüsselt gespeicherter Key.
+  let key = await getSecret('cryptoPickle');
   if (key) return key;
+  // 2) Migration: alter Klartext-Key aus localStorage.
+  try {
+    const legacy = localStorage.getItem(LS_PICKLE);
+    if (legacy) {
+      await setSecret('cryptoPickle', legacy);
+      try { localStorage.removeItem(LS_PICKLE); } catch (e) { /* */ }
+      return legacy;
+    }
+  } catch (e) { /* */ }
+  // 3) Neu erzeugen.
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   let bin = '';
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   key = btoa(bin);
-  // Wirft, wenn nicht persistierbar – dann soll init() bewusst fehlschlagen,
-  // damit wir nicht bei jedem Start einen neuen (nutzlosen) Store anlegen.
-  localStorage.setItem(LS_PICKLE, key);
+  // Wirft nicht mehr (secretstore hat Fallback), aber ohne Persistenz wäre der
+  // Store nach Reload nutzlos – secretstore kümmert sich um die Ablage.
+  await setSecret('cryptoPickle', key);
   return key;
 }
 
@@ -118,7 +128,7 @@ export class CryptoEngine {
     void accessToken; // HTTP läuft komplett über apiFetch
 
     await initAsync();
-    const passphrase = getOrCreatePickleKey();
+    const passphrase = await getOrCreatePickleKey();
     try {
       this.machine = await OlmMachine.initialize(
         new UserId(userId),
