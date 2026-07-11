@@ -2293,9 +2293,8 @@ async function syncLoop() {
       if (generation !== syncGeneration || !session) return;
       syncToken = data.next_batch;
       try { localStorage.setItem(LS_SYNC_TOKEN, syncToken); } catch (e) { /* */ }
-      const firstSync = !syncedOnce;
       syncedOnce = true;
-      if (firstSync) openRoomFromHash(); // Benachrichtigungs-Klick bei geschlossener App
+      openRoomFromHash(); // Benachrichtigungs-Klick bei geschlossener App (Hash bleibt bis Treffer)
       backoff = 1000;
       // P0: Raumbestand lokal sichern, damit der nächste Start aus dem Cache kommt.
       scheduleRoomCacheSave();
