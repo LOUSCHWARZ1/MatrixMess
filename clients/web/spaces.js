@@ -1,10 +1,10 @@
 /**
  * MatrixMess Web – Bereichs-/Space-System (spaces.js)
  *
- * Unterteilt Chats in Bereiche ("Spaces"), unabhängig davon, aus welcher
- * Bridge sie stammen. Vanilla-JS als natives ES-Modul, keine Frameworks,
- * kein Build-Step. DOM wird ausschließlich per document.createElement +
- * textContent/append aufgebaut (kein innerHTML mit dynamischen Daten).
+ * Reines Zustands-Modul: Unterteilt Chats in Bereiche ("Spaces"), unabhängig
+ * davon, aus welcher Bridge sie stammen. Die gesamte Bereichs-UI (Baum-
+ * Navigation, Kontextmenü-Checkliste, Chat-Picker, Inline-Erstellung) lebt
+ * im Integrator (app.js) – dieses Modul verwaltet nur Daten + Persistenz.
  *
  * Bereichs-Arten:
  *  - 'all'    : Pseudo-Bereich "Alle" (zeigt jeden Raum)
@@ -13,19 +13,20 @@
  *               Telegram, Instagram, Discord, Sonstige Bridges);
  *               IDs: 'bridge:whatsapp', 'bridge:signal', 'bridge:telegram',
  *               'bridge:instagram', 'bridge:discord', 'bridge:bridge'
- *  - 'custom' : selbst erstellte Bereiche (Titel + Emoji + Akzentfarbe);
+ *  - 'custom' : selbst erstellte Bereiche (Titel + Icon + Akzentfarbe);
  *               IDs: 'custom:<zufall>'
  *
  * Ein Raum kann in MEHREREN Bereichen gleichzeitig liegen (Mehrfach-
- * Zuordnung); die Navigation bewegt sich immer in genau EINEM aktiven
- * Bereich.
+ * Zuordnung).
+ *
+ * Icons: `icon` ist ein SVG-Icon-Name aus icons.js (z. B. 'folder',
+ * 'brand-whatsapp'). Ältere gespeicherte Zustände können noch Emoji
+ * enthalten – Renderer sollten dafür einen Text-Fallback haben.
  *
  * Persistenz:
  *  - primär Matrix-account_data, Typ "io.matrixmess.spaces" (synct über
  *    Geräte): { version, favorites, assignments, customSpaces }
  *  - localStorage "mm.spaces" als Cache/Fallback
- *  - Collapsed-Zustand der Main-Sektionen NUR lokal: "mm.spacesCollapsed"
- *  - aktiver Bereich NUR lokal: "mm.spacesActive"
  *
  * ======================= EXPORT-API =======================
  *
@@ -43,14 +44,6 @@
  * getSpacesList() -> [{ id, title, icon, accent, kind:'all'|'main'|'bridge'|'custom', count }]
  *   Reihenfolge: 'all' zuerst, dann 'main', dann Bridge-Bereiche (nur solche
  *   mit >= 1 Raum), dann Custom-Bereiche. accent ist ein CSS-Farbwert.
- *
- * getActiveSpaceId() -> string
- * setActiveSpace(id)            // wechselt den aktiven Bereich (lokal persistiert)
- *
- * roomInActiveSpace(room) -> boolean
- *   Filterfunktion für die Raumliste:
- *   'all' -> true; 'main' -> Favorit; 'bridge:xyz' -> detectBridge(room)==='xyz'
- *   ODER manuell zugeordnet; 'custom:...' -> zugeordnet.
  *
  * detectBridge(room) -> 'whatsapp'|'signal'|'telegram'|'instagram'|'discord'|'bridge'|null
  *   Signale: room.bridgeProtocol (vom Integrator aus m.bridge /
@@ -73,33 +66,12 @@
  * deleteCustomSpace(id) -> boolean
  *   accent ist eine ID aus SPACES_ACCENTS (z. B. 'violet').
  *
- * renderSpaceBar(containerEl)
- *   Rendert die horizontale Chip-Leiste in containerEl (komplett selbst,
- *   inkl. Events). Aktiver Bereich wird mit Akzentfarbe hervorgehoben; der
- *   "+"-Chip öffnet den Verwaltungs-Dialog (Erstellen/Umbenennen/Löschen
- *   eigener Bereiche). Die Leiste rendert sich bei Änderungen selbst neu.
- *
- * openAssignDialog(roomId, roomName)
- *   Modal: Favoriten-Toggle (Main) + Checkboxen aller Custom-Bereiche +
- *   Anzeige des automatisch erkannten Bridge-Bereichs. "Speichern" schreibt
- *   die Zuordnung.
- *
- * groupRoomsForMain(rooms) -> [{ key, title, icon, collapsed, rooms: [...] }]
- *   Gruppiert Räume nach Herkunft in Sektionen (Matrix, je Bridge) in
- *   stabiler Reihenfolge; nur nicht-leere Sektionen.
- *
- * toggleSectionCollapsed(key)
- *   Klappt eine Main-Sektion ein/aus (Zustand lokal persistent).
- *
  * SPACES_ACCENTS -> [{ id, label, css }]   // die 8 Akzentfarben
+ * SPACE_ICON_PRESETS -> Array<string>      // SVG-Icon-Namen für neue Bereiche
  */
-
-import { icon } from './icons.js';
 
 const ACCOUNT_DATA_TYPE = 'io.matrixmess.spaces';
 const LS_STATE = 'mm.spaces';
-const LS_COLLAPSED = 'mm.spacesCollapsed';
-const LS_ACTIVE = 'mm.spacesActive';
 
 const PUT_DEBOUNCE_MS = 600;
 
@@ -115,22 +87,22 @@ export const SPACES_ACCENTS = [
   { id: 'graphite', label: 'Graphit', css: '#8E8E93' },
 ];
 
+/** SVG-Icon-Vorschläge (icons.js-Namen) für neue Bereiche. */
+export const SPACE_ICON_PRESETS = [
+  'folder', 'users', 'heart', 'home', 'briefcase', 'gamepad', 'globe', 'sparkles',
+];
+
 /* Bekannte Bridges in stabiler Reihenfolge. 'bridge' = Sonstige Bridges. */
 const BRIDGES = [
-  { id: 'whatsapp',  title: 'WhatsApp',         icon: '🟢', accent: '#25D366' },
-  { id: 'signal',    title: 'Signal',           icon: '🔷', accent: '#3A76F0' },
-  { id: 'telegram',  title: 'Telegram',         icon: '✈️', accent: '#2AABEE' },
-  { id: 'instagram', title: 'Instagram',        icon: '📸', accent: '#E1306C' },
-  { id: 'discord',   title: 'Discord',          icon: '🎮', accent: '#5865F2' },
-  { id: 'bridge',    title: 'Sonstige Bridges', icon: '🌉', accent: '#8E8E93' },
+  { id: 'whatsapp',  title: 'WhatsApp',         icon: 'brand-whatsapp',  accent: '#25D366' },
+  { id: 'signal',    title: 'Signal',           icon: 'brand-signal',    accent: '#3A76F0' },
+  { id: 'telegram',  title: 'Telegram',         icon: 'brand-telegram',  accent: '#2AABEE' },
+  { id: 'instagram', title: 'Instagram',        icon: 'brand-instagram', accent: '#E1306C' },
+  { id: 'discord',   title: 'Discord',          icon: 'brand-discord',   accent: '#5865F2' },
+  { id: 'bridge',    title: 'Sonstige Bridges', icon: 'link',            accent: '#8E8E93' },
 ];
 
 const KNOWN_BRIDGE_IDS = ['whatsapp', 'signal', 'telegram', 'instagram', 'discord'];
-
-const EMOJI_PRESETS = [
-  '📁', '⭐', '💼', '🏠', '👨‍👩‍👧', '❤️', '🎮', '🎓',
-  '🎵', '⚽', '✈️', '🛒', '💡', '🍕', '🐾', '📷',
-];
 
 /* ========================================================================
  * Modul-Zustand
@@ -150,23 +122,11 @@ let state = {
   customSpaces: [],  // [{ id, title, icon, accent }]
 };
 
-let collapsed = {};          // Sektions-Key -> bool (nur lokal)
-let activeSpaceId = 'all';   // nur lokal
-
-let spaceBarEl = null;       // zuletzt gerenderter Space-Bar-Container
 let putTimer = null;
-let activeModal = null;
 
 /* ========================================================================
  * Hilfsfunktionen
  * ====================================================================== */
-
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined && text !== null) node.textContent = text;
-  return node;
-}
 
 function loadLocal(key) {
   try {
@@ -214,14 +174,6 @@ function customSpaceById(id) {
   return state.customSpaces.find((s) => s.id === id) || null;
 }
 
-/** Existiert der Bereich (als navigierbares Ziel)? */
-function spaceExists(id) {
-  if (id === 'all' || id === 'main') return true;
-  if (typeof id !== 'string') return false;
-  if (id.startsWith('bridge:')) return !!bridgeDef(id.slice(7));
-  return !!customSpaceById(id);
-}
-
 /** Darf ein Raum diesem Bereich manuell zugeordnet werden? */
 function assignableSpaceExists(id) {
   if (typeof id !== 'string') return false;
@@ -258,7 +210,7 @@ function sanitizeState(raw) {
       out.customSpaces.push({
         id: sp.id,
         title: typeof sp.title === 'string' && sp.title.trim() ? sp.title.trim() : 'Bereich',
-        icon: typeof sp.icon === 'string' && sp.icon ? sp.icon : '📁',
+        icon: typeof sp.icon === 'string' && sp.icon ? sp.icon : 'folder',
         accent: SPACES_ACCENTS.some((a) => a.id === sp.accent) ? sp.accent : 'violet',
       });
     }
@@ -285,7 +237,6 @@ function schedulePutAccountData() {
 }
 
 function notifyChange() {
-  if (spaceBarEl && spaceBarEl.isConnected) renderSpaceBar(spaceBarEl);
   if (typeof hooks.onChange === 'function') {
     try { hooks.onChange(); } catch (e) { console.error('[spaces] onChange-Fehler:', e); }
   }
@@ -334,12 +285,6 @@ export async function initSpaces(opts) {
   // 1) Lokaler Cache (sofort verfügbar)
   state = sanitizeState(loadLocal(LS_STATE));
 
-  const col = loadLocal(LS_COLLAPSED);
-  collapsed = col && typeof col === 'object' && !Array.isArray(col) ? col : {};
-
-  const act = loadLocal(LS_ACTIVE);
-  activeSpaceId = typeof act === 'string' && act ? act : 'all';
-
   // 2) account_data als primäre Quelle (überschreibt den Cache)
   if (hooks.getAccountData) {
     try {
@@ -352,11 +297,6 @@ export async function initSpaces(opts) {
       console.warn('[spaces] account_data nicht ladbar, nutze lokalen Cache:', e);
     }
   }
-
-  if (!spaceExists(activeSpaceId)) {
-    activeSpaceId = 'all';
-    saveLocal(LS_ACTIVE, activeSpaceId);
-  }
 }
 
 export function getSpacesList() {
@@ -364,11 +304,11 @@ export function getSpacesList() {
   const list = [];
 
   list.push({
-    id: 'all', title: 'Alle', icon: '💬', accent: 'var(--accent)', kind: 'all',
+    id: 'all', title: 'Alle', icon: 'chat', accent: 'var(--accent)', kind: 'all',
     count: rooms.length,
   });
   list.push({
-    id: 'main', title: 'Main', icon: '⭐', accent: 'var(--accent)', kind: 'main',
+    id: 'main', title: 'Main', icon: 'star', accent: 'var(--accent)', kind: 'main',
     count: rooms.filter((r) => r && state.favorites.includes(r.roomId)).length,
   });
 
@@ -390,29 +330,6 @@ export function getSpacesList() {
   }
 
   return list;
-}
-
-export function getActiveSpaceId() {
-  return activeSpaceId;
-}
-
-export function setActiveSpace(id) {
-  const next = spaceExists(id) ? id : 'all';
-  if (next === activeSpaceId) return;
-  activeSpaceId = next;
-  saveLocal(LS_ACTIVE, activeSpaceId);
-  notifyChange();
-}
-
-export function roomInActiveSpace(room) {
-  if (!room) return false;
-  const id = activeSpaceId;
-  if (id === 'all') return true;
-  if (id === 'main') return isFavorite(room.roomId);
-  if (id.startsWith('bridge:')) {
-    return detectBridge(room) === id.slice(7) || roomAssignedTo(room.roomId, id);
-  }
-  return roomAssignedTo(room.roomId, id);
 }
 
 export function detectBridge(room) {
@@ -460,7 +377,7 @@ export function createCustomSpace(opts) {
   const space = {
     id: newSpaceId(),
     title: typeof o.title === 'string' && o.title.trim() ? o.title.trim() : 'Bereich',
-    icon: typeof o.icon === 'string' && o.icon ? o.icon : '📁',
+    icon: typeof o.icon === 'string' && o.icon ? o.icon : 'folder',
     accent: SPACES_ACCENTS.some((a) => a.id === o.accent) ? o.accent : 'violet',
   };
   state.customSpaces.push(space);
@@ -488,410 +405,6 @@ export function deleteCustomSpace(id) {
     if (filtered.length) state.assignments[roomId] = filtered;
     else delete state.assignments[roomId];
   }
-  if (activeSpaceId === id) {
-    activeSpaceId = 'all';
-    saveLocal(LS_ACTIVE, activeSpaceId);
-  }
   changed();
   return true;
-}
-
-/* ========================================================================
- * Öffentliche API – Main-Sektionen
- * ====================================================================== */
-
-export function groupRoomsForMain(rooms) {
-  let arr;
-  if (Array.isArray(rooms)) arr = rooms;
-  else if (rooms && typeof rooms.values === 'function') arr = Array.from(rooms.values());
-  else arr = [];
-
-  const sections = [{ key: 'matrix', title: 'Matrix', icon: '🌐', rooms: [] }];
-  for (const b of BRIDGES) sections.push({ key: b.id, title: b.title, icon: b.icon, rooms: [] });
-  const byKey = new Map(sections.map((s) => [s.key, s]));
-
-  for (const room of arr) {
-    if (!room) continue;
-    const bridge = detectBridge(room);
-    byKey.get(bridge || 'matrix').rooms.push(room);
-  }
-
-  return sections
-    .filter((s) => s.rooms.length > 0)
-    .map((s) => ({
-      key: s.key,
-      title: s.title,
-      icon: s.icon,
-      collapsed: !!collapsed[s.key],
-      rooms: s.rooms,
-    }));
-}
-
-export function toggleSectionCollapsed(key) {
-  if (typeof key !== 'string' || !key) return;
-  collapsed[key] = !collapsed[key];
-  saveLocal(LS_COLLAPSED, collapsed);
-  notifyChange();
-}
-
-/* ========================================================================
- * Space-Leiste (Chips)
- * ====================================================================== */
-
-export function renderSpaceBar(containerEl) {
-  if (!containerEl) return;
-  spaceBarEl = containerEl;
-  containerEl.classList.add('mm-space-bar');
-  containerEl.replaceChildren();
-
-  for (const sp of getSpacesList()) {
-    const chip = el('button', 'mm-space-chip');
-    chip.type = 'button';
-    chip.style.setProperty('--sp-accent', sp.accent);
-    const isActive = sp.id === activeSpaceId;
-    if (isActive) chip.classList.add('active');
-    chip.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-    chip.title = sp.title;
-
-    const chipIcon = el('span', 'mm-space-chip-icon');
-    if (sp.kind === 'all') chipIcon.append(icon('chat', 14));
-    else if (sp.kind === 'main') chipIcon.append(icon('star-filled', 14));
-    else chipIcon.textContent = sp.icon;
-    chip.append(chipIcon);
-    chip.append(el('span', 'mm-space-chip-title', sp.title));
-    if (typeof sp.count === 'number' && sp.count > 0) {
-      chip.append(el('span', 'mm-space-chip-count', String(sp.count)));
-    }
-    chip.addEventListener('click', () => setActiveSpace(sp.id));
-    containerEl.append(chip);
-  }
-
-  const addChip = el('button', 'mm-space-chip mm-space-chip-add');
-  addChip.type = 'button';
-  addChip.title = 'Bereiche verwalten';
-  addChip.setAttribute('aria-label', 'Bereiche verwalten');
-  const addIcon = el('span', 'mm-space-chip-icon');
-  addIcon.append(icon('plus', 15));
-  addChip.append(addIcon);
-  addChip.addEventListener('click', () => openManageDialog());
-  containerEl.append(addChip);
-}
-
-/* ========================================================================
- * Leichtes Modal (Overlay, ESC / Klick außerhalb schließt, fokusfähig)
- * ====================================================================== */
-
-function openModal(titleText) {
-  if (activeModal) activeModal.close();
-
-  const overlay = el('div', 'mm-sp-overlay');
-  const panel = el('div', 'mm-sp-modal');
-  panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-modal', 'true');
-  panel.setAttribute('aria-label', titleText);
-  panel.tabIndex = -1;
-
-  const header = el('div', 'mm-sp-modal-header');
-  const title = el('h3', 'mm-sp-modal-title', titleText);
-  const closeBtn = el('button', 'mm-sp-close');
-  closeBtn.append(icon('x', 16));
-  closeBtn.type = 'button';
-  closeBtn.setAttribute('aria-label', 'Schließen');
-  header.append(title, closeBtn);
-
-  const body = el('div', 'mm-sp-modal-body');
-  const footer = el('div', 'mm-sp-modal-footer');
-  panel.append(header, body, footer);
-  overlay.append(panel);
-
-  const prevFocus = document.activeElement;
-  let closed = false;
-
-  function onKeydown(e) {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      close();
-    }
-  }
-
-  function close() {
-    if (closed) return;
-    closed = true;
-    document.removeEventListener('keydown', onKeydown, true);
-    overlay.remove();
-    if (activeModal === api) activeModal = null;
-    if (prevFocus && typeof prevFocus.focus === 'function') {
-      try { prevFocus.focus(); } catch (e) { /* egal */ }
-    }
-  }
-
-  overlay.addEventListener('mousedown', (e) => {
-    if (e.target === overlay) close();
-  });
-  closeBtn.addEventListener('click', close);
-  document.addEventListener('keydown', onKeydown, true);
-
-  document.body.append(overlay);
-  panel.focus();
-
-  const api = { overlay, panel, body, footer, close };
-  activeModal = api;
-  return api;
-}
-
-function footerButton(labelText, primary) {
-  const btn = el('button', primary ? 'mm-sp-btn primary' : 'mm-sp-btn', labelText);
-  btn.type = 'button';
-  return btn;
-}
-
-/* ========================================================================
- * Zuordnungs-Dialog (Raum -> Bereiche)
- * ====================================================================== */
-
-export function openAssignDialog(roomId, roomName) {
-  if (typeof roomId !== 'string' || !roomId) return;
-  const modal = openModal('Bereiche zuordnen');
-
-  modal.body.append(el('div', 'mm-sp-dialog-sub', roomName || roomId));
-
-  // --- Favorit (Main) ---
-  let favChecked = isFavorite(roomId);
-  const favRow = el('label', 'mm-sp-check mm-sp-check-fav');
-  const favInput = document.createElement('input');
-  favInput.type = 'checkbox';
-  favInput.checked = favChecked;
-  favInput.addEventListener('change', () => { favChecked = favInput.checked; });
-  const favIcon = el('span', 'mm-sp-check-icon');
-  favIcon.append(icon('star-filled', 16));
-  favRow.append(
-    favInput,
-    favIcon,
-    el('span', 'mm-sp-check-label', 'Main (Favorit)'),
-  );
-  modal.body.append(favRow);
-
-  // --- Automatisch erkannter Bridge-Bereich (nur Anzeige) ---
-  const room = allRooms().find((r) => r && r.roomId === roomId) || null;
-  const bridge = room ? detectBridge(room) : null;
-  if (bridge) {
-    const def = bridgeDef(bridge);
-    const info = el('div', 'mm-sp-bridge-info');
-    info.append(
-      el('span', 'mm-sp-check-icon', def ? def.icon : '🌉'),
-      el('span', 'mm-sp-bridge-info-text',
-        'Automatisch erkannt: ' + (def ? def.title : 'Bridge')),
-    );
-    modal.body.append(info);
-  }
-
-  // --- Custom-Bereiche als Checkboxen ---
-  const current = new Set(getRoomSpaceIds(roomId));
-  const checkedCustom = new Set(
-    state.customSpaces.map((s) => s.id).filter((id) => current.has(id))
-  );
-
-  modal.body.append(el('div', 'mm-sp-group-label', 'Eigene Bereiche'));
-
-  if (!state.customSpaces.length) {
-    modal.body.append(el('div', 'mm-sp-empty-hint', 'Noch keine eigenen Bereiche vorhanden.'));
-    const createBtn = footerButton('Neuen Bereich erstellen', false);
-    createBtn.classList.add('mm-sp-inline-btn');
-    createBtn.addEventListener('click', () => {
-      modal.close();
-      openManageDialog(true);
-    });
-    modal.body.append(createBtn);
-  } else {
-    for (const sp of state.customSpaces) {
-      const row = el('label', 'mm-sp-check');
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.checked = checkedCustom.has(sp.id);
-      input.addEventListener('change', () => {
-        if (input.checked) checkedCustom.add(sp.id);
-        else checkedCustom.delete(sp.id);
-      });
-      const dot = el('span', 'mm-sp-dot');
-      dot.style.setProperty('--sp-accent', accentCss(sp.accent));
-      row.append(
-        input,
-        el('span', 'mm-sp-check-icon', sp.icon),
-        el('span', 'mm-sp-check-label', sp.title),
-        dot,
-      );
-      modal.body.append(row);
-    }
-  }
-
-  // --- Footer ---
-  const cancelBtn = footerButton('Abbrechen', false);
-  cancelBtn.addEventListener('click', modal.close);
-  const saveBtn = footerButton('Speichern', true);
-  saveBtn.addEventListener('click', () => {
-    // Manuelle Bridge-Zuordnungen (per API gesetzt) bleiben erhalten.
-    const keepBridges = getRoomSpaceIds(roomId).filter((id) => id.startsWith('bridge:'));
-    setFavoriteInternal(roomId, favChecked);
-    setRoomSpaceIdsInternal(roomId, [...keepBridges, ...checkedCustom]);
-    changed();
-    modal.close();
-  });
-  modal.footer.append(cancelBtn, saveBtn);
-}
-
-/* ========================================================================
- * Verwaltungs-Dialog (eigene Bereiche erstellen/umbenennen/löschen)
- * ====================================================================== */
-
-function openManageDialog(startWithCreate) {
-  const modal = openModal('Bereiche verwalten');
-  // editing: null = Listenansicht, 'new' = Erstellen, sonst Bereichs-ID
-  let editing = startWithCreate ? 'new' : null;
-
-  function renderList() {
-    modal.body.replaceChildren();
-    modal.footer.replaceChildren();
-
-    if (!state.customSpaces.length) {
-      modal.body.append(el('div', 'mm-sp-empty-hint',
-        'Noch keine eigenen Bereiche. Erstelle einen Bereich, um Chats frei zu gruppieren.'));
-    }
-
-    for (const sp of state.customSpaces) {
-      const row = el('div', 'mm-sp-space-row');
-      const dot = el('span', 'mm-sp-dot');
-      dot.style.setProperty('--sp-accent', accentCss(sp.accent));
-      row.append(
-        dot,
-        el('span', 'mm-sp-check-icon', sp.icon),
-        el('span', 'mm-sp-space-row-title', sp.title),
-      );
-
-      const editBtn = el('button', 'mm-sp-icon-btn');
-      editBtn.append(icon('edit', 15));
-      editBtn.type = 'button';
-      editBtn.title = 'Bearbeiten';
-      editBtn.setAttribute('aria-label', 'Bereich bearbeiten: ' + sp.title);
-      editBtn.addEventListener('click', () => { editing = sp.id; render(); });
-
-      const delBtn = el('button', 'mm-sp-icon-btn mm-sp-danger');
-      delBtn.append(icon('trash', 15));
-      delBtn.type = 'button';
-      delBtn.title = 'Löschen';
-      delBtn.setAttribute('aria-label', 'Bereich löschen: ' + sp.title);
-      delBtn.addEventListener('click', () => {
-        if (delBtn.dataset.confirm === '1') {
-          deleteCustomSpace(sp.id);
-          render();
-        } else {
-          delBtn.dataset.confirm = '1';
-          delBtn.textContent = 'Sicher?';
-          setTimeout(() => {
-            if (delBtn.isConnected) {
-              delete delBtn.dataset.confirm;
-              delBtn.replaceChildren(icon('trash', 15));
-            }
-          }, 3000);
-        }
-      });
-
-      row.append(editBtn, delBtn);
-      modal.body.append(row);
-    }
-
-    const newBtn = footerButton('Neuer Bereich', true);
-    newBtn.addEventListener('click', () => { editing = 'new'; render(); });
-    modal.footer.append(newBtn);
-  }
-
-  function renderForm() {
-    modal.body.replaceChildren();
-    modal.footer.replaceChildren();
-
-    const existing = editing !== 'new' ? customSpaceById(editing) : null;
-    let icon = existing ? existing.icon : EMOJI_PRESETS[0];
-    let accent = existing ? existing.accent : 'violet';
-
-    // Titel
-    const titleField = el('div', 'mm-sp-field');
-    titleField.append(el('span', 'mm-sp-field-label', 'Titel'));
-    const titleInput = document.createElement('input');
-    titleInput.type = 'text';
-    titleInput.className = 'mm-sp-input';
-    titleInput.placeholder = 'z. B. Familie';
-    titleInput.maxLength = 40;
-    titleInput.value = existing ? existing.title : '';
-    titleField.append(titleInput);
-    modal.body.append(titleField);
-
-    // Emoji-Icon
-    const iconField = el('div', 'mm-sp-field');
-    iconField.append(el('span', 'mm-sp-field-label', 'Icon'));
-    const grid = el('div', 'mm-sp-emoji-grid');
-    const presets = EMOJI_PRESETS.includes(icon) ? EMOJI_PRESETS : [icon, ...EMOJI_PRESETS];
-    const emojiButtons = [];
-    for (const em of presets) {
-      const b = el('button', 'mm-sp-emoji', em);
-      b.type = 'button';
-      b.setAttribute('aria-label', 'Icon ' + em);
-      if (em === icon) b.classList.add('selected');
-      b.addEventListener('click', () => {
-        icon = em;
-        for (const other of emojiButtons) other.classList.toggle('selected', other === b);
-      });
-      emojiButtons.push(b);
-      grid.append(b);
-    }
-    iconField.append(grid);
-    modal.body.append(iconField);
-
-    // Akzentfarbe
-    const accentField = el('div', 'mm-sp-field');
-    accentField.append(el('span', 'mm-sp-field-label', 'Akzentfarbe'));
-    const swatchRow = el('div', 'mm-sp-accents');
-    const swatches = [];
-    for (const a of SPACES_ACCENTS) {
-      const s = el('button', 'mm-sp-swatch');
-      s.type = 'button';
-      s.title = a.label;
-      s.setAttribute('aria-label', 'Akzentfarbe ' + a.label);
-      s.style.setProperty('--sp-accent', a.css);
-      if (a.id === accent) s.classList.add('selected');
-      s.addEventListener('click', () => {
-        accent = a.id;
-        for (const other of swatches) other.classList.toggle('selected', other === s);
-      });
-      swatches.push(s);
-      swatchRow.append(s);
-    }
-    accentField.append(swatchRow);
-    modal.body.append(accentField);
-
-    // Footer
-    const backBtn = footerButton('Zurück', false);
-    backBtn.addEventListener('click', () => { editing = null; render(); });
-    const saveBtn = footerButton(existing ? 'Speichern' : 'Erstellen', true);
-    saveBtn.addEventListener('click', () => {
-      const title = titleInput.value.trim();
-      if (!title) {
-        titleInput.classList.add('invalid');
-        titleInput.focus();
-        return;
-      }
-      if (existing) updateCustomSpace(existing.id, { title, icon, accent });
-      else createCustomSpace({ title, icon, accent });
-      editing = null;
-      render();
-    });
-    titleInput.addEventListener('input', () => titleInput.classList.remove('invalid'));
-    modal.footer.append(backBtn, saveBtn);
-    titleInput.focus();
-  }
-
-  function render() {
-    if (editing === null) renderList();
-    else renderForm();
-  }
-
-  render();
 }

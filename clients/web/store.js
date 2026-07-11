@@ -70,8 +70,27 @@ function idbDelete(key) {
   }));
 }
 
-/** Ein Event für die Persistenz vorbereiten (reactions-Map -> Array). */
-function serializeEvent(ev) {
+/** Ein Event für die Persistenz vorbereiten (reactions-Map -> Array).
+ *  In E2EE-Räumen wird NIE Klartext geschrieben: Es wird der Original-
+ *  Ciphertext persistiert (das Event heilt sich nach dem Laden über die
+ *  reguläre Entschlüsselungs-Warteschlange). Ohne Ciphertext -> null
+ *  (Event auslassen statt Klartext speichern). */
+function serializeEvent(ev, encryptedRoom) {
+  if (encryptedRoom) {
+    const cipher = ev.type === 'm.room.encrypted' ? ev.content : ev.rawContent;
+    if (!cipher || typeof cipher !== 'object') return null;
+    return {
+      eventId: ev.eventId || null,
+      sender: ev.sender || null,
+      type: 'm.room.encrypted',
+      content: cipher,
+      ts: ev.ts || 0,
+      editedBody: null,
+      redacted: !!ev.redacted,
+      encrypted: true,
+      reactions: [], // Aggregate enthalten Klartext (Emoji) – nicht persistieren
+    };
+  }
   return {
     eventId: ev.eventId || null,
     sender: ev.sender || null,
@@ -82,7 +101,11 @@ function serializeEvent(ev) {
     redacted: !!ev.redacted,
     encrypted: !!ev.encrypted,
     reactions: ev.reactions instanceof Map
-      ? [...ev.reactions].map(([k, v]) => [k, { count: v.count || 0, mine: !!v.mine }])
+      ? [...ev.reactions].map(([k, v]) => [k, {
+          count: v.count || 0,
+          mine: !!v.mine,
+          myEventId: v.myEventId || null, // ohne ID wäre die eigene Reaktion nicht mehr entfernbar
+        }])
       : [],
   };
 }
@@ -97,15 +120,21 @@ function deserializeEvent(obj) {
     editedBody: obj.editedBody === undefined ? null : obj.editedBody,
     redacted: !!obj.redacted,
     encrypted: !!obj.encrypted,
-    reactions: new Map((obj.reactions || []).map(([k, v]) => [k, { count: v.count || 0, mine: !!v.mine }])),
+    reactions: new Map((obj.reactions || []).map(([k, v]) => [k, {
+      count: v.count || 0,
+      mine: !!v.mine,
+      myEventId: v.myEventId || null,
+    }])),
     pending: false,
     failed: false,
     txnId: null,
+    rawContent: null,
   };
 }
 
 /** Raum-Objekt in eine strukturierte, klonbare Form bringen. */
 export function serializeRoom(room) {
+  const enc = !!room.isEncrypted;
   const members = [];
   if (room.members instanceof Map) {
     for (const [uid, m] of room.members) {
@@ -120,13 +149,20 @@ export function serializeRoom(room) {
   const events = [];
   const src = room.events || [];
   // Nur bestätigte Events persistieren (pending Echos sind nach Reload wertlos).
+  let confirmed = 0;
+  for (const ev of src) if (!ev.pending && !ev.failed) confirmed++;
   for (let i = Math.max(0, src.length - MAX_EVENTS_PER_ROOM); i < src.length; i++) {
     const ev = src[i];
     if (ev.pending || ev.failed) continue;
-    events.push(serializeEvent(ev));
+    const sev = serializeEvent(ev, enc);
+    if (sev) events.push(sev);
   }
+  // Wurden Events gekappt/ausgelassen, zeigt prevBatch VOR die Lücke:
+  // Rückwärts-Paginieren würde die fehlende Mitte still überspringen.
+  // Dann lieber ohne Token neu verankern (nächster limited Sync setzt ihn).
+  const truncated = events.length < confirmed;
   const reactionIndex = [];
-  if (room.reactionIndex instanceof Map) {
+  if (!enc && room.reactionIndex instanceof Map) {
     for (const [rid, info] of room.reactionIndex) {
       reactionIndex.push([rid, { targetId: info.targetId, key: info.key, sender: info.sender }]);
     }
@@ -139,14 +175,15 @@ export function serializeRoom(room) {
     heroes: room.heroes || [],
     members,
     lastEventTs: room.lastEventTs || 0,
-    lastPreview: room.lastPreview || '',
-    lastPreviewSender: room.lastPreviewSender || null,
+    // E2EE: Vorschau ist Klartext – nicht persistieren (heilt nach Entschlüsselung).
+    lastPreview: enc ? '' : (room.lastPreview || ''),
+    lastPreviewSender: enc ? null : (room.lastPreviewSender || null),
     unread: room.unread || 0,
-    isEncrypted: !!room.isEncrypted,
+    isEncrypted: enc,
     isDirect: !!room.isDirect,
     events,
     reactionIndex,
-    prevBatch: room.prevBatch || null,
+    prevBatch: truncated ? null : (room.prevBatch || null),
     lastReceiptEventId: room.lastReceiptEventId || null,
     bridgeProtocol: room.bridgeProtocol || null,
     bridgeHint: room.bridgeHint || null,
