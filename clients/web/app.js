@@ -641,28 +641,29 @@ function renderNotifySettings() {
 function renderAreaNotifyList() {
   if (!areaNotifyList) return;
   areaNotifyList.textContent = '';
-  const areas = spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge');
-  if (!areas.length) {
-    areaNotifyList.appendChild(el('div', 'settings-hint', 'Noch keine Bereiche vorhanden.'));
-    return;
+  // Alle Sektionen der Raumliste – Bridges, eigene Bereiche UND die
+  // abgeleiteten (Favoriten, Direktnachrichten, Weitere).
+  const rows = [];
+  for (const sp of spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge')) {
+    rows.push({ key: sp.id, title: sp.title, iconNode: () => spaceIconNode(sp, 16) });
   }
-  const modes = settings.areaNotify || {};
-  for (const sp of areas) {
+  rows.push({ key: 'fav', title: 'Favoriten', iconNode: () => icon('star-filled', 16) });
+  rows.push({ key: 'dm', title: 'Direktnachrichten', iconNode: () => icon('user', 16) });
+  rows.push({ key: 'other', title: 'Weitere', iconNode: () => icon('folder', 16) });
+
+  for (const item of rows) {
     const row = el('div', 'area-notify-row');
-    row.appendChild(spaceIconNode(sp, 16));
-    row.appendChild(el('span', 'area-notify-name', sp.title));
+    row.appendChild(item.iconNode());
+    row.appendChild(el('span', 'area-notify-name', item.title));
     const seg = el('div', 'segmented mini');
-    const cur = modes[sp.id] || 'all';
+    const cur = getAreaNotify(item.key);
     for (const [val, label] of [['all', 'Alle'], ['mentions', '@'], ['off', 'Aus']]) {
       const b = el('button', null, label);
       b.type = 'button';
       if (val === cur) b.classList.add('selected');
       b.title = val === 'mentions' ? 'Nur Erwähnungen' : label;
       b.addEventListener('click', () => {
-        const next = Object.assign({}, settings.areaNotify || {});
-        if (val === 'all') delete next[sp.id]; else next[sp.id] = val;
-        settings.areaNotify = next;
-        saveSettings();
+        setAreaNotify(item.key, val);
         renderAreaNotifyList();
       });
       seg.appendChild(b);
@@ -2504,24 +2505,70 @@ function eventMatchesKeyword(ev) {
 
 /** Effektiver Benachrichtigungsmodus für einen Raum: die restriktivste Regel
  *  aus global, Bereich(en) und Chat gewinnt ('off' > 'mentions' > 'all'). */
+/** Alle Bereichs-Schlüssel, denen ein Raum angehört – exakt wie die Sektionen
+ *  in der Raumliste (custom/bridge + fav/dm/other). Für die Bereichsregeln. */
+function roomNotifyAreaKeys(room) {
+  const keys = [];
+  const spaceList = spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge');
+  let inSpace = false;
+  for (const sp of spaceList) {
+    if (roomInSpaceId(room, sp.id)) { keys.push(sp.id); inSpace = true; }
+  }
+  const fav = spaces.isFavorite(room.roomId);
+  if (fav) keys.push('fav');
+  if (!inSpace && !fav) keys.push(room.isDirect ? 'dm' : 'other');
+  return keys;
+}
+
 function effectiveNotifyMode(room) {
   const rank = { all: 0, mentions: 1, off: 2 };
   let level = rank[settings.notifyMode] !== undefined ? rank[settings.notifyMode] : 0;
-  // Bereiche des Raums berücksichtigen.
+  // Bereichsregeln (die restriktivste gewinnt).
   const areaModes = settings.areaNotify || {};
-  for (const spaceId of (spaces.getRoomSpaceIds(room.roomId) || [])) {
-    const m = areaModes[spaceId];
-    if (m && rank[m] > level) level = rank[m];
-  }
-  // Auto-Bridge-Bereich
-  const bridge = spaces.detectBridge(room);
-  if (bridge) {
-    const m = areaModes['bridge:' + bridge];
+  for (const key of roomNotifyAreaKeys(room)) {
+    const m = areaModes[key];
     if (m && rank[m] > level) level = rank[m];
   }
   // Chat-eigener Modus.
   if (roomprefs.getNotifyMode(room.roomId) === 'mentions' && rank.mentions > level) level = rank.mentions;
   return ['all', 'mentions', 'off'][level];
+}
+
+/* ---------- Bereichs-Benachrichtigungsregel (Einstellungen + ⋯-Menü) ---------- */
+
+function getAreaNotify(key) {
+  const m = (settings.areaNotify || {})[key];
+  return (m === 'mentions' || m === 'off') ? m : 'all';
+}
+
+function setAreaNotify(key, mode) {
+  const next = Object.assign({}, settings.areaNotify || {});
+  if (mode === 'all') delete next[key]; else next[key] = mode;
+  settings.areaNotify = next;
+  saveSettings();
+}
+
+/** Kleines Popover „Alle / Nur Erwähnungen / Aus" für einen Bereich. */
+function openAreaNotifyPicker(areaKey, title, anchor) {
+  const pop = openPopoverShell('space-menu');
+  pop.appendChild(el('div', 'mm-pop-title', 'Benachrichtigungen'));
+  pop.appendChild(el('div', 'mm-pop-sub', title));
+  const cur = getAreaNotify(areaKey);
+  for (const [val, label] of [['all', 'Alle Nachrichten'], ['mentions', 'Nur Erwähnungen'], ['off', 'Aus']]) {
+    const b = el('button', 'room-menu-item');
+    b.type = 'button';
+    const box = el('span', 'room-menu-checkbox');
+    if (val === cur) { box.classList.add('checked'); box.appendChild(icon('check', 12)); }
+    b.appendChild(box);
+    b.appendChild(el('span', null, label));
+    b.addEventListener('click', () => {
+      setAreaNotify(areaKey, val);
+      closePopover();
+      toast('Bereichsregel gespeichert');
+    });
+    pop.appendChild(b);
+  }
+  placePopover(pop, anchor);
 }
 
 function maybeNotify(room, ev) {
@@ -3105,6 +3152,10 @@ function openSpaceMenu(sp, anchor) {
     return b;
   };
 
+  addItem('bell', 'Benachrichtigungen', () => {
+    closePopover();
+    openAreaNotifyPicker(sp.id, sp.title, anchor);
+  });
   addItem('plus', 'Chats hinzufügen', () => {
     closePopover();
     openSpacePicker(sp.id, sp.title, anchor);
@@ -3433,6 +3484,13 @@ function openSectionMenu(key, title, anchor, assignId) {
     b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
     pop.appendChild(b);
   };
+  // Bereichsschlüssel für Benachrichtigungen: Bridges nutzen ihre Space-ID
+  // (assignId = 'bridge:…'), abgeleitete Sektionen ihren Sektions-Key.
+  const notifyKey = assignId || key;
+  addItem('bell', 'Benachrichtigungen', () => {
+    closePopover();
+    openAreaNotifyPicker(notifyKey, title, anchor);
+  });
   if (assignId) {
     addItem('plus', 'Chats hinzufügen', () => {
       closePopover();

@@ -1486,6 +1486,7 @@ html.force-mobile .settings-header {
 }
 .mm-popover.space-menu { width: min(240px, calc(100vw - 16px)); padding: 5px; gap: 0; }
 .mm-pop-title { font-size: 14px; font-weight: 700; color: var(--text); padding: 2px 2px 0; }
+.mm-pop-sub { font-size: 12.5px; color: var(--text-secondary); padding: 0 2px 4px; }
 .mm-pop-input {
   width: 100%;
   padding: 8px 10px;
