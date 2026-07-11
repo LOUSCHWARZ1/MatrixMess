@@ -1949,7 +1949,16 @@ html.force-mobile .settings-header {
 /* ===================== Responsive ===================== */
 
 @media (max-width: 719px) {
-  #app { grid-template-columns: 1fr; }
+  /* Flex-Spalte statt Grid: Die Tab-Leiste liegt so IM Fluss am unteren Rand
+     des tatsächlichen App-Containers (100dvh). position:fixed verhält sich im
+     iOS-PWA-Layoutviewport unzuverlässig und hinterließ einen schwarzen
+     Streifen unter der Leiste. */
+  #app {
+    display: flex;
+    flex-direction: column;
+  }
+  #app > #sidebar,
+  #app > #chat { flex: 1 1 auto; min-height: 0; }
 
   #sidebar { display: flex; }
   #chat { display: none; }
@@ -1964,20 +1973,17 @@ html.force-mobile .settings-header {
   .mine .msg-actions { right: calc(100% + 4px); }
 }
 
-/* ---- Mobile Bottom-Tab-Bar (nur schmales Layout / Handy-Modus) ---- */
+/* ---- Mobile Bottom-Tab-Bar (nur schmales Layout / Handy-Modus) ----
+   Liegt IM Flex-Fluss am unteren App-Rand (nicht position:fixed), damit
+   darunter kein schwarzer Streifen entsteht. */
 #tab-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  flex-shrink: 0;
   z-index: 150;
   display: none;
   align-items: stretch;
   justify-content: space-around;
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
-  background: color-mix(in srgb, var(--bg) 90%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: var(--bg-secondary);
   border-top: 1px solid var(--border);
 }
 .tab-btn {
@@ -2000,13 +2006,16 @@ html.force-mobile .settings-header {
 .tab-btn.active { color: var(--accent); }
 @media (max-width: 719px) {
   #app:not(.show-chat) #tab-bar { display: flex; }
-  #app:not(.show-chat) #room-list { padding-bottom: 76px; }
 }
 
 /* ---- Erzwungener Handy-Modus (per Einstellung umschaltbar) ---- */
+html.force-mobile #app {
+  display: flex;
+  flex-direction: column;
+}
+html.force-mobile #app > #sidebar,
+html.force-mobile #app > #chat { flex: 1 1 auto; min-height: 0; }
 html.force-mobile #app:not(.show-chat) #tab-bar { display: flex; }
-html.force-mobile #app:not(.show-chat) #room-list { padding-bottom: 76px; }
-html.force-mobile #app { grid-template-columns: 1fr; }
 html.force-mobile #sidebar { display: flex; }
 html.force-mobile #chat { display: none; }
 html.force-mobile #app.show-chat #sidebar { display: none; }

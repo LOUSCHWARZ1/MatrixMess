@@ -1207,7 +1207,8 @@ async function doLogout() {
 function hardLogout() {
   stopSync();
   const oldUserId = session && session.userId;
-  clearCryptoState(oldUserId);
+  const oldDeviceId = session && session.deviceId;
+  clearCryptoState(oldUserId, oldDeviceId);
   if (oldUserId) clearRoomCache(oldUserId);
   clearTimeout(roomCacheSaveTimer);
   session = null;
@@ -1324,13 +1325,15 @@ function reloadCrypto() {
 
 /** Crypto-Zustand beim Logout verwerfen: Engine schließen, Pickle-Key und
  *  IndexedDB-Store löschen. */
-function clearCryptoState(userId) {
+function clearCryptoState(userId, deviceId) {
   if (cryptoEngine) {
     try { cryptoEngine.close(); } catch (e) { /* */ }
   }
   cryptoEngine = null;
   cryptoReady = false;
   cryptoInitPromise = null;
+  cryptoError = null;
+  cryptoLoading = false;
   pendingDecryption.clear();
   memberCache.clear();
   try { localStorage.removeItem(LS_CRYPTO_PICKLE); } catch (e) { /* */ }
@@ -1338,10 +1341,14 @@ function clearCryptoState(userId) {
     try { localStorage.removeItem('mm.recoveryKey.' + userId); } catch (e) { /* */ }
   }
   if (userId && typeof indexedDB !== 'undefined') {
-    const base = 'mm-crypto-' + userId;
-    // matrix-sdk-crypto-wasm legt "<name>::matrix-sdk-crypto"(-meta) an.
-    for (const name of [base, base + '::matrix-sdk-crypto', base + '::matrix-sdk-crypto-meta']) {
-      try { indexedDB.deleteDatabase(name); } catch (e) { /* */ }
+    // Sowohl den geräte-spezifischen Store als auch den alten (nur userId)
+    // löschen. matrix-sdk-crypto-wasm legt "<name>::matrix-sdk-crypto"(-meta) an.
+    const bases = ['mm-crypto-' + userId];
+    if (deviceId) bases.push('mm-crypto-' + userId + '-' + deviceId);
+    for (const base of bases) {
+      for (const name of [base, base + '::matrix-sdk-crypto', base + '::matrix-sdk-crypto-meta']) {
+        try { indexedDB.deleteDatabase(name); } catch (e) { /* */ }
+      }
     }
   }
   renderCryptoSection();
