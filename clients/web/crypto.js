@@ -56,6 +56,18 @@ import {
 
 const LS_PICKLE = 'mm.cryptoPickle';
 
+/** Löscht die IndexedDB-Datenbanken eines Krypto-Stores (Basisname + die von
+ *  matrix-sdk-crypto-wasm angelegten "::matrix-sdk-crypto"(-meta)-Varianten). */
+function deleteCryptoStore(base) {
+  if (typeof indexedDB === 'undefined') return Promise.resolve();
+  const names = [base, base + '::matrix-sdk-crypto', base + '::matrix-sdk-crypto-meta'];
+  return Promise.all(names.map((name) => new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.deleteDatabase(name); } catch (e) { resolve(); return; }
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  })));
+}
+
 /** Liest den Store-Passphrase-Schlüssel oder erzeugt ihn einmalig
  *  (32 zufällige Bytes, Base64, in localStorage gehalten). */
 function getOrCreatePickleKey() {
@@ -99,17 +111,39 @@ export class CryptoEngine {
     this.baseUrl = baseUrl || null;
     this.userId = userId;
     this.deviceId = deviceId;
-    this.storeName = 'mm-crypto-' + userId;
+    // Store PRO GERÄT: Jede Neuanmeldung erhält eine neue Device-ID. Hinge der
+    // Store nur am userId, würde die OlmMachine den alten Store (anderes Gerät)
+    // öffnen und mit "account in the store doesn't match" scheitern.
+    this.storeName = 'mm-crypto-' + userId + '-' + deviceId;
     void accessToken; // HTTP läuft komplett über apiFetch
 
     await initAsync();
     const passphrase = getOrCreatePickleKey();
-    this.machine = await OlmMachine.initialize(
-      new UserId(userId),
-      new DeviceId(deviceId),
-      this.storeName,
-      passphrase
-    );
+    try {
+      this.machine = await OlmMachine.initialize(
+        new UserId(userId),
+        new DeviceId(deviceId),
+        this.storeName,
+        passphrase
+      );
+    } catch (err) {
+      // Store gehört zu einem anderen Gerät/Konto (z. B. Reste einer früheren
+      // Anmeldung im selben Browser): verwerfen und einmal frisch anlegen.
+      const msg = (err && err.message) || String(err);
+      if (/doesn't match|account in the store|does not match/i.test(msg)) {
+        console.warn('[crypto] Store gehört zu anderem Gerät – wird zurückgesetzt.');
+        await deleteCryptoStore(this.storeName);
+        await deleteCryptoStore('mm-crypto-' + userId); // Alt-Store ohne Device-ID
+        this.machine = await OlmMachine.initialize(
+          new UserId(userId),
+          new DeviceId(deviceId),
+          this.storeName,
+          passphrase
+        );
+      } else {
+        throw err;
+      }
+    }
     // Geräte-/One-Time-Keys möglichst sofort hochladen, damit andere Geräte
     // diesem Gerät Room-Keys schicken können. Ein Fehler hierbei darf die
     // Engine-Initialisierung NICHT scheitern lassen – der Upload wird sonst
