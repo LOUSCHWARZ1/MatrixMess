@@ -1392,6 +1392,91 @@ input, textarea {
 .mm-pick-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .mm-pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* "N neue Nachrichten"-Trenner in der Timeline */
+.unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.unread-divider::before, .unread-divider::after {
+  content: '';
+  flex: 1;
+  height: 1.5px;
+  background: var(--accent);
+  opacity: .4;
+  border-radius: 1px;
+}
+
+/* Sprungziel der Nachrichtensuche kurz hervorheben */
+.msg-row.msg-highlight .bubble {
+  animation: msg-flash 2.2s ease;
+}
+@keyframes msg-flash {
+  0%, 60% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-row.msg-highlight .bubble { animation: none; outline: 2px solid var(--accent); }
+}
+
+/* Suchtreffer im Chat-Such-Popover */
+.mm-pick-row.search-hit { align-items: flex-start; }
+.search-hit-main { flex: 1; min-width: 0; }
+.search-hit-head { font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
+.search-hit-body {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* @-Mention-Autocomplete über dem Composer */
+.mention-popover {
+  position: fixed;
+  z-index: 340;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg, 0 12px 40px rgba(0,0,0,.18));
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.mention-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.mention-row:hover, .mention-row.selected { background: var(--hover); }
+.mention-row.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mention-uid {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+
 /* Toast mit Aktions-Button („Rückgängig“) */
 .toast.toast-action {
   display: flex;

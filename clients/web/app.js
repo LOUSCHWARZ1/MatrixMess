@@ -144,6 +144,7 @@ const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
 const calendarBadge = $('#calendar-badge');
 const eventBtn = $('#event-btn');
+const chatSearchBtn = $('#chatsearch-btn');
 const roomInfoBtn = $('#roominfo-btn');
 const composerEl = $('#composer');
 const attachBtn = $('#attach-btn');
@@ -178,6 +179,9 @@ let syncedOnce = false;      // erster Sync abgeschlossen? (Skeleton vs. echter 
 
 let replyTarget = null;      // Event-Objekt, auf das geantwortet wird
 let editTarget = null;       // eigenes Event-Objekt im Bearbeiten-Modus
+
+let unreadMarkerEventId = null; // "N neue Nachrichten"-Trenner beim Raumöffnen
+let unreadMarkerCount = 0;
 
 let unseenCount = 0;         // neue fremde Nachrichten, während nicht am Ende gescrollt
 let typingSent = false;
@@ -1029,7 +1033,22 @@ async function getJoinedMembers(roomId) {
   const cached = memberCache.get(roomId);
   if (cached && Date.now() - cached.ts < MEMBER_CACHE_MS) return cached.userIds;
   const res = await api('GET', `/_matrix/client/v3/rooms/${enc(roomId)}/joined_members`);
-  const userIds = Object.keys((res && res.joined) || {});
+  const joined = (res && res.joined) || {};
+  const userIds = Object.keys(joined);
+  // Anzeigenamen in room.members übernehmen (Lazy-Loading füllt sonst nur
+  // Absender) – hilft Mentions-Autocomplete und Mitgliederliste.
+  const room = rooms.get(roomId);
+  if (room) {
+    for (const [uid, info] of Object.entries(joined)) {
+      if (!room.members.has(uid)) {
+        room.members.set(uid, {
+          displayname: (info && info.display_name) || null,
+          avatarUrl: (info && info.avatar_url) || null,
+          membership: 'join',
+        });
+      }
+    }
+  }
   memberCache.set(roomId, { ts: Date.now(), userIds });
   return userIds;
 }
@@ -2764,6 +2783,23 @@ function openRoom(roomId) {
     cancelBanner();
     unseenCount = 0;
     if (isRoomInfoOpen()) closeRoomInfo();
+    draftMentions.clear(); // Mention-Zuordnungen gelten pro Raum-Entwurf
+    closeMentionPopover();
+    // Ungelesen-Sprungmarke: VOR dem Read-Receipt bestimmen, wo die ersten
+    // neuen Nachrichten beginnen ("N neue Nachrichten"-Trenner).
+    unreadMarkerEventId = null;
+    unreadMarkerCount = 0;
+    if (room.unread > 0) {
+      let n = 0;
+      for (let i = room.events.length - 1; i >= 0 && n < room.unread; i--) {
+        const uev = room.events[i];
+        if (!uev.eventId || uev.pending) continue;
+        if (session && uev.sender === session.userId) continue;
+        unreadMarkerEventId = uev.eventId;
+        n++;
+      }
+      unreadMarkerCount = n;
+    }
   }
   activeRoomId = roomId;
   chatEmptyEl.classList.add('hidden');
@@ -2779,6 +2815,11 @@ function openRoom(roomId) {
   }
   renderTypingBar(room);
   renderTimeline('bottom');
+  // Bei ungelesenen Nachrichten zur Sprungmarke statt ganz nach unten.
+  if (unreadMarkerEventId) {
+    const div = timelineEl.querySelector('.unread-divider');
+    if (div) { try { div.scrollIntoView({ block: 'center' }); } catch (e) { /* */ } }
+  }
   updateScrollDownBtn();
   updateDecryptionBanner();
   // Öffnen hebt "als ungelesen markiert" auf.
@@ -2877,6 +2918,15 @@ function renderTimeline(mode) {
       timelineEl.appendChild(sep);
     }
 
+    // "N neue Nachrichten"-Trenner an der ersten ungelesenen Nachricht.
+    if (unreadMarkerEventId && ev.eventId === unreadMarkerEventId) {
+      const div = el('div', 'unread-divider');
+      div.appendChild(el('span', null,
+        unreadMarkerCount > 1 ? unreadMarkerCount + ' neue Nachrichten' : 'Neue Nachricht'));
+      timelineEl.appendChild(div);
+      prevEv = null; // Trenner bricht die Gruppierung
+    }
+
     // Spielstart als interaktive Spielkarte rendern (bricht die Gruppe).
     if (isGameStart(ev)) {
       timelineEl.appendChild(buildGameRow(room, ev, games));
@@ -2939,6 +2989,7 @@ function buildMessageRow(room, ev, startsGroup, endsGroup) {
   }
 
   const row = el('div', 'msg-row');
+  if (ev.eventId) row.dataset.eid = ev.eventId;
   row.classList.add(mine ? 'mine' : 'theirs');
   if (startsGroup && !(!mine && startsGroup)) row.classList.add('grp-start');
   if (startsGroup && endsGroup) row.classList.add('grp-single');
@@ -3167,6 +3218,16 @@ function buildMessageActions(room, ev, mine) {
     replyBtn.setAttribute('aria-label', 'Antworten');
     replyBtn.addEventListener('click', () => startReply(room, ev));
     actions.appendChild(replyBtn);
+
+    const fwdBtn = el('button');
+    fwdBtn.appendChild(icon('forward', 16));
+    fwdBtn.title = 'Weiterleiten';
+    fwdBtn.setAttribute('aria-label', 'Weiterleiten');
+    fwdBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openForwardPicker(fwdBtn, room, ev);
+    });
+    actions.appendChild(fwdBtn);
   }
 
   const reactBtn = el('button');
@@ -3406,6 +3467,220 @@ async function loadOlderMessages(room) {
   }
 }
 
+/* ---------- Weiterleiten ---------- */
+
+/** Weiterleitbaren Content bauen: Relationen/Mentions gehören nicht mit. */
+function buildForwardContent(ev) {
+  const c = ev.content || {};
+  const content = {};
+  for (const [k, v] of Object.entries(c)) {
+    if (k === 'm.relates_to' || k === 'm.mentions') continue;
+    content[k] = v;
+  }
+  // Bearbeitete Nachrichten mit dem aktuellen Text weiterleiten.
+  if (ev.editedBody !== null && ev.editedBody !== undefined) content.body = ev.editedBody;
+  else if (typeof content.body === 'string' && hasReplyRelation(c)) {
+    content.body = stripReplyFallback(content.body);
+  }
+  return content;
+}
+
+async function forwardMessage(target, ev) {
+  try {
+    await sendRoomMessage(target, buildForwardContent(ev));
+  } catch (err) {
+    toast('Weiterleiten fehlgeschlagen: ' + ((err && err.message) || 'Unbekannter Fehler'));
+    return;
+  }
+  toastAction('Weitergeleitet an „' + roomDisplayName(target) + '“', 'Öffnen', () => {
+    openRoom(target.roomId);
+  });
+}
+
+/** Raum-Picker zum Weiterleiten einer Nachricht. */
+function openForwardPicker(anchor, room, ev) {
+  const pop = openPopoverShell('space-picker');
+  pop.appendChild(el('div', 'mm-pop-title', 'Weiterleiten an …'));
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'mm-pop-input';
+  search.placeholder = 'Chats durchsuchen';
+  pop.appendChild(search);
+  const list = el('div', 'mm-pick-list');
+  pop.appendChild(list);
+
+  function renderTargets() {
+    list.textContent = '';
+    const q = search.value.trim().toLowerCase();
+    const targets = sortRooms([...rooms.values()])
+      .filter((r) => r.roomId !== room.roomId)
+      .filter((r) => !q || roomDisplayName(r).toLowerCase().includes(q));
+    for (const target of targets) {
+      const name = roomDisplayName(target);
+      const row = el('button', 'mm-pick-row');
+      row.type = 'button';
+      const av = el('span', 'mm-pick-avatar');
+      setAvatar(av, target.roomId, name, roomAvatarMxc(target));
+      row.appendChild(av);
+      row.appendChild(el('span', 'mm-pick-name', name));
+      if (target.isEncrypted) {
+        const lock = el('span', 'room-lock');
+        lock.appendChild(icon('lock', 11));
+        row.appendChild(lock);
+      }
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closePopover();
+        forwardMessage(target, ev);
+      });
+      list.appendChild(row);
+    }
+    if (!list.childNodes.length) {
+      list.appendChild(el('div', 'nav-section-empty', 'Keine Chats gefunden'));
+    }
+  }
+  renderTargets();
+  search.addEventListener('input', renderTargets);
+  placePopover(pop, anchor);
+  search.focus();
+}
+
+/* ---------- Nachrichtensuche im Raum ---------- */
+
+/** Serverseitige Suche; E2EE-Räume werden lokal (über entschlüsselte
+ *  Timeline-Events) durchsucht, da der Server Ciphertext nicht durchsuchen kann. */
+async function searchRoomMessages(room, term) {
+  const q = term.trim();
+  if (!q) return [];
+  const localHits = () => {
+    const needle = q.toLowerCase();
+    const hits = [];
+    for (let i = room.events.length - 1; i >= 0 && hits.length < 30; i--) {
+      const ev = room.events[i];
+      if (ev.pending || ev.redacted || !ev.eventId) continue;
+      if (ev.type !== 'm.room.message') continue;
+      const body = (ev.editedBody !== null && ev.editedBody !== undefined)
+        ? ev.editedBody : ((ev.content && ev.content.body) || '');
+      if (String(body).toLowerCase().includes(needle)) {
+        hits.push({ eventId: ev.eventId, sender: ev.sender, ts: ev.ts, body: String(body) });
+      }
+    }
+    return hits;
+  };
+  if (room.isEncrypted) return localHits();
+  try {
+    const res = await api('POST', '/_matrix/client/v3/search', {
+      search_categories: {
+        room_events: {
+          search_term: q,
+          keys: ['content.body'],
+          filter: { rooms: [room.roomId], limit: 30 },
+          order_by: 'recent',
+          event_context: { before_limit: 0, after_limit: 0, include_profile: false },
+        },
+      },
+    });
+    const rr = res && res.search_categories && res.search_categories.room_events;
+    const results = (rr && rr.results) || [];
+    return results
+      .map((r) => r.result)
+      .filter((evr) => evr && evr.event_id && evr.content && typeof evr.content.body === 'string')
+      .map((evr) => ({
+        eventId: evr.event_id,
+        sender: evr.sender,
+        ts: evr.origin_server_ts || 0,
+        body: evr.content.body,
+      }));
+  } catch (err) {
+    // Manche Server unterstützen /search nicht – lokale Suche als Fallback.
+    return localHits();
+  }
+}
+
+/** Springt zu einer Nachricht: notfalls begrenzt rückwärts paginieren. */
+async function jumpToMessage(room, eventId) {
+  if (activeRoomId !== room.roomId) openRoom(room.roomId);
+  for (let i = 0; i < 6 && !room.eventIndex.has(eventId) && room.prevBatch; i++) {
+    await loadOlderMessages(room);
+  }
+  if (!room.eventIndex.has(eventId)) {
+    toast('Nachricht liegt weiter zurück im Verlauf');
+    return;
+  }
+  renderTimeline('keep');
+  const rowEl = timelineEl.querySelector('.msg-row[data-eid="' + cssAttrEscape(eventId) + '"]');
+  if (rowEl) {
+    try { rowEl.scrollIntoView({ block: 'center' }); } catch (e) { /* */ }
+    rowEl.classList.add('msg-highlight');
+    setTimeout(() => rowEl.classList.remove('msg-highlight'), 2200);
+  }
+}
+
+/** Event-IDs sicher in Attribut-Selektoren verwenden. */
+function cssAttrEscape(s) {
+  return String(s).replace(/["\\]/g, '\\$&');
+}
+
+/** Such-Popover im Chat-Header. */
+function openChatSearch() {
+  const room = rooms.get(activeRoomId);
+  if (!room) return;
+  const pop = openPopoverShell('space-picker chat-search');
+  pop.appendChild(el('div', 'mm-pop-title', 'Im Chat suchen'));
+  const input = document.createElement('input');
+  input.type = 'search';
+  input.className = 'mm-pop-input';
+  input.placeholder = 'Suchbegriff …';
+  pop.appendChild(input);
+  const list = el('div', 'mm-pick-list');
+  pop.appendChild(list);
+  const hint = room.isEncrypted
+    ? 'Durchsucht die lokal geladenen (entschlüsselten) Nachrichten.'
+    : null;
+  if (hint) list.appendChild(el('div', 'nav-section-empty', hint));
+
+  let searchSeq = 0;
+  let debounceTimer = null;
+  async function run() {
+    const seq = ++searchSeq;
+    const q = input.value.trim();
+    if (q.length < 2) return;
+    list.textContent = '';
+    list.appendChild(el('div', 'nav-section-empty', 'Suche …'));
+    const hits = await searchRoomMessages(room, q);
+    if (seq !== searchSeq || !popoverEl || !popoverEl.contains(list)) return;
+    list.textContent = '';
+    if (!hits.length) {
+      list.appendChild(el('div', 'nav-section-empty', 'Keine Treffer'));
+      return;
+    }
+    for (const hit of hits) {
+      const row = el('button', 'mm-pick-row search-hit');
+      row.type = 'button';
+      const meta = el('div', 'search-hit-main');
+      meta.appendChild(el('div', 'search-hit-head',
+        memberName(room, hit.sender) + ' · ' + listTimeLabel(hit.ts)));
+      meta.appendChild(el('div', 'search-hit-body', truncate(hit.body, 120)));
+      row.appendChild(meta);
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closePopover();
+        jumpToMessage(room, hit.eventId);
+      });
+      list.appendChild(row);
+    }
+  }
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(run, 350);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); clearTimeout(debounceTimer); run(); }
+  });
+  placePopover(pop, chatSearchBtn);
+  input.focus();
+}
+
 /* ---------- Read-Receipts ---------- */
 
 async function sendReadReceipt(room) {
@@ -3535,6 +3810,8 @@ function resetComposer() {
   composerInput.value = '';
   autoGrowComposer();
   if (activeRoomId) clearDraft(activeRoomId);
+  draftMentions.clear();
+  closeMentionPopover();
 }
 
 function startReply(room, ev) {
@@ -3683,6 +3960,14 @@ async function sendCurrentMessage() {
     content = { msgtype: 'm.text', body: text };
   }
 
+  // Absichtliche Erwähnungen (m.mentions), sofern per Autocomplete eingefügt
+  // und noch im Text vorhanden.
+  const mentionIds = [];
+  for (const [name, uid] of draftMentions) {
+    if (text.includes('@' + name) && !mentionIds.includes(uid)) mentionIds.push(uid);
+  }
+  if (mentionIds.length) content['m.mentions'] = { user_ids: mentionIds };
+
   const txn = txnId();
   const pending = {
     eventId: null,
@@ -3740,13 +4025,134 @@ async function sendCurrentMessage() {
   }
 }
 
+/* ---------- @-Mention-Autocomplete im Composer ---------- */
+
+let mentionState = null;   // { items, sel, startIdx, endIdx }
+let mentionPopEl = null;
+const draftMentions = new Map(); // eingefügter Anzeigename -> userId (aktueller Entwurf)
+const mentionWarmed = new Set(); // Räume, deren Mitgliederliste bereits geladen wurde
+
+function closeMentionPopover() {
+  mentionState = null;
+  if (mentionPopEl) { mentionPopEl.remove(); mentionPopEl = null; }
+}
+
+function renderMentionPopover() {
+  if (!mentionState) return;
+  if (!mentionPopEl) {
+    mentionPopEl = el('div', 'mention-popover');
+    mentionPopEl.setAttribute('role', 'listbox');
+    document.body.appendChild(mentionPopEl);
+  }
+  mentionPopEl.textContent = '';
+  mentionState.items.forEach((cand, i) => {
+    const row = el('button', 'mention-row' + (i === mentionState.sel ? ' selected' : ''));
+    row.type = 'button';
+    row.setAttribute('role', 'option');
+    const av = el('span', 'mm-pick-avatar');
+    setAvatar(av, cand.userId, cand.name, null);
+    row.appendChild(av);
+    row.appendChild(el('span', 'mm-pick-name', cand.name));
+    row.appendChild(el('span', 'mention-uid', cand.userId));
+    // mousedown statt click: Fokus soll im Composer bleiben.
+    row.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      applyMention(cand);
+    });
+    mentionPopEl.appendChild(row);
+  });
+  const rect = composerInput.getBoundingClientRect();
+  mentionPopEl.style.left = rect.left + 'px';
+  mentionPopEl.style.width = Math.min(380, Math.max(240, rect.width)) + 'px';
+  mentionPopEl.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+}
+
+function updateMentionAutocomplete() {
+  const room = activeRoomId ? rooms.get(activeRoomId) : null;
+  if (!room) { closeMentionPopover(); return; }
+  const pos = composerInput.selectionStart || 0;
+  const before = composerInput.value.slice(0, pos);
+  const m = /(^|\s)@([^\s@]{0,30})$/.exec(before);
+  if (!m) { closeMentionPopover(); return; }
+
+  // Mitgliederliste einmalig nachladen (Lazy-Loading kennt sonst nur Absender).
+  if (!mentionWarmed.has(room.roomId)) {
+    mentionWarmed.add(room.roomId);
+    getJoinedMembers(room.roomId)
+      .then(() => { if (mentionState) updateMentionAutocomplete(); })
+      .catch(() => {});
+  }
+
+  const q = m[2].toLowerCase();
+  const items = [];
+  for (const [uid, mem] of room.members) {
+    if (session && uid === session.userId) continue;
+    if (mem && mem.membership && mem.membership !== 'join') continue;
+    const name = (mem && mem.displayname) || uid.replace(/^@/, '').split(':')[0];
+    if (q && !name.toLowerCase().includes(q) && !uid.toLowerCase().includes(q)) continue;
+    items.push({ userId: uid, name });
+    if (items.length >= 8) break;
+  }
+  if (!items.length) { closeMentionPopover(); return; }
+  const startIdx = m.index + m[1].length;
+  const prevSel = mentionState ? mentionState.sel : 0;
+  mentionState = { items, sel: Math.min(prevSel, items.length - 1), startIdx, endIdx: pos };
+  renderMentionPopover();
+}
+
+function applyMention(cand) {
+  if (!mentionState) return;
+  const { startIdx, endIdx } = mentionState;
+  const val = composerInput.value;
+  const insert = '@' + cand.name + ' ';
+  composerInput.value = val.slice(0, startIdx) + insert + val.slice(endIdx);
+  const caret = startIdx + insert.length;
+  composerInput.setSelectionRange(caret, caret);
+  draftMentions.set(cand.name, cand.userId);
+  closeMentionPopover();
+  composerInput.focus();
+  autoGrowComposer();
+  if (activeRoomId) setDraft(activeRoomId, composerInput.value);
+  sendBtn.disabled = composerInput.value.trim().length === 0;
+}
+
+/** true = Taste wurde vom Mention-Popover verbraucht. */
+function handleMentionKeydown(e) {
+  if (!mentionState) return false;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const dir = e.key === 'ArrowDown' ? 1 : -1;
+    mentionState.sel = (mentionState.sel + dir + mentionState.items.length) % mentionState.items.length;
+    renderMentionPopover();
+    return true;
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    applyMention(mentionState.items[mentionState.sel]);
+    return true;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeMentionPopover();
+    return true;
+  }
+  return false;
+}
+
 composerInput.addEventListener('input', () => {
   autoGrowComposer();
   handleTypingSignal();
   if (activeRoomId) setDraft(activeRoomId, composerInput.value);
+  updateMentionAutocomplete();
+});
+
+composerInput.addEventListener('blur', () => {
+  // Verzögert, damit mousedown auf einer Mention-Zeile noch greift.
+  setTimeout(() => { if (document.activeElement !== composerInput) closeMentionPopover(); }, 150);
 });
 
 composerInput.addEventListener('keydown', (e) => {
+  if (handleMentionKeydown(e)) return;
   if (e.key === 'Enter') {
     const enterSends = settings.enterToSend !== false;
     // Enter sendet (wenn aktiviert, ohne Shift); Strg/Cmd+Enter sendet immer.
@@ -4057,6 +4463,11 @@ roomInfoBtn.addEventListener('click', () => {
   if (activeRoomId) openRoomInfo(activeRoomId);
 });
 
+chatSearchBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openChatSearch();
+});
+
 calendarBtn.addEventListener('click', () => {
   document.body.appendChild(renderCalendarPanel());
 });
@@ -4161,6 +4572,7 @@ function mountStaticIcons() {
   // Buttons, bei denen das Icon VOR bestehendem Inhalt (Badge/Label) sitzt:
   calendarBtn.insertBefore(icon('calendar', 20), calendarBtn.firstChild);
   eventBtn.insertBefore(icon('calendar-plus', 15), eventBtn.firstChild);
+  chatSearchBtn.appendChild(icon('search', 20));
   roomInfoBtn.appendChild(icon('user', 20));
   scrollDownBtn.insertBefore(icon('arrow-down', 20), scrollDownBtn.firstChild);
 }
