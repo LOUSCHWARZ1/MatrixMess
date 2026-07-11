@@ -1876,6 +1876,16 @@ html.force-mobile .mine .msg-actions { right: calc(100% + 4px); }
   box-shadow: inset 0 0 0 2px var(--accent, #8b4df7);
   border-radius: 9px;
 }
+/* Bereichskopf ziehen = Bereich neu anordnen */
+.nav-section-header.dragging { opacity: .5; }
+.nav-section-header.drop-before { box-shadow: inset 0 2px 0 var(--accent, #8b4df7); }
+.nav-section-header.drop-after { box-shadow: inset 0 -2px 0 var(--accent, #8b4df7); }
+/* Ohne Hover (Touch/Handy-Modus) sind die Verwaltungs-Buttons immer sichtbar,
+   sonst wären Bearbeiten/Löschen/Anordnen nicht auffindbar. */
+@media (hover: none) {
+  .nav-section-btn { display: inline-flex; }
+}
+html.force-mobile .nav-section-btn { display: inline-flex; }
 .nav-section-body { display: block; }
 .nav-section.collapsed .nav-section-body { display: none; }
 @media (prefers-reduced-motion: reduce) {

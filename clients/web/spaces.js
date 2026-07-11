@@ -410,6 +410,29 @@ export function updateCustomSpace(id, patch) {
   return true;
 }
 
+/** Verschiebt einen eigenen Bereich in der Reihenfolge (delta ±1, oder
+ *  gezielt vor einen anderen Bereich mit { beforeId }). */
+export function moveCustomSpace(id, deltaOrOpts) {
+  const idx = state.customSpaces.findIndex((s) => s.id === id);
+  if (idx === -1) return false;
+  let target;
+  if (deltaOrOpts && typeof deltaOrOpts === 'object' && typeof deltaOrOpts.beforeId === 'string') {
+    const [sp] = state.customSpaces.splice(idx, 1);
+    let at = state.customSpaces.findIndex((s) => s.id === deltaOrOpts.beforeId);
+    if (at === -1) at = state.customSpaces.length; // ans Ende
+    state.customSpaces.splice(at, 0, sp);
+    changed();
+    return true;
+  }
+  const delta = typeof deltaOrOpts === 'number' ? deltaOrOpts : 0;
+  target = idx + delta;
+  if (delta === 0 || target < 0 || target >= state.customSpaces.length) return false;
+  const [sp] = state.customSpaces.splice(idx, 1);
+  state.customSpaces.splice(target, 0, sp);
+  changed();
+  return true;
+}
+
 export function deleteCustomSpace(id) {
   const idx = state.customSpaces.findIndex((s) => s.id === id);
   if (idx === -1) return false;
