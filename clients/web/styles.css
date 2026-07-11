@@ -999,6 +999,45 @@ input, textarea {
   padding: 18px 20px 22px;
 }
 
+/* Auf dem Handy als bildschirmfüllendes Sheet statt zentriertem Modal –
+   sonst bleibt oben/unten ein großer ungenutzter schwarzer Rand. */
+@media (max-width: 719px) {
+  #settings-overlay { align-items: stretch; justify-content: stretch; padding: 0; }
+  #settings-panel {
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+    padding: calc(14px + env(safe-area-inset-top, 0px)) 18px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+  .settings-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
+    padding-bottom: 8px;
+    margin: 0 0 8px;
+  }
+}
+html.force-mobile #settings-overlay { align-items: stretch; justify-content: stretch; padding: 0; }
+html.force-mobile #settings-panel {
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 18px calc(24px + env(safe-area-inset-bottom, 0px));
+}
+html.force-mobile .settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  padding-bottom: 8px;
+  margin: 0 0 8px;
+}
+
 .settings-header {
   display: flex;
   align-items: center;
