@@ -122,6 +122,7 @@ async function createPeer() {
     else { flushCandidates(); send('m.call.candidates', { candidates: [] }); } // Ende-Signal
   };
   pc.ontrack = (e) => {
+    if (!call || !call.remoteStream) return; // Event kann nach endCall() feuern
     for (const track of e.streams[0] ? e.streams[0].getTracks() : [e.track]) {
       call.remoteStream.addTrack(track);
     }
