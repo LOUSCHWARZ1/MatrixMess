@@ -142,6 +142,8 @@ const verifyBtn = $('#verify-btn');
 const verifyOverlay = $('#verify-overlay');
 const verifyClose = $('#verify-close');
 const verifyBody = $('#verify-body');
+const sessionsListEl = $('#sessions-list');
+const sessionsRefreshBtn = $('#sessions-refresh');
 const sidebarEl = $('#sidebar');
 const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
@@ -436,6 +438,7 @@ function renderSettingsPanel() {
     ('Notification' in window) && Notification.permission === 'granted';
   settingsUserEl.textContent = session ? `Angemeldet als ${session.userId}` : '';
   renderCryptoSection();
+  renderSessions();
 }
 
 function renderCryptoSection() {
@@ -446,6 +449,172 @@ function renderCryptoSection() {
   recoveryBtn.disabled = !cryptoReady;
   if (verifyBtn) verifyBtn.disabled = !cryptoReady;
   if (!cryptoReady) recoveryForm.classList.add('hidden');
+}
+
+/* ---------- Sitzungen & Geräte ---------- */
+
+let sessionsData = null;    // zuletzt geladene Geräteliste
+let sessionsLoading = false;
+
+function relativeTime(ms) {
+  if (!ms) return 'unbekannt';
+  const diff = Date.now() - ms;
+  const min = Math.round(diff / 60000);
+  if (min < 1) return 'gerade eben';
+  if (min < 60) return 'vor ' + min + ' Min.';
+  const h = Math.round(min / 60);
+  if (h < 24) return 'vor ' + h + ' Std.';
+  const d = Math.round(h / 24);
+  if (d < 30) return 'vor ' + d + ' Tg.';
+  return new Date(ms).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+async function loadSessions() {
+  if (!session || sessionsLoading) return;
+  sessionsLoading = true;
+  renderSessions();
+  try {
+    const res = await api('GET', '/_matrix/client/v3/devices');
+    sessionsData = (res && Array.isArray(res.devices)) ? res.devices : [];
+  } catch (err) {
+    sessionsData = null;
+    if (sessionsListEl) {
+      sessionsListEl.textContent = '';
+      sessionsListEl.appendChild(el('div', 'sessions-empty',
+        'Sitzungen konnten nicht geladen werden: ' + ((err && err.message) || 'Unbekannter Fehler')));
+    }
+    sessionsLoading = false;
+    return;
+  }
+  sessionsLoading = false;
+  renderSessions();
+}
+
+function renderSessions() {
+  if (!sessionsListEl) return;
+  sessionsListEl.textContent = '';
+  if (sessionsLoading && !sessionsData) {
+    sessionsListEl.appendChild(el('div', 'sessions-empty', 'Sitzungen werden geladen …'));
+    return;
+  }
+  if (!sessionsData) return;
+  if (!sessionsData.length) {
+    sessionsListEl.appendChild(el('div', 'sessions-empty', 'Keine Sitzungen gefunden.'));
+    return;
+  }
+
+  const cur = session && session.deviceId;
+  const list = sessionsData.slice().sort((a, b) => {
+    if (a.device_id === cur) return -1;
+    if (b.device_id === cur) return 1;
+    return (b.last_seen_ts || 0) - (a.last_seen_ts || 0);
+  });
+
+  for (const dev of list) {
+    const isCurrent = dev.device_id === cur;
+    const row = el('div', 'session-row' + (isCurrent ? ' current' : ''));
+
+    const ic = el('div', 'session-icon');
+    ic.appendChild(icon('monitor', 18));
+    row.appendChild(ic);
+
+    const main = el('div', 'session-main');
+    const nameLine = el('div', 'session-name');
+    nameLine.appendChild(el('span', null, dev.display_name || dev.device_id || 'Unbenannte Sitzung'));
+    if (isCurrent) nameLine.appendChild(el('span', 'session-badge', 'Diese Sitzung'));
+    main.appendChild(nameLine);
+
+    const metaBits = [];
+    if (dev.last_seen_ts) metaBits.push('Aktiv ' + relativeTime(dev.last_seen_ts));
+    if (dev.last_seen_ip) metaBits.push(dev.last_seen_ip);
+    metaBits.push(dev.device_id);
+    main.appendChild(el('div', 'session-meta', metaBits.join(' · ')));
+    row.appendChild(main);
+
+    const actions = el('div', 'session-actions');
+    const renameBtn = el('button', 'session-btn');
+    renameBtn.type = 'button';
+    renameBtn.title = 'Umbenennen';
+    renameBtn.setAttribute('aria-label', 'Sitzung umbenennen');
+    renameBtn.appendChild(icon('edit', 15));
+    renameBtn.addEventListener('click', () => renameSession(dev));
+    actions.appendChild(renameBtn);
+
+    if (!isCurrent) {
+      const outBtn = el('button', 'session-btn danger');
+      outBtn.type = 'button';
+      outBtn.title = 'Abmelden';
+      outBtn.setAttribute('aria-label', 'Sitzung abmelden');
+      outBtn.appendChild(icon('logout', 15));
+      outBtn.addEventListener('click', () => signOutSession(dev));
+      actions.appendChild(outBtn);
+    }
+    row.appendChild(actions);
+    sessionsListEl.appendChild(row);
+  }
+}
+
+async function renameSession(dev) {
+  const name = window.prompt('Neuer Name für diese Sitzung:', dev.display_name || dev.device_id || '');
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === dev.display_name) return;
+  try {
+    await api('PUT', `/_matrix/client/v3/devices/${enc(dev.device_id)}`, { display_name: trimmed });
+    dev.display_name = trimmed;
+    renderSessions();
+    toast('Sitzung umbenannt');
+  } catch (err) {
+    toast('Umbenennen fehlgeschlagen: ' + ((err && err.message) || 'Unbekannter Fehler'));
+  }
+}
+
+/** Meldet ein anderes Gerät ab. Der Server verlangt dafür meist erneut das
+ *  Passwort (User-Interactive-Auth) – das fragen wir bei Bedarf ab. */
+async function signOutSession(dev) {
+  if (!window.confirm('Diese Sitzung wirklich abmelden?\n\n' +
+      (dev.display_name || dev.device_id))) return;
+  const path = `/_matrix/client/v3/devices/${enc(dev.device_id)}`;
+  try {
+    await api('DELETE', path, {});
+  } catch (err) {
+    if (err && err.status === 401 && err.data) {
+      const ok = await uiaPasswordDelete(path, err.data);
+      if (!ok) return;
+    } else {
+      toast('Abmelden fehlgeschlagen: ' + ((err && err.message) || 'Unbekannter Fehler'));
+      return;
+    }
+  }
+  sessionsData = (sessionsData || []).filter((d) => d.device_id !== dev.device_id);
+  renderSessions();
+  toast('Sitzung abgemeldet');
+}
+
+/** Führt den passwortbasierten UIA-Schritt für eine DELETE-Anfrage aus. */
+async function uiaPasswordDelete(path, uia) {
+  const flows = (uia && uia.flows) || [];
+  const supportsPassword = flows.some((f) => Array.isArray(f.stages) && f.stages.includes('m.login.password'));
+  if (!supportsPassword) {
+    toast('Abmelden erfordert eine Bestätigung, die dieser Server nicht per Passwort erlaubt.');
+    return false;
+  }
+  const pw = window.prompt('Zur Bestätigung bitte dein Passwort eingeben:');
+  if (!pw) return false;
+  try {
+    await api('DELETE', path, {
+      auth: {
+        type: 'm.login.password',
+        identifier: { type: 'm.id.user', user: session.userId },
+        password: pw,
+        session: uia.session,
+      },
+    });
+    return true;
+  } catch (err) {
+    toast('Bestätigung fehlgeschlagen: ' + ((err && err.errcode === 'M_FORBIDDEN') ? 'Passwort falsch' : ((err && err.message) || 'Fehler')));
+    return false;
+  }
 }
 
 /* ---------- Geräte-Verifizierung (SAS) ---------- */
@@ -550,10 +719,11 @@ function clearSessionStorage() {
 }
 
 class ApiError extends Error {
-  constructor(message, errcode, status) {
+  constructor(message, errcode, status, data) {
     super(message);
     this.errcode = errcode;
     this.status = status;
+    this.data = data || null; // vollständiger Body (z. B. UIA-Flows bei 401)
   }
 }
 
@@ -572,7 +742,7 @@ async function api(method, path, body, opts = {}) {
   if (!res.ok) {
     const errcode = data && data.errcode;
     const msg = (data && data.error) || `HTTP ${res.status}`;
-    throw new ApiError(msg, errcode, res.status);
+    throw new ApiError(msg, errcode, res.status, data);
   }
   return data;
 }
@@ -5453,7 +5623,10 @@ function closeQuickSwitcher() {
 settingsBtn.addEventListener('click', () => {
   renderSettingsPanel();
   settingsOverlay.classList.remove('hidden');
+  loadSessions(); // frische Geräteliste beim Öffnen holen
 });
+
+if (sessionsRefreshBtn) sessionsRefreshBtn.addEventListener('click', () => loadSessions());
 
 /* Mobile Bottom-Tab-Bar: Icons montieren und verdrahten. */
 (function initTabBar() {
