@@ -132,6 +132,7 @@ const logoutBtn = $('#logout-btn');
 const emojiPopover = $('#emoji-popover');
 const toastContainer = $('#toast-container');
 const cryptoStatusEl = $('#crypto-status');
+const cryptoReloadBtn = $('#crypto-reload-btn');
 const recoveryBtn = $('#recovery-btn');
 const recoveryForm = $('#recovery-form');
 const recoveryInput = $('#recovery-input');
@@ -212,6 +213,8 @@ let lastTypingSentAt = 0;
 let cryptoEngine = null;        // CryptoEngine-Instanz aus crypto.js
 let cryptoReady = false;        // true, sobald die Engine initialisiert ist
 let cryptoInitPromise = null;   // Promise der laufenden Initialisierung
+let cryptoError = null;         // letzte Fehlerursache (für Anzeige + erneut laden)
+let cryptoLoading = false;      // Init läuft gerade (Button sperren)
 
 const pendingDecryption = new Map(); // roomId -> Map(eventId -> rohes m.room.encrypted-Event)
 const memberCache = new Map();       // roomId -> { ts, userIds } (für encryptEvent)
@@ -575,9 +578,23 @@ function finishPasswordChange() {
 
 function renderCryptoSection() {
   if (!cryptoStatusEl) return;
-  cryptoStatusEl.textContent = cryptoReady
-    ? 'Ende-zu-Ende-Verschlüsselung: aktiv'
-    : 'Ende-zu-Ende-Verschlüsselung: nicht verfügbar';
+  cryptoStatusEl.textContent = '';
+  let statusText;
+  if (cryptoReady) statusText = 'Ende-zu-Ende-Verschlüsselung: aktiv';
+  else if (cryptoLoading) statusText = 'Verschlüsselung wird geladen …';
+  else statusText = 'Ende-zu-Ende-Verschlüsselung: nicht verfügbar';
+  cryptoStatusEl.appendChild(el('div', null, statusText));
+
+  // Konkrete Fehlerursache + „erneut laden“ statt nur ausgegrauter Knöpfe.
+  if (!cryptoReady && !cryptoLoading && cryptoError) {
+    cryptoStatusEl.appendChild(el('div', 'crypto-error-detail', cryptoError.detail));
+  }
+  if (cryptoReloadBtn) {
+    const showReload = !cryptoReady;
+    cryptoReloadBtn.classList.toggle('hidden', !showReload);
+    cryptoReloadBtn.disabled = cryptoLoading;
+    cryptoReloadBtn.textContent = cryptoLoading ? 'Wird geladen …' : 'Verschlüsselung erneut laden';
+  }
   recoveryBtn.disabled = !cryptoReady;
   if (verifyBtn) verifyBtn.disabled = !cryptoReady;
   if (!cryptoReady) recoveryForm.classList.add('hidden');
@@ -1221,6 +1238,9 @@ function hardLogout() {
  *  der Client degradiert auf den bisherigen Platzhalter-Modus. */
 async function initCrypto() {
   cryptoReady = false;
+  cryptoError = null;
+  cryptoLoading = true;
+  renderCryptoSection();
   try {
     if (!session || !session.deviceId) {
       throw new Error('Session ohne deviceId (alte Anmeldung?) – bitte neu anmelden für E2EE');
@@ -1236,6 +1256,8 @@ async function initCrypto() {
     });
     cryptoEngine = engine;
     cryptoReady = true;
+    cryptoError = null;
+    cryptoLoading = false;
     if (engine.setVerificationChangeHandler) {
       engine.setVerificationChangeHandler(onVerificationChange);
     }
@@ -1258,9 +1280,46 @@ async function initCrypto() {
     console.warn('Verschlüsselung konnte nicht initialisiert werden:', err);
     cryptoEngine = null;
     cryptoReady = false;
+    cryptoLoading = false;
+    cryptoError = classifyCryptoError(err);
     renderCryptoSection();
-    toast('Verschlüsselung konnte nicht geladen werden – E2EE-Räume bleiben schreibgeschützt');
+    toast('Verschlüsselung konnte nicht geladen werden: ' + cryptoError.short);
   }
+}
+
+/** Eine Rohfehlermeldung in eine verständliche Ursache übersetzen. */
+function classifyCryptoError(err) {
+  const raw = (err && err.message) || String(err || 'Unbekannter Fehler');
+  const low = raw.toLowerCase();
+  if (typeof WebAssembly === 'undefined') {
+    return { short: 'WebAssembly wird nicht unterstützt',
+      detail: 'Dieser Browser kann WebAssembly nicht ausführen. Bitte nutze einen aktuellen Browser (Safari 15+, Chrome, Firefox).', raw };
+  }
+  if (/wasm|webassembly|instantiate|magic word|compile/.test(low)) {
+    return { short: 'Krypto-Modul (WASM) nicht ladbar',
+      detail: 'Das Verschlüsselungsmodul konnte nicht geladen werden – meist ein kurzzeitiges Netz-/Cache-Problem oder eine strenge Browsereinstellung. „Verschlüsselung erneut laden“ hilft in der Regel.', raw };
+  }
+  if (/deviceid|neu anmelden/.test(low)) {
+    return { short: 'Sitzung ohne Geräteschlüssel',
+      detail: 'Diese Anmeldung enthält keine Geräte-ID. Bitte einmal abmelden und neu anmelden, damit die Verschlüsselung eingerichtet werden kann.', raw };
+  }
+  if (/indexeddb|quota|storage|pickle|localstorage/.test(low)) {
+    return { short: 'Lokaler Speicher blockiert',
+      detail: 'Der private/geschützte Modus oder volle Speicher verhindern die Verschlüsselung. Deaktiviere den privaten Modus oder gib Speicher frei und lade erneut.', raw };
+  }
+  if (/network|failed to fetch|load failed/.test(low)) {
+    return { short: 'Netzwerkfehler beim Laden',
+      detail: 'Das Krypto-Modul war nicht erreichbar. Prüfe deine Verbindung und lade die Verschlüsselung erneut.', raw };
+  }
+  return { short: raw.slice(0, 80),
+    detail: 'Unerwarteter Fehler bei der Verschlüsselung: ' + raw, raw };
+}
+
+/** Verschlüsselung erneut initialisieren (Knopf in den Einstellungen). */
+function reloadCrypto() {
+  if (cryptoLoading) return;
+  toast('Verschlüsselung wird geladen …');
+  cryptoInitPromise = initCrypto();
 }
 
 /** Crypto-Zustand beim Logout verwerfen: Engine schließen, Pickle-Key und
@@ -5947,6 +6006,8 @@ recoveryBtn.addEventListener('click', () => {
   recoveryForm.classList.toggle('hidden');
   if (!recoveryForm.classList.contains('hidden')) recoveryInput.focus();
 });
+
+if (cryptoReloadBtn) cryptoReloadBtn.addEventListener('click', reloadCrypto);
 
 decryptBannerBtn.addEventListener('click', openRecoveryKeyEntry);
 

@@ -1146,6 +1146,17 @@ html.force-mobile .settings-header {
   line-height: 1.5;
 }
 
+.crypto-error-detail {
+  margin-top: 6px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger, #ff3b30) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff3b30) 35%, transparent);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
 .ghost-btn {
   display: inline-flex;
   align-items: center;
