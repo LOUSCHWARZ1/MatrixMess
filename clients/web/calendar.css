@@ -501,3 +501,74 @@ input.mm-cal-input[type="datetime-local"] {
   }
   .mm-cal-card { max-width: 100%; }
 }
+
+/* ---- Kalender einbinden: Abos, Import, Status ---- */
+.mm-cal-toolbar { flex-wrap: wrap; }
+.mm-cal-export-btn.primary {
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+  border-color: transparent;
+}
+.mm-cal-export-btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.mm-cal-feedback {
+  min-height: 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin: -4px 0 6px;
+  flex-shrink: 0;
+}
+.mm-cal-feedback:empty { display: none; }
+.mm-cal-subform {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.mm-cal-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+}
+.mm-cal-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.mm-cal-subform-actions { display: flex; justify-content: flex-end; }
+.mm-cal-subhint { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.mm-cal-feeds { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; flex-shrink: 0; }
+.mm-cal-feeds:empty { display: none; }
+.mm-cal-feed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+.mm-cal-feed-info { flex: 1; min-width: 0; }
+.mm-cal-feed-name { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-cal-feed-status { font-size: 12px; color: var(--text-secondary); }
+.mm-cal-feed-status.error { color: var(--danger, #ff3b30); }
+.mm-cal-feed-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.mm-cal-feed-btn:hover { background: var(--hover); color: var(--text); }
+.mm-cal-feed-btn.danger:hover { color: var(--danger, #ff3b30); }
+.mm-cal-entry-feed { opacity: .92; }
