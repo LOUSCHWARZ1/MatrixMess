@@ -2382,6 +2382,16 @@ function openSpaceMenu(sp, anchor) {
     placePopover(pop, anchor);
   });
 
+  // Reihenfolge der eigenen Bereiche: expliziter Weg über Buttons
+  // (Ziehen des Bereichskopfs geht zusätzlich). Menü bleibt offen,
+  // damit sich mehrere Schritte hintereinander machen lassen.
+  addItem('chevron-up', 'Nach oben', () => {
+    spaces.moveCustomSpace(sp.id, -1);
+  });
+  addItem('chevron-down', 'Nach unten', () => {
+    spaces.moveCustomSpace(sp.id, 1);
+  });
+
   let confirming = false;
   addItem('trash', 'Bereich löschen', (btn) => {
     if (!confirming) {
@@ -2486,6 +2496,7 @@ async function leaveRoom(roomId) {
 }
 
 let draggedRoomId = null;
+let draggedSpaceId = null;   // gezogener Bereichskopf (Neuanordnung)
 let draggedSectionKey = null;
 
 function attachRoomDrag(item, room, sectionKey) {
@@ -2659,6 +2670,44 @@ function appendNavSection(key, opts, title, roomsArr, emptyText) {
     header.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       openSpaceMenu(o.sp, header);
+    });
+
+    // Bereichskopf ziehen = eigenen Bereich neu anordnen (zusätzlich zu den
+    // expliziten "Nach oben/unten"-Buttons im Menü).
+    header.draggable = true;
+    header.addEventListener('dragstart', (e) => {
+      draggedSpaceId = o.sp.id;
+      draggedRoomId = null;
+      header.classList.add('dragging');
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', o.sp.id); } catch (err) { /* */ }
+    });
+    header.addEventListener('dragend', () => {
+      draggedSpaceId = null;
+      header.classList.remove('dragging');
+      document.querySelectorAll('.nav-section-header.drop-before, .nav-section-header.drop-after')
+        .forEach((n) => n.classList.remove('drop-before', 'drop-after'));
+    });
+    header.addEventListener('dragover', (e) => {
+      if (!draggedSpaceId || draggedSpaceId === o.sp.id) return;
+      e.preventDefault();
+      const r = header.getBoundingClientRect();
+      const after = (e.clientY - r.top) > r.height / 2;
+      header.classList.toggle('drop-after', after);
+      header.classList.toggle('drop-before', !after);
+    });
+    header.addEventListener('drop', (e) => {
+      if (!draggedSpaceId) return;
+      e.preventDefault();
+      const after = header.classList.contains('drop-after');
+      header.classList.remove('drop-before', 'drop-after');
+      const ids = spaces.getSpacesList().filter((s) => s.kind === 'custom').map((s) => s.id);
+      let beforeId = o.sp.id;
+      if (after) {
+        const i = ids.indexOf(o.sp.id);
+        beforeId = i >= 0 && i + 1 < ids.length ? ids[i + 1] : '__ende__'; // unbekannt = ans Ende
+      }
+      spaces.moveCustomSpace(draggedSpaceId, { beforeId });
+      draggedSpaceId = null;
     });
   }
 
