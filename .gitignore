@@ -31,3 +31,6 @@ clients/android/local.properties
 .idea/
 .vscode/
 *.swp
+
+# npm
+package-lock.json

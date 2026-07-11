@@ -1,0 +1,17 @@
+{
+  "name": "matrixmess",
+  "version": "0.10.2",
+  "private": true,
+  "description": "Sicherer Matrix-Messenger mit Bereichen, Kalender, Anrufen und E2EE (Web/iOS/Android/Desktop).",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0",
+    "jsdom": "^25.0.0",
+    "vitest": "^2.1.0"
+  }
+}
