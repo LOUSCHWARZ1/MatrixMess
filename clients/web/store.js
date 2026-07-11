@@ -6,8 +6,8 @@
  * dem Main-Thread zu verarbeiten (P0 der UX-Analyse).
  *
  * Export-API:
- *   loadRoomCache(userId)  -> Promise<{rooms: object[], savedAt: number}|null>
- *   saveRoomCache(userId, roomsArray) -> Promise<void>   (roomsArray bereits serialisiert)
+ *   loadRoomCache(userId)  -> Promise<{rooms: object[], syncToken: string|null, savedAt: number}|null>
+ *   saveRoomCache(userId, roomsArray, syncToken) -> Promise<void>   (roomsArray bereits serialisiert)
  *   clearRoomCache(userId) -> Promise<void>
  *   serializeRoom(room)    -> plain object (Maps -> Arrays, Events gekappt)
  *   deserializeRoom(obj)   -> room-Objekt mit rekonstruierten Maps/Indizes
@@ -196,10 +196,13 @@ export async function loadRoomCache(userId) {
   }
 }
 
-export async function saveRoomCache(userId, roomsArray) {
+export async function saveRoomCache(userId, roomsArray, syncToken) {
   if (!userId || typeof indexedDB === 'undefined') return;
   try {
-    await idbPut('rooms:' + userId, { rooms: roomsArray, savedAt: Date.now() });
+    // syncToken gehört ZUM Raumbestand: Beim Restore wird der Sync exakt ab
+    // diesem Token fortgesetzt – so entstehen keine Lücken zwischen (debounced)
+    // Cache-Stand und (sofort gespeichertem) localStorage-Token.
+    await idbPut('rooms:' + userId, { rooms: roomsArray, syncToken: syncToken || null, savedAt: Date.now() });
   } catch (e) {
     console.warn('[store] Raum-Cache konnte nicht gespeichert werden:', e);
   }
