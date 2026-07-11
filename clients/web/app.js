@@ -52,6 +52,7 @@ import {
 } from './store.js';
 import * as calls from './calls.js';
 import * as notify from './notify.js';
+import * as secretstore from './secretstore.js';
 
 // Clickjacking-Schutz: GitHub Pages kann kein frame-ancestors als HTTP-Header
 // senden (Meta-CSP ignoriert die Direktive) - Framebusting als Best-Effort.
@@ -928,23 +929,50 @@ function onVerificationChange(view) {
  * Session & API
  * ====================================================================== */
 
-function loadSession() {
+/**
+ * Session laden. Der Access-Token liegt NICHT im Klartext in localStorage,
+ * sondern verschlüsselt im secretstore (nicht-extrahierbarer WebCrypto-Key).
+ * In localStorage stehen nur die unkritischen Metadaten (baseUrl/userId/
+ * deviceId). Migriert alte Klartext-Sessions einmalig.
+ */
+async function loadSession() {
+  let meta = null;
   try {
     const raw = localStorage.getItem(LS_SESSION);
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    if (s && s.baseUrl && s.userId && s.accessToken) return s;
-  } catch (e) { /* ignorieren */ }
-  return null;
+    if (raw) meta = JSON.parse(raw);
+  } catch (e) { /* */ }
+  if (!meta || !meta.baseUrl || !meta.userId) return null;
+
+  // Migration: alte Session mit Klartext-Token → Token auslagern, strippen.
+  if (meta.accessToken) {
+    const migrated = {
+      baseUrl: meta.baseUrl, userId: meta.userId,
+      accessToken: meta.accessToken, deviceId: meta.deviceId || null,
+    };
+    try { await secretstore.setSecret('accessToken', meta.accessToken); } catch (e) { /* */ }
+    try { localStorage.setItem(LS_SESSION, JSON.stringify(stripToken(migrated))); } catch (e) { /* */ }
+    return migrated;
+  }
+
+  const token = await secretstore.getSecret('accessToken');
+  if (!token) return null; // Metadaten ohne Token: keine gültige Session
+  return { baseUrl: meta.baseUrl, userId: meta.userId, accessToken: token, deviceId: meta.deviceId || null };
 }
 
-function saveSession(s) {
-  localStorage.setItem(LS_SESSION, JSON.stringify(s));
+function stripToken(s) {
+  return { baseUrl: s.baseUrl, userId: s.userId, deviceId: s.deviceId || null };
+}
+
+async function saveSession(s) {
+  // Nur Metadaten in localStorage; Token verschlüsselt in den secretstore.
+  try { localStorage.setItem(LS_SESSION, JSON.stringify(stripToken(s))); } catch (e) { /* */ }
+  try { await secretstore.setSecret('accessToken', s.accessToken); } catch (e) { /* */ }
 }
 
 function clearSessionStorage() {
   localStorage.removeItem(LS_SESSION);
   localStorage.removeItem(LS_SYNC_TOKEN);
+  secretstore.removeSecret('accessToken').catch(() => {});
 }
 
 class ApiError extends Error {
@@ -1417,6 +1445,7 @@ function clearCryptoState(userId, deviceId) {
   pendingDecryption.clear();
   memberCache.clear();
   try { localStorage.removeItem(LS_CRYPTO_PICKLE); } catch (e) { /* */ }
+  secretstore.removeSecret('cryptoPickle').catch(() => {});
   if (userId) {
     try { localStorage.removeItem('mm.recoveryKey.' + userId); } catch (e) { /* */ }
   }
@@ -5806,7 +5835,7 @@ loginForm.addEventListener('submit', async (e) => {
       : await doLogin(loginHs.value, loginUser.value, loginPass.value);
     clearSessionStorage(); // alten Sync-Token eines früheren Kontos verwerfen
     session = newSession;
-    saveSession(session);
+    await saveSession(session);
     showApp();
     cryptoInitPromise = initCrypto();
     syncLoop();
@@ -6314,7 +6343,7 @@ recoveryForm.addEventListener('submit', async (e) => {
  * Start
  * ====================================================================== */
 
-function init() {
+async function init() {
   mountStaticIcons();
   initSidebarCollapsed();
   initRoomInfo({
@@ -6324,7 +6353,8 @@ function init() {
   });
   applySettings();
   autoGrowComposer();
-  session = loadSession();
+  // Session-Token wird verschlüsselt entschlüsselt geladen (async).
+  try { session = await loadSession(); } catch (e) { session = null; }
   if (session) {
     showApp();
     cryptoInitPromise = initCrypto();
