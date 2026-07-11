@@ -184,6 +184,7 @@ let editTarget = null;       // eigenes Event-Objekt im Bearbeiten-Modus
 
 let unreadMarkerEventId = null; // "N neue Nachrichten"-Trenner beim Raumöffnen
 let unreadMarkerCount = 0;
+const expandedSysGroups = new Set(); // aufgeklappte System-Ereignis-Gruppen
 
 let unseenCount = 0;         // neue fremde Nachrichten, während nicht am Ende gescrollt
 let typingSent = false;
@@ -1205,6 +1206,7 @@ function getRoom(roomId) {
       explicitName: null,
       avatarMxc: null,
       topic: null,
+      canonicalAlias: null,
       heroes: [],
       members: new Map(),       // userId -> { displayname, avatarUrl }
       lastEventTs: 0,
@@ -1232,13 +1234,43 @@ function getRoom(roomId) {
   return room;
 }
 
+/** Räume, für die schon einmal Mitglieder zwecks Namensfindung geladen wurden. */
+const nameFetchAttempted = new Set();
+
 function roomDisplayName(room) {
   if (room.explicitName) return room.explicitName;
   if (room.heroes && room.heroes.length) {
     const names = room.heroes.slice(0, 3).map((uid) => memberName(room, uid));
     let label = names.join(', ');
     if (room.heroes.length > 3) label += ' …';
-    return label || 'Unbenannter Raum';
+    if (label) return label;
+  }
+  // Ohne Namen und Heroes (z. B. Bridge-Bot-Räume, lazy-geladene Syncs):
+  // aus den bekannten anderen Mitgliedern benennen – wie Element es tut.
+  if (session) {
+    const others = [];
+    for (const [uid, m] of room.members) {
+      if (uid === session.userId) continue;
+      if (m && m.membership && m.membership !== 'join' && m.membership !== 'invite') continue;
+      others.push((m && m.displayname) || String(uid).replace(/^@/, '').split(':')[0]);
+      if (others.length >= 3) break;
+    }
+    if (others.length) {
+      let label = others.join(', ');
+      if (room.members.size - 1 > 3) label += ' …';
+      return label;
+    }
+  }
+  if (room.canonicalAlias) return room.canonicalAlias;
+  // Immer noch nichts: Mitglieder einmalig nachladen und dann neu rendern.
+  if (room.roomId && !nameFetchAttempted.has(room.roomId)) {
+    nameFetchAttempted.add(room.roomId);
+    getJoinedMembers(room.roomId)
+      .then(() => {
+        renderRoomList();
+        if (activeRoomId === room.roomId) renderChatHeader(room);
+      })
+      .catch(() => {});
   }
   return 'Unbenannter Raum';
 }
@@ -1320,6 +1352,9 @@ function applyStateEvent(room, ev) {
     case 'm.room.topic':
       room.topic = c.topic || null;
       break;
+    case 'm.room.canonical_alias':
+      room.canonicalAlias = c.alias || null;
+      break;
     case 'm.room.encryption':
       room.isEncrypted = true;
       break;
@@ -1339,6 +1374,69 @@ function applyStateEvent(room, ev) {
       }
       break;
   }
+}
+
+/* ---------- System-Ereignisse (Beitritte, Namensänderungen …) ---------- */
+
+/** Menschlicher Text für ein State-Event in der Timeline (oder null). */
+function systemEventText(room, ev) {
+  const c = ev.content || {};
+  const prev = (ev.unsigned && ev.unsigned.prev_content) || {};
+  const who = memberName(room, ev.sender);
+  switch (ev.type) {
+    case 'm.room.member': {
+      const target = ev.state_key ? memberName(room, ev.state_key) : '';
+      const m = c.membership;
+      if (m === 'join') {
+        if (prev.membership === 'join') {
+          if (c.displayname && c.displayname !== prev.displayname) {
+            return prev.displayname
+              ? prev.displayname + ' heißt jetzt ' + c.displayname
+              : target + ' hat den Anzeigenamen gesetzt';
+          }
+          if (c.avatar_url !== prev.avatar_url) return target + ' hat das Profilbild geändert';
+          return null;
+        }
+        return target + ' ist beigetreten';
+      }
+      if (m === 'leave') {
+        if (ev.state_key === ev.sender) return target + ' hat den Raum verlassen';
+        return who + ' hat ' + target + ' entfernt';
+      }
+      if (m === 'invite') return who + ' hat ' + target + ' eingeladen';
+      if (m === 'ban') return who + ' hat ' + target + ' gebannt';
+      return null;
+    }
+    case 'm.room.name':
+      return c.name ? who + ' hat den Raum in „' + c.name + '“ umbenannt' : who + ' hat den Raumnamen entfernt';
+    case 'm.room.topic': return who + ' hat das Thema geändert';
+    case 'm.room.avatar': return who + ' hat das Raumbild geändert';
+    case 'm.room.create': return who + ' hat den Raum erstellt';
+    case 'm.room.encryption': return 'Ende-zu-Ende-Verschlüsselung wurde aktiviert';
+    default: return null;
+  }
+}
+
+/** Baut ein kompaktes Systemzeilen-Objekt für die Timeline (oder null). */
+function makeSystemEventObject(room, ev) {
+  if (!ev.event_id || room.eventIndex.has(ev.event_id)) return null;
+  const text = systemEventText(room, ev);
+  if (!text) return null;
+  return {
+    eventId: ev.event_id,
+    sender: ev.sender,
+    type: 'mm.system',
+    content: { text },
+    ts: ev.origin_server_ts || 0,
+    editedBody: null,
+    redacted: false,
+    reactions: new Map(),
+    pending: false,
+    failed: false,
+    txnId: null,
+    encrypted: false,
+    rawContent: null,
+  };
 }
 
 /* ---------- Timeline-Events ---------- */
@@ -1683,7 +1781,17 @@ async function processSync(data, generation) {
       room.prevBatch = tl.prev_batch;
     }
     for (const ev of tl.events || []) {
-      if (ev.state_key !== undefined) applyStateEvent(room, ev);
+      if (ev.state_key !== undefined) {
+        applyStateEvent(room, ev);
+        updateBridgeHint(room, ev.sender); // Bridge-Erkennung auch über Member-Events
+        // Sichtbare Systemzeile (Beitritt, Umbenennung …) in die Timeline.
+        const sys = makeSystemEventObject(room, ev);
+        if (sys) {
+          room.events.push(sys);
+          room.eventIndex.set(sys.eventId, sys);
+        }
+        continue;
+      }
       applyTimelineEvent(room, ev, true);
     }
 
@@ -2830,11 +2938,37 @@ function renderRoomList() {
   roomListEl.textContent = '';
   const all = sortRooms([...rooms.values()]);
 
-  // Suche: flache, gefilterte Liste über alle Räume.
+  // Suche: gefilterte Chat-Liste + Nachrichten-Treffer über alle Räume.
   if (query) {
     const hits = all.filter((r) => roomDisplayName(r).toLowerCase().includes(query));
     for (const room of hits) roomListEl.appendChild(buildRoomItem(room));
     if (!hits.length) roomListEl.appendChild(el('div', 'room-list-empty', 'Keine Räume gefunden'));
+
+    if (query.length >= 2) {
+      scheduleGlobalMessageSearch(query);
+      if (globalMsgCache.query === query && globalMsgCache.items) {
+        if (globalMsgCache.items.length) {
+          roomListEl.appendChild(el('div', 'room-menu-label search-msgs-label', 'Nachrichten'));
+          for (const hit of globalMsgCache.items) {
+            const room = rooms.get(hit.roomId);
+            if (!room) continue;
+            const row = el('button', 'mm-pick-row global-hit');
+            row.type = 'button';
+            const main = el('div', 'search-hit-main');
+            main.appendChild(el('div', 'search-hit-head',
+              roomDisplayName(room) + ' · ' + memberName(room, hit.sender) + ' · ' + listTimeLabel(hit.ts)));
+            main.appendChild(el('div', 'search-hit-body', truncate(hit.body, 100)));
+            row.appendChild(main);
+            row.addEventListener('click', () => { jumpToMessage(room, hit.eventId); });
+            roomListEl.appendChild(row);
+          }
+        } else {
+          roomListEl.appendChild(el('div', 'nav-section-empty', 'Keine Nachrichten gefunden'));
+        }
+      } else {
+        roomListEl.appendChild(el('div', 'nav-section-empty', 'Suche in Nachrichten …'));
+      }
+    }
     return;
   }
 
@@ -3008,6 +3142,7 @@ function openRoom(roomId) {
         if (!uev.eventId || uev.pending) continue;
         if (session && uev.sender === session.userId) continue;
         if (isGameMove(uev)) continue; // unsichtbar – Trenner würde nie gerendert
+        if (uev.type === 'mm.system') continue; // Systemzeilen zählen nicht als ungelesen
         unreadMarkerEventId = uev.eventId;
         n++;
       }
@@ -3121,6 +3256,23 @@ function renderTimeline(mode) {
     older.disabled = room.paginating;
     older.addEventListener('click', () => loadOlderMessages(room));
     timelineEl.appendChild(older);
+  } else {
+    // Anfang der Unterhaltung erreicht: Raum-Intro wie in Element.
+    const intro = el('div', 'room-intro');
+    const av = el('div', 'room-intro-avatar');
+    setAvatar(av, room.roomId, roomDisplayName(room), roomAvatarMxc(room));
+    intro.appendChild(av);
+    intro.appendChild(el('div', 'room-intro-name', roomDisplayName(room)));
+    intro.appendChild(el('div', 'room-intro-text', room.isDirect
+      ? 'Dies ist der Beginn deiner Direktnachrichten mit „' + roomDisplayName(room) + '“.'
+      : 'Dies ist der Beginn von „' + roomDisplayName(room) + '“.'));
+    const encLine = el('div', 'room-intro-enc' + (room.isEncrypted ? ' enc' : ''));
+    encLine.appendChild(icon(room.isEncrypted ? 'lock' : 'unlock', 12));
+    encLine.appendChild(el('span', null, room.isEncrypted
+      ? 'Ende-zu-Ende-verschlüsselt'
+      : 'Nicht Ende-zu-Ende-verschlüsselt – üblich bei Bridge-Chats (WhatsApp & Co. laufen über deinen Server).'));
+    intro.appendChild(encLine);
+    timelineEl.appendChild(intro);
   }
 
   // Spielstände deterministisch aus allen Events berechnen (idempotent).
@@ -3159,6 +3311,51 @@ function renderTimeline(mode) {
         unreadMarkerCount > 1 ? unreadMarkerCount + ' neue Nachrichten' : 'Neue Nachricht'));
       timelineEl.appendChild(div);
       prevEv = null; // Trenner bricht die Gruppierung
+    }
+
+    // System-Ereignisse (Beitritte, Umbenennungen …): grau, zentriert;
+    // längere Folgen eingeklappt als "N Ereignisse · ausklappen" (Element-Muster).
+    if (ev.type === 'mm.system') {
+      let j = i;
+      while (j + 1 < vis.length && vis[j + 1].type === 'mm.system' &&
+             startOfDay(vis[j + 1].ts) === startOfDay(ev.ts)) j++;
+      const run = vis.slice(i, j + 1);
+      const groupKey = ev.eventId || String(ev.ts);
+      const expanded = expandedSysGroups.has(groupKey);
+      if (run.length >= 3 && !expanded) {
+        const row = el('div', 'sys-row sys-collapsed');
+        row.appendChild(el('span', null, run.length + ' Raum-Ereignisse'));
+        const btn = el('button', 'sys-toggle', 'ausklappen');
+        btn.type = 'button';
+        btn.addEventListener('click', () => {
+          expandedSysGroups.add(groupKey);
+          renderTimeline('keep');
+        });
+        row.appendChild(btn);
+        timelineEl.appendChild(row);
+      } else {
+        for (const sysEv of run) {
+          const row = el('div', 'sys-row');
+          row.appendChild(el('span', null, (sysEv.content && sysEv.content.text) || ''));
+          timelineEl.appendChild(row);
+        }
+        if (run.length >= 3) {
+          const row = el('div', 'sys-row');
+          const btn = el('button', 'sys-toggle', 'einklappen');
+          btn.type = 'button';
+          btn.addEventListener('click', () => {
+            expandedSysGroups.delete(groupKey);
+            renderTimeline('keep');
+          });
+          row.appendChild(btn);
+          timelineEl.appendChild(row);
+        }
+      }
+      i = j;
+      // Pseudo-prevEv: Tageslogik behält den richtigen Tag, aber die nächste
+      // Nachricht beginnt eine neue Gruppe (sender null matcht nie).
+      prevEv = { ts: run[run.length - 1].ts, sender: null };
+      continue;
     }
 
     // Spielstart als interaktive Spielkarte rendern (bricht die Gruppe).
@@ -3681,6 +3878,11 @@ async function loadOlderMessages(room) {
     for (let ev of chunk) {
       if (ev.state_key !== undefined) {
         applyStateEvent(room, ev);
+        const sys = makeSystemEventObject(room, ev);
+        if (sys) {
+          older.push(sys);
+          room.eventIndex.set(sys.eventId, sys);
+        }
         continue;
       }
       ev = await maybeDecryptRaw(room.roomId, ev);
@@ -3864,6 +4066,77 @@ async function jumpToMessage(room, eventId) {
 /** Event-IDs sicher in Attribut-Selektoren verwenden. */
 function cssAttrEscape(s) {
   return String(s).replace(/["\\]/g, '\\$&');
+}
+
+/* ---------- Globale Nachrichtensuche (Seitenleisten-Suchfeld) ---------- */
+
+let globalMsgCache = { query: '', items: null, pending: false };
+let globalMsgTimer = null;
+let globalMsgSeq = 0;
+
+function scheduleGlobalMessageSearch(query) {
+  if (globalMsgCache.query === query && (globalMsgCache.items || globalMsgCache.pending)) return;
+  clearTimeout(globalMsgTimer);
+  globalMsgTimer = setTimeout(() => { runGlobalMessageSearch(query); }, 350);
+}
+
+/** Sucht Nachrichten über ALLE Chats: serverseitig (/search) plus lokal über
+ *  die entschlüsselten Timelines (deckt E2EE- und Bridge-Räume ab). */
+async function runGlobalMessageSearch(query) {
+  const seq = ++globalMsgSeq;
+  globalMsgCache = { query, items: null, pending: true };
+  const items = [];
+  const seen = new Set();
+  try {
+    const res = await api('POST', '/_matrix/client/v3/search', {
+      search_categories: {
+        room_events: {
+          search_term: query,
+          keys: ['content.body'],
+          order_by: 'recent',
+          filter: { limit: 20 },
+          event_context: { before_limit: 0, after_limit: 0, include_profile: false },
+        },
+      },
+    });
+    const rr = res && res.search_categories && res.search_categories.room_events;
+    for (const r of (rr && rr.results) || []) {
+      const evr = r && r.result;
+      if (!evr || !evr.event_id || !evr.room_id) continue;
+      if (!evr.content || typeof evr.content.body !== 'string') continue;
+      if (!rooms.has(evr.room_id)) continue;
+      seen.add(evr.event_id);
+      items.push({
+        roomId: evr.room_id,
+        eventId: evr.event_id,
+        sender: evr.sender,
+        ts: evr.origin_server_ts || 0,
+        body: evr.content.body,
+      });
+    }
+  } catch (e) { /* Server ohne /search: nur lokale Treffer */ }
+
+  const needle = query.toLowerCase();
+  outer:
+  for (const room of rooms.values()) {
+    for (let i = room.events.length - 1; i >= 0; i--) {
+      const ev = room.events[i];
+      if (ev.pending || ev.redacted || !ev.eventId || ev.type !== 'm.room.message') continue;
+      if (seen.has(ev.eventId)) continue;
+      const body = (ev.editedBody !== null && ev.editedBody !== undefined)
+        ? ev.editedBody : ((ev.content && ev.content.body) || '');
+      if (String(body).toLowerCase().includes(needle)) {
+        seen.add(ev.eventId);
+        items.push({ roomId: room.roomId, eventId: ev.eventId, sender: ev.sender, ts: ev.ts, body: String(body) });
+        if (items.length >= 60) break outer;
+      }
+    }
+  }
+
+  items.sort((a, b) => b.ts - a.ts);
+  if (seq !== globalMsgSeq) return;
+  globalMsgCache = { query, items: items.slice(0, 30), pending: false };
+  if (roomSearchEl.value.trim().toLowerCase() === query) renderRoomList();
 }
 
 /** Such-Popover im Chat-Header. */

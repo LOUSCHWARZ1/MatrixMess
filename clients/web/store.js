@@ -77,6 +77,21 @@ function idbDelete(key) {
  *  (Event auslassen statt Klartext speichern). */
 function serializeEvent(ev, encryptedRoom) {
   if (encryptedRoom) {
+    // Systemzeilen stammen aus State-Events – die sind nie verschlüsselt
+    // und dürfen als Klartext in den Cache.
+    if (ev.type === 'mm.system') {
+      return {
+        eventId: ev.eventId || null,
+        sender: ev.sender || null,
+        type: 'mm.system',
+        content: ev.content || {},
+        ts: ev.ts || 0,
+        editedBody: null,
+        redacted: false,
+        encrypted: false,
+        reactions: [],
+      };
+    }
     const cipher = ev.type === 'm.room.encrypted' ? ev.content : ev.rawContent;
     if (!cipher || typeof cipher !== 'object') return null;
     return {
@@ -178,6 +193,7 @@ export function serializeRoom(room) {
     explicitName: room.explicitName || null,
     avatarMxc: room.avatarMxc || null,
     topic: room.topic || null,
+    canonicalAlias: room.canonicalAlias || null,
     heroes: room.heroes || [],
     members,
     lastEventTs: room.lastEventTs || 0,
@@ -209,6 +225,7 @@ export function deserializeRoom(obj) {
     explicitName: obj.explicitName || null,
     avatarMxc: obj.avatarMxc || null,
     topic: obj.topic || null,
+    canonicalAlias: obj.canonicalAlias || null,
     heroes: obj.heroes || [],
     members: new Map(obj.members || []),
     lastEventTs: obj.lastEventTs || 0,
