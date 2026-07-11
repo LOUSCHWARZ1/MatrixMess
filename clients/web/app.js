@@ -50,6 +50,7 @@ import {
   serializeRoom,
   deserializeRoom,
 } from './store.js';
+import * as calls from './calls.js';
 
 // Clickjacking-Schutz: GitHub Pages kann kein frame-ancestors als HTTP-Header
 // senden (Meta-CSP ignoriert die Direktive) - Framebusting als Best-Effort.
@@ -144,11 +145,24 @@ const verifyClose = $('#verify-close');
 const verifyBody = $('#verify-body');
 const sessionsListEl = $('#sessions-list');
 const sessionsRefreshBtn = $('#sessions-refresh');
+const profileAvatarBtn = $('#profile-avatar');
+const profileAvatarInput = $('#profile-avatar-input');
+const profileNameInput = $('#profile-name');
+const profileSaveBtn = $('#profile-save');
+const passwordBtn = $('#password-btn');
+const passwordForm = $('#password-form');
+const passwordCurrent = $('#password-current');
+const passwordNew = $('#password-new');
+const passwordNew2 = $('#password-new2');
+const passwordLogoutDevices = $('#password-logout-devices');
+const passwordSubmit = $('#password-submit');
 const sidebarEl = $('#sidebar');
 const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
 const calendarBadge = $('#calendar-badge');
 const eventBtn = $('#event-btn');
+const callAudioBtn = $('#call-audio-btn');
+const callVideoBtn = $('#call-video-btn');
 const chatSearchBtn = $('#chatsearch-btn');
 const roomInfoBtn = $('#roominfo-btn');
 const composerEl = $('#composer');
@@ -439,6 +453,124 @@ function renderSettingsPanel() {
   settingsUserEl.textContent = session ? `Angemeldet als ${session.userId}` : '';
   renderCryptoSection();
   renderSessions();
+  renderProfile();
+}
+
+/* ---------- Profil (Anzeigename & Avatar) ---------- */
+
+let profileData = { displayname: '', avatarMxc: null };
+
+async function loadProfile() {
+  if (!session) return;
+  try {
+    const res = await api('GET', `/_matrix/client/v3/profile/${enc(session.userId)}`);
+    profileData.displayname = (res && res.displayname) || '';
+    profileData.avatarMxc = (res && res.avatar_url) || null;
+  } catch (e) { /* Profil optional */ }
+  renderProfile();
+}
+
+function renderProfile() {
+  if (!profileNameInput || !session) return;
+  if (document.activeElement !== profileNameInput) {
+    profileNameInput.value = profileData.displayname || '';
+  }
+  if (profileAvatarBtn) {
+    const name = profileData.displayname || session.userId;
+    setAvatar(profileAvatarBtn, session.userId, name, profileData.avatarMxc);
+  }
+}
+
+async function saveProfileName() {
+  if (!session) return;
+  const name = profileNameInput.value.trim();
+  if (name === profileData.displayname) { toast('Keine Änderung.'); return; }
+  profileSaveBtn.disabled = true;
+  try {
+    await api('PUT', `/_matrix/client/v3/profile/${enc(session.userId)}/displayname`, { displayname: name });
+    profileData.displayname = name;
+    // Eigenen Namen in allen Räumen aktualisieren, damit die UI stimmt.
+    for (const room of rooms.values()) {
+      const m = room.members.get(session.userId);
+      if (m) m.displayname = name;
+    }
+    renderRoomList();
+    toast('Profil gespeichert.');
+  } catch (err) {
+    toast('Speichern fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+  } finally {
+    profileSaveBtn.disabled = false;
+  }
+}
+
+async function uploadAvatar(file) {
+  if (!session || !file) return;
+  toast('Profilbild wird hochgeladen …');
+  try {
+    const contentUri = await uploadMedia(file, file.name || 'avatar', file.type || 'image/jpeg');
+    await api('PUT', `/_matrix/client/v3/profile/${enc(session.userId)}/avatar_url`, { avatar_url: contentUri });
+    profileData.avatarMxc = contentUri;
+    for (const room of rooms.values()) {
+      const m = room.members.get(session.userId);
+      if (m) m.avatarUrl = contentUri;
+    }
+    renderProfile();
+    renderRoomList();
+    toast('Profilbild aktualisiert.');
+  } catch (err) {
+    toast('Upload fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+  }
+}
+
+/* ---------- Passwort ändern (mit User-Interactive-Auth) ---------- */
+
+async function changePassword() {
+  if (!session) return;
+  const cur = passwordCurrent.value;
+  const nw = passwordNew.value;
+  if (nw.length < 8) { toast('Neues Passwort: mindestens 8 Zeichen.'); return; }
+  if (nw !== passwordNew2.value) { toast('Die neuen Passwörter stimmen nicht überein.'); return; }
+  passwordSubmit.disabled = true;
+  const body = {
+    new_password: nw,
+    logout_devices: !!passwordLogoutDevices.checked,
+    auth: {
+      type: 'm.login.password',
+      identifier: { type: 'm.id.user', user: session.userId },
+      password: cur,
+      // session wird bei Bedarf im zweiten Versuch ergänzt
+    },
+  };
+  try {
+    await api('POST', '/_matrix/client/v3/account/password', body);
+    finishPasswordChange();
+  } catch (err) {
+    if (err && err.status === 401 && err.data && err.data.session) {
+      body.auth.session = err.data.session;
+      try {
+        await api('POST', '/_matrix/client/v3/account/password', body);
+        finishPasswordChange();
+        return;
+      } catch (err2) {
+        toast('Passwort ändern fehlgeschlagen: ' +
+          (err2 && err2.errcode === 'M_FORBIDDEN' ? 'Aktuelles Passwort falsch' : ((err2 && err2.message) || 'Fehler')));
+      }
+    } else if (err && err.errcode === 'M_FORBIDDEN') {
+      toast('Aktuelles Passwort falsch.');
+    } else {
+      toast('Passwort ändern fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+    }
+    passwordSubmit.disabled = false;
+  }
+}
+
+function finishPasswordChange() {
+  passwordSubmit.disabled = false;
+  passwordCurrent.value = '';
+  passwordNew.value = '';
+  passwordNew2.value = '';
+  passwordForm.classList.add('hidden');
+  toast('Passwort geändert.');
 }
 
 function renderCryptoSection() {
@@ -773,6 +905,17 @@ function putRoomAccountData(roomId, type, content) {
 /* ---------- Feature-Module: Bereiche (Spaces) & Kalender ---------- */
 
 async function initFeatureModules() {
+  calls.initCalls({
+    sendCallEvent: sendTypedRoomEvent,
+    getRoom: (id) => rooms.get(id),
+    roomDisplayName,
+    roomAvatarMxc,
+    setAvatar,
+    icon,
+    el,
+    toast,
+    getUserId: () => (session ? session.userId : null),
+  });
   try {
     await spaces.initSpaces({
       getRooms: () => [...rooms.values()],
@@ -1304,6 +1447,22 @@ async function encryptForRoom(room, content) {
     encrypted['m.relates_to'] = content['m.relates_to'];
   }
   return encrypted;
+}
+
+/** Sendet ein beliebig typisiertes Raum-Event (z. B. m.call.*), in E2EE-
+ *  Räumen verschlüsselt mit korrektem Event-Typ. */
+async function sendTypedRoomEvent(roomId, type, content) {
+  const room = rooms.get(roomId);
+  let sendType = type;
+  let sendContent = content;
+  if (room && room.isEncrypted && cryptoReady && cryptoEngine) {
+    const members = await getJoinedMembers(roomId);
+    sendContent = await cryptoEngine.encryptEvent(roomId, type, content, members);
+    sendType = 'm.room.encrypted';
+  }
+  return api('PUT',
+    `/_matrix/client/v3/rooms/${enc(roomId)}/send/${enc(sendType)}/${enc(txnId())}`,
+    sendContent);
 }
 
 /* ========================================================================
@@ -2096,6 +2255,12 @@ async function processSync(data, generation) {
           room.events.push(sys);
           room.eventIndex.set(sys.eventId, sys);
         }
+        continue;
+      }
+      // Anruf-Signalisierung (m.call.*): nur live behandeln, nicht im
+      // Initial-Sync (sonst klingeln alte Invites aus dem Verlauf erneut).
+      if (typeof ev.type === 'string' && ev.type.indexOf('m.call.') === 0) {
+        if (!isInitial) { try { calls.handleCallEvent(roomId, ev); } catch (e) { /* */ } }
         continue;
       }
       applyTimelineEvent(room, ev, true);
@@ -5304,6 +5469,9 @@ chatSearchBtn.addEventListener('click', (e) => {
   openChatSearch();
 });
 
+callAudioBtn.addEventListener('click', () => { if (activeRoomId) calls.startCall(activeRoomId, false); });
+callVideoBtn.addEventListener('click', () => { if (activeRoomId) calls.startCall(activeRoomId, true); });
+
 calendarBtn.addEventListener('click', () => {
   document.body.appendChild(renderCalendarPanel());
 });
@@ -5459,6 +5627,8 @@ function mountStaticIcons() {
   // Buttons, bei denen das Icon VOR bestehendem Inhalt (Badge/Label) sitzt:
   calendarBtn.insertBefore(icon('calendar', 20), calendarBtn.firstChild);
   eventBtn.insertBefore(icon('calendar-plus', 15), eventBtn.firstChild);
+  callAudioBtn.appendChild(icon('phone', 20));
+  callVideoBtn.appendChild(icon('video', 20));
   chatSearchBtn.appendChild(icon('search', 20));
   roomInfoBtn.appendChild(icon('user', 20));
   scrollDownBtn.insertBefore(icon('arrow-down', 20), scrollDownBtn.firstChild);
@@ -5624,9 +5794,23 @@ settingsBtn.addEventListener('click', () => {
   renderSettingsPanel();
   settingsOverlay.classList.remove('hidden');
   loadSessions(); // frische Geräteliste beim Öffnen holen
+  loadProfile();  // aktuellen Anzeigenamen/Avatar holen
 });
 
 if (sessionsRefreshBtn) sessionsRefreshBtn.addEventListener('click', () => loadSessions());
+
+if (profileSaveBtn) profileSaveBtn.addEventListener('click', saveProfileName);
+if (profileAvatarBtn) profileAvatarBtn.addEventListener('click', () => profileAvatarInput.click());
+if (profileAvatarInput) profileAvatarInput.addEventListener('change', () => {
+  const f = profileAvatarInput.files && profileAvatarInput.files[0];
+  profileAvatarInput.value = '';
+  if (f) uploadAvatar(f);
+});
+if (passwordBtn) passwordBtn.addEventListener('click', () => {
+  passwordForm.classList.toggle('hidden');
+  if (!passwordForm.classList.contains('hidden')) passwordCurrent.focus();
+});
+if (passwordForm) passwordForm.addEventListener('submit', (e) => { e.preventDefault(); changePassword(); });
 
 /* Mobile Bottom-Tab-Bar: Icons montieren und verdrahten. */
 (function initTabBar() {

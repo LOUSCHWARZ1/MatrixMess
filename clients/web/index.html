@@ -87,6 +87,8 @@
             <div id="chat-sub"></div>
           </div>
           <button id="event-btn" class="header-pill-btn" title="Termin planen" aria-label="Termin planen"><span>Termin</span></button>
+          <button id="call-audio-btn" class="icon-btn" title="Sprachanruf" aria-label="Sprachanruf starten"></button>
+          <button id="call-video-btn" class="icon-btn" title="Videoanruf" aria-label="Videoanruf starten"></button>
           <button id="chatsearch-btn" class="icon-btn" title="Im Chat suchen" aria-label="Im Chat suchen"></button>
           <button id="roominfo-btn" class="icon-btn" title="Rauminfo" aria-label="Rauminfo anzeigen"></button>
         </header>
@@ -166,6 +168,21 @@
         <h3 id="settings-title">Einstellungen</h3>
         <button id="settings-close" class="icon-btn" title="Schließen" aria-label="Einstellungen schließen"></button>
       </header>
+
+      <section class="settings-section">
+        <h4>Profil</h4>
+        <div class="profile-row">
+          <button id="profile-avatar" class="profile-avatar" type="button" title="Profilbild ändern" aria-label="Profilbild ändern"></button>
+          <div class="profile-fields">
+            <label class="field">
+              <span>Anzeigename</span>
+              <input id="profile-name" type="text" maxlength="80" autocomplete="name" spellcheck="false">
+            </label>
+            <button id="profile-save" class="primary-btn" type="button">Profil speichern</button>
+          </div>
+        </div>
+        <input id="profile-avatar-input" type="file" accept="image/*" class="hidden" tabindex="-1" aria-hidden="true">
+      </section>
 
       <section class="settings-section">
         <h4>Erscheinungsbild</h4>
@@ -261,8 +278,29 @@
       <section class="settings-section">
         <h4>Konto</h4>
         <div id="settings-user" class="settings-user"></div>
+        <button id="password-btn" class="ghost-btn" type="button">Passwort ändern</button>
+        <form id="password-form" class="hidden">
+          <label class="field">
+            <span>Aktuelles Passwort</span>
+            <input id="password-current" type="password" autocomplete="current-password">
+          </label>
+          <label class="field">
+            <span>Neues Passwort</span>
+            <input id="password-new" type="password" autocomplete="new-password">
+          </label>
+          <label class="field">
+            <span>Neues Passwort wiederholen</span>
+            <input id="password-new2" type="password" autocomplete="new-password">
+          </label>
+          <label class="toggle-row">
+            <span>Andere Sitzungen abmelden</span>
+            <input id="password-logout-devices" type="checkbox" checked>
+            <span class="toggle-slider" aria-hidden="true"></span>
+          </label>
+          <button id="password-submit" class="primary-btn" type="submit">Passwort ändern</button>
+        </form>
         <button id="logout-btn" class="danger-btn">Abmelden</button>
-        <div class="settings-version">MatrixMess Web · Version 0.8.0</div>
+        <div class="settings-version">MatrixMess Web · Version 0.9.0</div>
       </section>
     </div>
   </div>

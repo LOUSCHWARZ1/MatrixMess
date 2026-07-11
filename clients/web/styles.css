@@ -1122,6 +1122,34 @@ input, textarea {
 }
 .ghost-btn:hover { background: var(--hover); }
 
+/* Profil (Avatar + Name) */
+.profile-row { display: flex; align-items: center; gap: 14px; }
+.profile-avatar {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 26px;
+  font-weight: 700;
+  position: relative;
+  cursor: pointer;
+}
+.profile-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.profile-avatar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+.profile-avatar:hover::after { opacity: 1; }
+.profile-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+
 /* Sitzungen & Geräte */
 #sessions-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .sessions-empty { font-size: 13px; color: var(--text-secondary); padding: 8px 2px; }
@@ -1502,6 +1530,111 @@ input, textarea {
   border-radius: 8px;
 }
 .login-toggle:hover { text-decoration: underline; }
+
+/* ===================== Anrufe ===================== */
+.call-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  background: #0b0b10;
+  color: #fff;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.call-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+#call-remote-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+  display: none;
+}
+#call-remote-video.active { display: block; }
+.call-poster {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.call-poster.hidden { display: none; }
+.call-avatar {
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 42px;
+  font-weight: 700;
+  position: relative;
+  box-shadow: 0 0 0 6px rgba(255,255,255,.06);
+}
+.call-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.call-name { font-size: 22px; font-weight: 700; }
+.call-status { font-size: 15px; color: rgba(255,255,255,.65); font-variant-numeric: tabular-nums; }
+.call-local {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 128px;
+  max-width: 34vw;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 14px;
+  background: #1a1622;
+  border: 1px solid rgba(255,255,255,.15);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  z-index: 2;
+  transform: scaleX(-1); /* Spiegel wie bei jeder Kamera-Vorschau */
+}
+.call-overlay:not(.video) .call-local { display: none; }
+.call-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 22px 16px calc(22px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(0,0,0,.5), transparent);
+}
+.call-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,.14);
+  color: #fff;
+  transition: background .15s ease, transform .08s ease;
+}
+.call-btn:hover { background: rgba(255,255,255,.24); }
+.call-btn:active { transform: scale(.94); }
+.call-btn.off { background: #fff; color: #17131f; }
+.call-btn.hangup { background: #ff3b30; }
+.call-btn.hangup:hover { background: #ff5147; }
+.call-btn.accept { background: #34c759; }
+.call-btn.accept:hover { background: #46d269; }
+@media (max-width: 500px) {
+  .call-btn { width: 54px; height: 54px; }
+  .call-bar { gap: 14px; }
+}
 
 /* Raum-Intro am Anfang der Unterhaltung (Element-Muster) */
 .room-intro {
