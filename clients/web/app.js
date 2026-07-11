@@ -4,7 +4,7 @@
 
 /* ---------- Feature-Module ---------- */
 
-import { icon } from './icons.js';
+import { icon, ICON_NAMES } from './icons.js';
 import * as spaces from './spaces.js';
 import {
   renderAudioPlayer,
@@ -173,6 +173,7 @@ let activeRoomId = null;
 let syncToken = null;
 let syncAbort = null;
 let syncGeneration = 0;
+let syncedOnce = false;      // erster Sync abgeschlossen? (Skeleton vs. echter Leerzustand)
 
 let replyTarget = null;      // Event-Objekt, auf das geantwortet wird
 let editTarget = null;       // eigenes Event-Objekt im Bearbeiten-Modus
@@ -221,6 +222,25 @@ function toast(msg) {
     t.style.transition = 'opacity 0.3s ease';
     setTimeout(() => t.remove(), 320);
   }, 3200);
+}
+
+/** Toast mit Aktions-Button (z. B. „Rückgängig“) – bleibt etwas länger stehen. */
+function toastAction(msg, actionLabel, onAction) {
+  const t = el('div', 'toast toast-action');
+  t.appendChild(el('span', 'toast-action-text', msg));
+  const btn = el('button', 'toast-action-btn', actionLabel);
+  btn.type = 'button';
+  btn.addEventListener('click', () => {
+    try { onAction(); } catch (e) { /* */ }
+    t.remove();
+  });
+  t.appendChild(btn);
+  toastContainer.appendChild(t);
+  setTimeout(() => {
+    t.style.opacity = '0';
+    t.style.transition = 'opacity 0.3s ease';
+    setTimeout(() => t.remove(), 320);
+  }, 6000);
 }
 
 function formatBytes(bytes) {
@@ -777,6 +797,7 @@ function hardLogout() {
   directRoomIds = new Set();
   activeRoomId = null;
   syncToken = null;
+  syncedOnce = false;
   replyTarget = null;
   editTarget = null;
   for (const url of createdObjectURLs) {
@@ -894,6 +915,7 @@ async function maybeDecryptRaw(roomId, ev) {
       type: decrypted.type,
       content: decrypted.content || {},
       __mmEncrypted: true,
+      __mmRawContent: ev.content || null,
     });
   }
   markPendingDecryption(roomId, ev);
@@ -960,13 +982,14 @@ async function retryPendingDecryption() {
         // Unerwarteter Typ (z. B. verschlüsselte Reaktion anderer Clients):
         // Platzhalter entfernen und regulär verarbeiten.
         removeEventObject(room, eventId);
-        applyTimelineEvent(room, Object.assign({ __mmEncrypted: true }, merged), false);
+        applyTimelineEvent(room, Object.assign({ __mmEncrypted: true, __mmRawContent: raw.content || null }, merged), false);
       } else {
         const obj = room.eventIndex.get(eventId);
         if (obj) {
           obj.type = merged.type;
           obj.content = merged.content;
           obj.encrypted = true;
+          obj.rawContent = raw.content || null;
           updateRoomPreview(room, obj);
         }
       }
@@ -1291,6 +1314,9 @@ function makeEventObject(ev) {
     failed: false,
     txnId: null,
     encrypted: !!ev.__mmEncrypted, // wurde aus m.room.encrypted entschlüsselt
+    // Original-Ciphertext (nur bei entschlüsselten Events gesetzt): erlaubt
+    // dem Raum-Cache, statt Klartext den Ciphertext zu persistieren.
+    rawContent: ev.__mmRawContent || null,
   };
 }
 
@@ -1515,9 +1541,14 @@ async function syncLoop() {
         if (generation !== syncGeneration || !session) return;
       }
 
-      await processSync(data);
+      await processSync(data, generation);
+      // processSync gibt den Main-Thread zwischendurch frei: Zustand nach dem
+      // await erneut prüfen, sonst würde z. B. nach einem Logout der gerade
+      // entfernte Sync-Token wieder in localStorage geschrieben.
+      if (generation !== syncGeneration || !session) return;
       syncToken = data.next_batch;
       try { localStorage.setItem(LS_SYNC_TOKEN, syncToken); } catch (e) { /* */ }
+      syncedOnce = true;
       backoff = 1000;
       // P0: Raumbestand lokal sichern, damit der nächste Start aus dem Cache kommt.
       scheduleRoomCacheSave();
@@ -1549,7 +1580,7 @@ async function syncLoop() {
   }
 }
 
-async function processSync(data) {
+async function processSync(data, generation) {
   const changed = new Set();
   newRemoteInActive = 0;
   // Initial-Sync (viele Räume auf einmal): Verarbeitung in Häppchen, damit der
@@ -1582,7 +1613,7 @@ async function processSync(data) {
     // Eingaben), statt minutenlang zu blockieren.
     if (isInitial && ++processedRooms % 8 === 0) {
       await new Promise((r) => setTimeout(r, 0));
-      if (!session) return;
+      if (!session || (generation !== undefined && generation !== syncGeneration)) return;
     }
     const room = getRoom(roomId);
 
@@ -1755,6 +1786,11 @@ function buildRoomItem(room) {
   item.appendChild(more);
 
   item.addEventListener('click', () => openRoom(room.roomId));
+  // Rechtsklick = gleiches Menü wie der ⋯-Button (schneller Weg zu Bereichen).
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    openRoomMenu(more, room);
+  });
   return item;
 }
 
@@ -1771,17 +1807,9 @@ function closeRoomMenu() {
 
 function openRoomMenu(anchor, room) {
   closeRoomMenu();
+  closePopover();
   const menu = el('div', 'room-menu');
   menu.setAttribute('role', 'menu');
-
-  const assign = el('button', 'room-menu-item');
-  assign.appendChild(icon('folder', 16));
-  assign.appendChild(el('span', null, 'Zu Bereichen zuordnen'));
-  assign.addEventListener('click', () => {
-    closeRoomMenu();
-    spaces.openAssignDialog(room.roomId, roomDisplayName(room));
-  });
-  menu.appendChild(assign);
 
   const isFav = spaces.isFavorite(room.roomId);
   const fav = el('button', 'room-menu-item');
@@ -1792,6 +1820,52 @@ function openRoomMenu(anchor, room) {
     spaces.toggleFavorite(room.roomId); // onChange rendert die Liste neu
   });
   menu.appendChild(fav);
+
+  // --- Bereichs-Checkliste: direkt im Menü an-/abwählen, ohne Modal.
+  // Das Menü bleibt beim Umschalten offen, damit sich mehrere Bereiche in
+  // einem Zug zuordnen lassen (UX-Analyse Kap. 5).
+  const assignable = spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge');
+  const autoBridge = spaces.detectBridge(room);
+  if (assignable.length) menu.appendChild(el('div', 'room-menu-label', 'Bereiche'));
+  for (const sp of assignable) {
+    const row = el('button', 'room-menu-item room-menu-check');
+    const isAuto = sp.kind === 'bridge' && autoBridge === sp.id.slice(7);
+    const box = el('span', 'room-menu-checkbox');
+    const applyState = () => {
+      const on = isAuto || spaces.getRoomSpaceIds(room.roomId).includes(sp.id);
+      box.textContent = '';
+      if (on) box.appendChild(icon('check', 12));
+      box.classList.toggle('checked', on);
+    };
+    applyState();
+    row.appendChild(box);
+    row.appendChild(spaceIconNode(sp, 15));
+    row.appendChild(el('span', 'room-menu-check-title', sp.title));
+    if (isAuto) {
+      row.classList.add('disabled');
+      row.title = 'Automatisch über die Bridge zugeordnet';
+      row.appendChild(el('span', 'room-menu-hint', 'automatisch'));
+    } else {
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const cur = spaces.getRoomSpaceIds(room.roomId);
+        if (cur.includes(sp.id)) spaces.setRoomSpaceIds(room.roomId, cur.filter((x) => x !== sp.id));
+        else spaces.setRoomSpaceIds(room.roomId, cur.concat(sp.id));
+        applyState();
+      });
+    }
+    menu.appendChild(row);
+  }
+
+  const create = el('button', 'room-menu-item');
+  create.appendChild(icon('plus', 16));
+  create.appendChild(el('span', null, 'Neuer Bereich…'));
+  create.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeRoomMenu();
+    openSpaceCreate(anchor, { assignRoomId: room.roomId });
+  });
+  menu.appendChild(create);
 
   document.body.appendChild(menu);
   const rect = anchor.getBoundingClientRect();
@@ -1805,7 +1879,292 @@ function openRoomMenu(anchor, room) {
 
 document.addEventListener('click', (e) => {
   if (roomMenuEl && !roomMenuEl.contains(e.target)) closeRoomMenu();
+  if (popoverEl && !popoverEl.contains(e.target)) closePopover();
 });
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeRoomMenu(); closePopover(); }
+});
+
+/* ---------- Leichte, verankerte Popover (kein Modal) ---------- */
+
+let popoverEl = null;
+
+function closePopover() {
+  if (popoverEl) { popoverEl.remove(); popoverEl = null; }
+}
+
+function openPopoverShell(className) {
+  closePopover();
+  closeRoomMenu();
+  const pop = el('div', 'mm-popover' + (className ? ' ' + className : ''));
+  pop.setAttribute('role', 'dialog');
+  document.body.appendChild(pop);
+  popoverEl = pop;
+  return pop;
+}
+
+function placePopover(pop, anchor) {
+  let x = 16;
+  let y = 80;
+  const rect = anchor && anchor.isConnected ? anchor.getBoundingClientRect() : null;
+  if (rect) {
+    x = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 8);
+    y = rect.bottom + 6;
+    if (y + pop.offsetHeight > window.innerHeight - 8) {
+      y = Math.max(8, rect.top - pop.offsetHeight - 6);
+    }
+  }
+  pop.style.left = Math.max(8, x) + 'px';
+  pop.style.top = Math.max(8, y) + 'px';
+}
+
+/** Bereichs-Icon: SVG-Name aus icons.js bevorzugt, Legacy-Emoji als Fallback. */
+function spaceIconNode(sp, size) {
+  const name = sp && typeof sp.icon === 'string' ? sp.icon : '';
+  if (name && ICON_NAMES.includes(name)) return icon(name, size);
+  return el('span', 'nav-section-emoji', name || '');
+}
+
+/** Icon-Auswahlzeile (SVG-Presets) für Bereichs-Erstellung/-Bearbeitung. */
+function buildIconRow(selected, onPick) {
+  const row = el('div', 'mm-pop-icons');
+  for (const name of spaces.SPACE_ICON_PRESETS) {
+    const b = el('button', 'mm-pop-icon');
+    b.type = 'button';
+    b.title = name;
+    b.setAttribute('aria-label', 'Icon ' + name);
+    b.appendChild(icon(name, 18));
+    if (name === selected) b.classList.add('selected');
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      row.querySelectorAll('.mm-pop-icon').forEach((n) => n.classList.toggle('selected', n === b));
+      onPick(name);
+    });
+    row.appendChild(b);
+  }
+  return row;
+}
+
+/** Akzentfarben-Auswahlzeile für Bereiche. */
+function buildAccentRow(selectedId, onPick) {
+  const row = el('div', 'mm-pop-accents');
+  for (const a of spaces.SPACES_ACCENTS) {
+    const b = el('button', 'mm-pop-swatch');
+    b.type = 'button';
+    b.title = a.label;
+    b.setAttribute('aria-label', 'Akzentfarbe ' + a.label);
+    b.style.setProperty('--sw', a.css);
+    if (a.id === selectedId) b.classList.add('selected');
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      row.querySelectorAll('.mm-pop-swatch').forEach((n) => n.classList.toggle('selected', n === b));
+      onPick(a.id);
+    });
+    row.appendChild(b);
+  }
+  return row;
+}
+
+/** Inline-Erstellung eines Bereichs (Popover statt Modal, UX-Analyse Kap. 5). */
+function openSpaceCreate(anchor, opts) {
+  const o = opts || {};
+  const pop = openPopoverShell('space-create');
+  pop.appendChild(el('div', 'mm-pop-title', 'Neuer Bereich'));
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'mm-pop-input';
+  input.placeholder = 'Name, z. B. Familie';
+  input.maxLength = 40;
+  pop.appendChild(input);
+  let chosenIcon = 'folder';
+  let chosenAccent = 'violet';
+  pop.appendChild(buildIconRow(chosenIcon, (n) => { chosenIcon = n; }));
+  pop.appendChild(buildAccentRow(chosenAccent, (id) => { chosenAccent = id; }));
+  const actions = el('div', 'mm-pop-actions');
+  const cancel = el('button', 'mm-pop-btn', 'Abbrechen');
+  cancel.type = 'button';
+  cancel.addEventListener('click', (e) => { e.stopPropagation(); closePopover(); });
+  const create = el('button', 'mm-pop-btn primary', 'Erstellen');
+  create.type = 'button';
+  const doCreate = () => {
+    const title = input.value.trim();
+    if (!title) { input.focus(); return; }
+    const id = spaces.createCustomSpace({ title, icon: chosenIcon, accent: chosenAccent });
+    closePopover();
+    if (o.assignRoomId) {
+      const cur = spaces.getRoomSpaceIds(o.assignRoomId);
+      if (!cur.includes(id)) spaces.setRoomSpaceIds(o.assignRoomId, cur.concat(id));
+      toast('Bereich „' + title + '“ erstellt');
+    } else {
+      // Direkt in den Chat-Picker übergehen: Ein frisch erstellter, leerer
+      // Bereich ohne nächsten Schritt wirkt wie ein Fehlschlag.
+      requestAnimationFrame(() => {
+        const headerEl = roomListEl.querySelector('[data-navkey="sp:' + id + '"]');
+        openSpacePicker(id, title, headerEl);
+      });
+    }
+  };
+  create.addEventListener('click', (e) => { e.stopPropagation(); doCreate(); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doCreate(); } });
+  actions.appendChild(cancel);
+  actions.appendChild(create);
+  pop.appendChild(actions);
+  placePopover(pop, anchor);
+  input.focus();
+}
+
+/** Mehrfachauswahl-Picker mit Suche: Chats einem Bereich zuordnen. */
+function openSpacePicker(spaceId, title, anchor) {
+  const pop = openPopoverShell('space-picker');
+  pop.appendChild(el('div', 'mm-pop-title', 'Chats in „' + title + '“'));
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'mm-pop-input';
+  search.placeholder = 'Chats durchsuchen';
+  pop.appendChild(search);
+  const list = el('div', 'mm-pick-list');
+  pop.appendChild(list);
+  const bridgeId = spaceId.startsWith('bridge:') ? spaceId.slice(7) : null;
+
+  function renderPickList() {
+    list.textContent = '';
+    const q = search.value.trim().toLowerCase();
+    const all = sortRooms([...rooms.values()])
+      .filter((r) => !q || roomDisplayName(r).toLowerCase().includes(q));
+    for (const room of all) {
+      const name = roomDisplayName(room);
+      const row = el('button', 'mm-pick-row');
+      row.type = 'button';
+      const av = el('span', 'mm-pick-avatar');
+      setAvatar(av, room.roomId, name, roomAvatarMxc(room));
+      row.appendChild(av);
+      row.appendChild(el('span', 'mm-pick-name', name));
+      const isAuto = bridgeId && spaces.detectBridge(room) === bridgeId;
+      const box = el('span', 'room-menu-checkbox');
+      const applyState = () => {
+        const on = isAuto || spaces.getRoomSpaceIds(room.roomId).includes(spaceId);
+        box.textContent = '';
+        if (on) box.appendChild(icon('check', 12));
+        box.classList.toggle('checked', on);
+      };
+      applyState();
+      row.appendChild(box);
+      if (isAuto) {
+        row.classList.add('disabled');
+        row.title = 'Automatisch über die Bridge zugeordnet';
+      } else {
+        row.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const cur = spaces.getRoomSpaceIds(room.roomId);
+          if (cur.includes(spaceId)) spaces.setRoomSpaceIds(room.roomId, cur.filter((x) => x !== spaceId));
+          else spaces.setRoomSpaceIds(room.roomId, cur.concat(spaceId));
+          applyState();
+        });
+      }
+      list.appendChild(row);
+    }
+    if (!list.childNodes.length) {
+      list.appendChild(el('div', 'nav-section-empty', 'Keine Chats gefunden'));
+    }
+  }
+  renderPickList();
+  search.addEventListener('input', renderPickList);
+
+  const actions = el('div', 'mm-pop-actions');
+  const done = el('button', 'mm-pop-btn primary', 'Fertig');
+  done.type = 'button';
+  done.addEventListener('click', (e) => { e.stopPropagation(); closePopover(); });
+  actions.appendChild(done);
+  pop.appendChild(actions);
+  placePopover(pop, anchor);
+  search.focus();
+}
+
+/** Verwaltungs-Popover eines eigenen Bereichs (Rechtsklick / ⋯ am Kopf). */
+function openSpaceMenu(sp, anchor) {
+  const pop = openPopoverShell('space-menu');
+
+  const addItem = (iconName, label, fn, danger) => {
+    const b = el('button', 'room-menu-item' + (danger ? ' danger' : ''));
+    b.type = 'button';
+    b.appendChild(icon(iconName, 16));
+    b.appendChild(el('span', null, label));
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(b); });
+    pop.appendChild(b);
+    return b;
+  };
+
+  addItem('plus', 'Chats hinzufügen', () => {
+    closePopover();
+    openSpacePicker(sp.id, sp.title, anchor);
+  });
+  addItem('edit', 'Umbenennen', () => {
+    pop.textContent = '';
+    pop.appendChild(el('div', 'mm-pop-title', 'Bereich umbenennen'));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'mm-pop-input';
+    input.maxLength = 40;
+    input.value = sp.title;
+    pop.appendChild(input);
+    const actions = el('div', 'mm-pop-actions');
+    const cancel = el('button', 'mm-pop-btn', 'Abbrechen');
+    cancel.type = 'button';
+    cancel.addEventListener('click', (e) => { e.stopPropagation(); closePopover(); });
+    const save = el('button', 'mm-pop-btn primary', 'Speichern');
+    save.type = 'button';
+    const doSave = () => {
+      const title = input.value.trim();
+      if (!title) { input.focus(); return; }
+      spaces.updateCustomSpace(sp.id, { title });
+      closePopover();
+    };
+    save.addEventListener('click', (e) => { e.stopPropagation(); doSave(); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSave(); } });
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    pop.appendChild(actions);
+    placePopover(pop, anchor);
+    input.focus();
+    input.select();
+  });
+  addItem('sparkles', 'Icon & Farbe', () => {
+    pop.textContent = '';
+    pop.appendChild(el('div', 'mm-pop-title', 'Icon & Farbe'));
+    const accentId = (spaces.SPACES_ACCENTS.find((a) => a.css === sp.accent) || { id: 'violet' }).id;
+    // Live anwenden: updateCustomSpace rendert die Liste sofort neu.
+    pop.appendChild(buildIconRow(sp.icon, (name) => spaces.updateCustomSpace(sp.id, { icon: name })));
+    pop.appendChild(buildAccentRow(accentId, (id) => spaces.updateCustomSpace(sp.id, { accent: id })));
+    const actions = el('div', 'mm-pop-actions');
+    const done = el('button', 'mm-pop-btn primary', 'Fertig');
+    done.type = 'button';
+    done.addEventListener('click', (e) => { e.stopPropagation(); closePopover(); });
+    actions.appendChild(done);
+    pop.appendChild(actions);
+    placePopover(pop, anchor);
+  });
+
+  let confirming = false;
+  addItem('trash', 'Bereich löschen', (btn) => {
+    if (!confirming) {
+      confirming = true;
+      btn.replaceChildren(icon('trash', 16), el('span', null, 'Wirklich löschen?'));
+      setTimeout(() => {
+        if (btn.isConnected && confirming) {
+          confirming = false;
+          btn.replaceChildren(icon('trash', 16), el('span', null, 'Bereich löschen'));
+        }
+      }, 3000);
+      return;
+    }
+    closePopover();
+    spaces.deleteCustomSpace(sp.id);
+    toast('Bereich „' + sp.title + '“ gelöscht');
+  }, true);
+
+  placePopover(pop, anchor);
+}
 
 /* ---------- Manuelle Raumreihenfolge (Drag & Drop) ---------- */
 
@@ -1925,29 +2284,123 @@ function roomInSpaceId(room, id) {
   return assigned.includes(id);
 }
 
-function createBereichPrompt() {
-  const title = window.prompt('Name des neuen Bereichs:');
-  if (title && title.trim()) {
-    spaces.createCustomSpace({ title: title.trim() }); // onChange rendert neu
-  }
+/* ---------- Ansicht: Bereiche-Baum oder flache "Alle"-Liste ---------- */
+
+const LS_NAV_VIEW = 'mm.navView';
+let navView = 'groups';
+try { if (localStorage.getItem(LS_NAV_VIEW) === 'flat') navView = 'flat'; } catch (e) { /* */ }
+
+function setNavView(v) {
+  navView = v === 'flat' ? 'flat' : 'groups';
+  try { localStorage.setItem(LS_NAV_VIEW, navView); } catch (e) { /* */ }
+  renderRoomList();
 }
 
-/** Hängt eine einklappbare Navigations-Sektion an die Raumliste an. */
+/** Drop auf einen Bereichs-/Favoriten-Kopf: zuordnen + Rückgängig anbieten. */
+function assignRoomViaDrop(roomId, opts, title) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const name = roomDisplayName(room);
+  if (opts.favDrop) {
+    if (spaces.isFavorite(roomId)) return;
+    spaces.toggleFavorite(roomId);
+    toastAction('„' + name + '“ zu Favoriten hinzugefügt', 'Rückgängig', () => {
+      if (spaces.isFavorite(roomId)) spaces.toggleFavorite(roomId);
+    });
+    return;
+  }
+  const spaceId = opts.assignId;
+  if (!spaceId) return;
+  const cur = spaces.getRoomSpaceIds(roomId);
+  if (cur.includes(spaceId)) return;
+  spaces.setRoomSpaceIds(roomId, cur.concat(spaceId));
+  toastAction('„' + name + '“ zu „' + title + '“ hinzugefügt', 'Rückgängig', () => {
+    spaces.setRoomSpaceIds(roomId, spaces.getRoomSpaceIds(roomId).filter((x) => x !== spaceId));
+  });
+}
+
+/** Hängt eine einklappbare Navigations-Sektion an die Raumliste an.
+ *  opts: { iconName?, sp?, assignId?, menu?, favDrop? } */
 function appendNavSection(key, opts, title, roomsArr, emptyText) {
+  const o = opts || {};
   const collapsed = navCollapsed.has(key);
   const sec = el('div', 'nav-section');
   if (collapsed) sec.classList.add('collapsed');
 
-  const header = el('button', 'nav-section-header');
+  // Kein <button>: Der Kopf enthält eigene Buttons (+ / ⋯) – verschachtelte
+  // Buttons wären invalides HTML mit kaputtem Fokusverhalten.
+  const header = el('div', 'nav-section-header');
+  header.setAttribute('role', 'button');
+  header.tabIndex = 0;
+  header.dataset.navkey = key;
   header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   const chev = el('span', 'nav-section-chevron');
   chev.appendChild(icon('chevron-down', 12));
   header.appendChild(chev);
-  if (opts && opts.iconName) header.appendChild(icon(opts.iconName, 14));
-  else if (opts && opts.emoji) header.appendChild(el('span', 'nav-section-emoji', opts.emoji));
+  if (o.sp) header.appendChild(spaceIconNode(o.sp, 14));
+  else if (o.iconName) header.appendChild(icon(o.iconName, 14));
   header.appendChild(el('span', 'nav-section-label', title));
-  header.appendChild(el('span', 'nav-section-count', String(roomsArr.length)));
+
+  // Ungelesen-Zähler statt Chat-Anzahl (UX-Analyse Kap. 5): Die Zahl der
+  // Chats trägt keine Information – die Zahl ungelesener Nachrichten schon.
+  const unread = roomsArr.reduce((n, r) => n + (r.unread || 0), 0);
+  if (unread > 0) {
+    header.appendChild(el('span', 'nav-section-unread', unread > 99 ? '99+' : String(unread)));
+  }
+
+  if (o.assignId) {
+    const add = el('button', 'nav-section-btn');
+    add.type = 'button';
+    add.title = 'Chats hinzufügen';
+    add.setAttribute('aria-label', 'Chats zu „' + title + '“ hinzufügen');
+    add.appendChild(icon('plus', 14));
+    add.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSpacePicker(o.assignId, title, add);
+    });
+    header.appendChild(add);
+  }
+  if (o.menu && o.sp) {
+    const more = el('button', 'nav-section-btn');
+    more.type = 'button';
+    more.title = 'Bereich verwalten';
+    more.setAttribute('aria-label', 'Bereich verwalten: ' + title);
+    more.appendChild(icon('more-h', 14));
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSpaceMenu(o.sp, more);
+    });
+    header.appendChild(more);
+    header.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openSpaceMenu(o.sp, header);
+    });
+  }
+
   header.addEventListener('click', () => toggleNavCollapsed(key));
+  header.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleNavCollapsed(key); }
+  });
+
+  // Chat auf den Bereichskopf ziehen = zuordnen (mit Drop-Highlight + Undo).
+  if (o.assignId || o.favDrop) {
+    header.addEventListener('dragover', (e) => {
+      if (!draggedRoomId) return;
+      const dr = rooms.get(draggedRoomId);
+      if (!dr) return;
+      if (o.assignId && roomInSpaceId(dr, o.assignId)) return; // schon zugeordnet
+      if (o.favDrop && spaces.isFavorite(draggedRoomId)) return;
+      e.preventDefault();
+      header.classList.add('drop-target');
+    });
+    header.addEventListener('dragleave', () => header.classList.remove('drop-target'));
+    header.addEventListener('drop', (e) => {
+      e.preventDefault();
+      header.classList.remove('drop-target');
+      if (draggedRoomId) assignRoomViaDrop(draggedRoomId, o, title);
+    });
+  }
+
   sec.appendChild(header);
 
   const body = el('div', 'nav-section-body');
@@ -1966,7 +2419,6 @@ function appendNavSection(key, opts, title, roomsArr, emptyText) {
 function renderRoomList() {
   const query = roomSearchEl.value.trim().toLowerCase();
   roomListEl.textContent = '';
-  closeRoomMenu();
   const all = sortRooms([...rooms.values()]);
 
   // Suche: flache, gefilterte Liste über alle Räume.
@@ -1978,30 +2430,65 @@ function renderRoomList() {
   }
 
   if (!rooms.size) {
-    // Skeleton-Chatliste statt Textzeile: Platzhalter verbessern die
-    // wahrgenommene Geschwindigkeit messbar (UX-Analyse, Kap. 4).
-    for (let i = 0; i < 8; i++) {
-      const sk = el('div', 'room-skeleton');
-      sk.appendChild(el('div', 'sk-avatar'));
-      const lines = el('div', 'sk-lines');
-      lines.appendChild(el('div', 'sk-line sk-line-1'));
-      lines.appendChild(el('div', 'sk-line sk-line-2'));
-      sk.appendChild(lines);
-      roomListEl.appendChild(sk);
+    if (!syncedOnce) {
+      // Skeleton-Chatliste statt Textzeile: Platzhalter verbessern die
+      // wahrgenommene Geschwindigkeit messbar (UX-Analyse, Kap. 4).
+      for (let i = 0; i < 8; i++) {
+        const sk = el('div', 'room-skeleton');
+        sk.appendChild(el('div', 'sk-avatar'));
+        const lines = el('div', 'sk-lines');
+        lines.appendChild(el('div', 'sk-line sk-line-1'));
+        lines.appendChild(el('div', 'sk-line sk-line-2'));
+        sk.appendChild(lines);
+        roomListEl.appendChild(sk);
+      }
+    } else {
+      // Echter Leerzustand (Konto ohne Räume) – kein Dauer-Skeleton.
+      roomListEl.appendChild(el('div', 'room-list-empty',
+        'Noch keine Chats. Tritt einem Raum bei oder starte eine Unterhaltung auf einem anderen Gerät.'));
     }
     return;
   }
 
-  // Kopf "Bereiche" mit Erstellen-Button.
+  // Kopf: Ansicht-Umschalter (Bereiche/Alle) + Bereich-Erstellen.
   const head = el('div', 'nav-head');
-  head.appendChild(el('span', 'nav-head-title', 'Bereiche'));
+  const seg = el('div', 'nav-view-seg');
+  seg.setAttribute('role', 'tablist');
+  seg.setAttribute('aria-label', 'Listenansicht');
+  const mkSeg = (label, v) => {
+    const b = el('button', 'nav-view-btn', label);
+    b.type = 'button';
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', navView === v ? 'true' : 'false');
+    if (navView === v) b.classList.add('active');
+    b.addEventListener('click', () => setNavView(v));
+    return b;
+  };
+  seg.appendChild(mkSeg('Bereiche', 'groups'));
+  seg.appendChild(mkSeg('Alle', 'flat'));
+  head.appendChild(seg);
   const addBtn = el('button', 'nav-add-btn');
+  addBtn.type = 'button';
   addBtn.title = 'Bereich erstellen';
   addBtn.setAttribute('aria-label', 'Bereich erstellen');
   addBtn.appendChild(icon('plus', 16));
-  addBtn.addEventListener('click', createBereichPrompt);
+  addBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openSpaceCreate(addBtn);
+  });
   head.appendChild(addBtn);
   roomListEl.appendChild(head);
+
+  // "Alle"-Ansicht: eine flache Liste ohne Gruppierung (WhatsApp-Muster) –
+  // der schnellste Weg zu "wo ist der Chat?"; Bereiche bleiben einen Klick weit weg.
+  if (navView === 'flat') {
+    for (const room of all) {
+      const item = buildRoomItem(room);
+      attachRoomDrag(item, room, 'flat');
+      roomListEl.appendChild(item);
+    }
+    return;
+  }
 
   const spaceList = spaces.getSpacesList().filter((s) => s.kind === 'custom' || s.kind === 'bridge');
   const inAnySpace = (r) => spaceList.some((s) => roomInSpaceId(r, s.id));
@@ -2012,13 +2499,13 @@ function renderRoomList() {
   for (const sp of spaceList) {
     const roomsIn = all.filter((r) => roomInSpaceId(r, sp.id));
     if (!roomsIn.length && sp.kind !== 'custom') continue;
-    appendNavSection('sp:' + sp.id, { emoji: sp.icon }, sp.title, roomsIn,
-      'Noch keine Chats – über das ⋯-Menü eines Chats zuordnen');
+    appendNavSection('sp:' + sp.id, { sp, assignId: sp.id, menu: sp.kind === 'custom' }, sp.title, roomsIn,
+      'Noch keine Chats – per + hinzufügen oder Chats hierher ziehen');
   }
 
   // Favoriten (können zusätzlich in Bereichen liegen – Mehrfachzuordnung ist gewollt).
   const favorites = all.filter((r) => spaces.isFavorite(r.roomId));
-  if (favorites.length) appendNavSection('fav', { iconName: 'star-filled' }, 'Favoriten', favorites);
+  if (favorites.length) appendNavSection('fav', { iconName: 'star-filled', favDrop: true }, 'Favoriten', favorites);
 
   // Direktnachrichten (nicht in einem Bereich, keine Favoriten).
   const dms = all.filter((r) => r.isDirect && !inAnySpace(r) && !spaces.isFavorite(r.roomId));
@@ -3830,7 +4317,26 @@ async function restoreRoomsFromCache() {
     for (const obj of cached.rooms) {
       try {
         const room = deserializeRoom(obj);
-        if (room && room.roomId) rooms.set(room.roomId, room);
+        if (room && room.roomId) {
+          rooms.set(room.roomId, room);
+          // E2EE-Räume werden als Ciphertext gecacht: Platzhalter für die
+          // Entschlüsselung vormerken, damit sie nach der Krypto-Initialisierung
+          // über retryPendingDecryption() heilen (ein inkrementeller Sync
+          // liefert sie nicht erneut).
+          if (room.isEncrypted) {
+            for (const ev of room.events) {
+              if (ev.type === 'm.room.encrypted' && ev.eventId) {
+                markPendingDecryption(room.roomId, {
+                  event_id: ev.eventId,
+                  sender: ev.sender,
+                  type: 'm.room.encrypted',
+                  content: ev.content,
+                  origin_server_ts: ev.ts,
+                });
+              }
+            }
+          }
+        }
       } catch (e) { /* einzelnen kaputten Raum überspringen */ }
     }
     if (rooms.size) {
@@ -3844,6 +4350,12 @@ async function restoreRoomsFromCache() {
       } catch (e) { /* */ }
       renderRoomList();
       console.info('[store] ' + rooms.size + ' Räume aus dem Cache geladen');
+      // Gecachte Ciphertexte entschlüsseln, sobald die Engine bereit ist.
+      if (pendingDecryption.size && cryptoInitPromise) {
+        cryptoInitPromise
+          .then(() => retryPendingDecryption())
+          .catch(() => {});
+      }
     }
   } catch (e) {
     console.warn('Raum-Cache konnte nicht geladen werden:', e);
