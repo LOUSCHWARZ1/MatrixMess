@@ -489,7 +489,17 @@ input.mm-cal-input[type="datetime-local"] {
 /* ===================== Responsive ===================== */
 
 @media (max-width: 719px) {
-  .mm-cal-panel, .mm-cal-modal { max-width: 100%; }
+  /* Bildschirmfüllendes Sheet statt zentriertem Modal (kein großer Rand). */
+  .mm-cal-overlay { align-items: stretch; justify-content: stretch; padding: 0; }
+  .mm-cal-panel {
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 18px calc(18px + env(safe-area-inset-bottom, 0px));
+  }
+  .mm-cal-modal { max-width: 100%; }
 
   .mm-cal-entry {
     flex-wrap: wrap;
