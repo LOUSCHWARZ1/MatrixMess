@@ -1,0 +1,34 @@
+# Automatische Update-PRs fuer gepinnte Actions und Abhaengigkeiten.
+# github-actions: aktualisiert die auf Commit-SHA gepinnten Actions (inkl. # vX-Kommentar).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "CI"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "npm"
+    directory: "/clients/desktop"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "gradle"
+    directory: "/clients/android"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
