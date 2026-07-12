@@ -351,75 +351,86 @@ export function renderAudioPlayer({ getBlobUrl, durationMs, filename, isVoice } 
     }
   }
 
+  function attachAudioListeners(a) {
+    a.addEventListener('loadedmetadata', () => {
+      if (Number.isFinite(a.duration) && a.duration > 0) {
+        knownDurMs = a.duration * 1000;
+      }
+      if (pendingSeekRatio >= 0 && Number.isFinite(a.duration)) {
+        a.currentTime = pendingSeekRatio * a.duration;
+        pendingSeekRatio = -1;
+      }
+      updateUI();
+    });
+    a.addEventListener('timeupdate', () => { if (!dragging) updateUI(); });
+    a.addEventListener('play', () => { claimPlayback(stopFn); setIcon(true); });
+    a.addEventListener('pause', () => { releasePlayback(stopFn); setIcon(false); });
+    a.addEventListener('ended', () => {
+      releasePlayback(stopFn);
+      setIcon(false);
+      a.currentTime = 0;
+      updateUI();
+    });
+    a.addEventListener('error', () => {
+      // Vor dem Setzen der Blob-URL (leerer Aktivierungs-play()) ist ein
+      // "error" ohne Quelle bedeutungslos – ignorieren, sonst würde die
+      // Wiedergabe fälschlich als fehlgeschlagen markiert.
+      if (!blobUrl) return;
+      releasePlayback(stopFn);
+      setIcon(false);
+      showError('Fehler beim Abspielen');
+      try { a.removeAttribute('src'); } catch (e) { /* */ }
+      if (audio === a) audio = null;
+      revoke();
+    });
+    registerRemovalCleanup(root, () => {
+      try { a.pause(); } catch (e) { /* */ }
+      try { a.removeAttribute('src'); a.load(); } catch (e) { /* */ }
+      if (audio === a) audio = null;
+      releasePlayback(stopFn);
+      revoke();
+    });
+  }
+
   async function ensureLoadedAndPlay() {
     if (loading) return;
     loading = true;
     clearError();
     playBtn.replaceChildren(makeSpinner());
     playBtn.setAttribute('aria-label', 'Lädt …');
+
+    // WICHTIG für iOS Safari: Das <audio>-Element MUSS synchron innerhalb der
+    // Nutzergeste (Klick) erzeugt und "aktiviert" werden. Würde man erst das
+    // Blob laden (await) und danach das Element bauen + play() aufrufen, wäre
+    // die User-Activation verbraucht und iOS blockiert die Wiedergabe
+    // (NotAllowedError = kein Ton). Deshalb: Element sofort anlegen, mit einem
+    // leeren play()-Versuch die Aktivierung greifen, DANN die Blob-URL setzen.
+    audio = document.createElement('audio');
+    audio.preload = 'auto';
+    audio.playsInline = true;
+    audio.setAttribute('playsinline', '');
+    if ('preservesPitch' in audio) audio.preservesPitch = true;
+    audio.playbackRate = speed;
+    attachAudioListeners(audio);
+    const a = audio;
+    try { const p = a.play(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* */ }
+
     try {
       blobUrl = await getBlobUrl();
       if (typeof blobUrl !== 'string' || !blobUrl.startsWith('blob:')) {
         revoke();
         throw new Error('Keine gültige blob:-URL erhalten.');
       }
-      audio = document.createElement('audio');
-      audio.preload = 'metadata';
-      if ('preservesPitch' in audio) audio.preservesPitch = true;
-      audio.src = blobUrl;
-      audio.playbackRate = speed;
-
-      audio.addEventListener('loadedmetadata', () => {
-        if (Number.isFinite(audio.duration) && audio.duration > 0) {
-          knownDurMs = audio.duration * 1000;
-        }
-        if (pendingSeekRatio >= 0 && Number.isFinite(audio.duration)) {
-          audio.currentTime = pendingSeekRatio * audio.duration;
-          pendingSeekRatio = -1;
-        }
-        updateUI();
-      });
-      audio.addEventListener('timeupdate', () => { if (!dragging) updateUI(); });
-      audio.addEventListener('play', () => {
-        claimPlayback(stopFn);
-        setIcon(true);
-      });
-      audio.addEventListener('pause', () => {
-        releasePlayback(stopFn);
-        setIcon(false);
-      });
-      audio.addEventListener('ended', () => {
-        releasePlayback(stopFn);
-        setIcon(false);
-        audio.currentTime = 0;
-        updateUI();
-      });
-      audio.addEventListener('error', () => {
-        releasePlayback(stopFn);
-        setIcon(false);
-        showError('Fehler beim Abspielen');
-        try { audio.removeAttribute('src'); } catch (e) { /* */ }
-        audio = null;
-        revoke();
-      });
-
-      // Beim Entfernen aus dem DOM: pausieren + ObjectURL freigeben.
-      registerRemovalCleanup(root, () => {
-        if (audio) {
-          try { audio.pause(); } catch (e) { /* */ }
-          try { audio.removeAttribute('src'); audio.load(); } catch (e) { /* */ }
-          audio = null;
-        }
-        releasePlayback(stopFn);
-        revoke();
-      });
-
-      await audio.play();
+      if (audio !== a) return; // zwischenzeitlich entfernt/ersetzt
+      a.src = blobUrl;
+      a.playbackRate = speed;
+      await a.play();
     } catch (err) {
       setIcon(false);
-      if (audio === null) {
+      if (!blobUrl) {
         // Laden des Blobs schlug fehl
         showError('Laden fehlgeschlagen – erneut tippen');
+        if (audio === a) audio = null;
         revoke();
       }
     } finally {
@@ -545,34 +556,39 @@ export function renderVideoPlayer({ getBlobUrl, filename, width, height } = {}) 
     loading = true;
     playBadge.replaceChildren(makeSpinner());
     let blobUrl = null;
+
+    // Wie beim Audio-Player: Das <video>-Element synchron in der Nutzergeste
+    // anlegen und aktivieren, BEVOR das Blob geladen wird. Sonst blockiert iOS
+    // Safari die Wiedergabe mit Ton (Autoplay-Policy) und das Video bleibt
+    // stumm bzw. startet nicht.
+    const video = document.createElement('video');
+    video.controls = true;
+    video.autoplay = true;
+    video.setAttribute('playsinline', '');
+    video.playsInline = true;
+
+    const stopFn = () => { if (!video.paused) video.pause(); };
+    video.addEventListener('play', () => claimPlayback(stopFn));
+    video.addEventListener('pause', () => releasePlayback(stopFn));
+    video.addEventListener('ended', () => releasePlayback(stopFn));
+    video.addEventListener('error', () => {
+      releasePlayback(stopFn);
+      root.replaceChildren(el('div', 'mm-media-error', 'Video konnte nicht abgespielt werden.'));
+    });
+    registerRemovalCleanup(root, () => {
+      try { video.pause(); } catch (e) { /* */ }
+      try { video.removeAttribute('src'); video.load(); } catch (e) { /* */ }
+      releasePlayback(stopFn);
+      if (blobUrl) { try { URL.revokeObjectURL(blobUrl); } catch (e) { /* */ } }
+    });
+    try { const p0 = video.play(); if (p0 && p0.catch) p0.catch(() => {}); } catch (e) { /* */ }
+
     try {
       blobUrl = await getBlobUrl();
       if (typeof blobUrl !== 'string' || !blobUrl.startsWith('blob:')) {
         throw new Error('Keine gültige blob:-URL erhalten.');
       }
-      const video = document.createElement('video');
-      video.controls = true;
-      video.autoplay = true;
-      video.setAttribute('playsinline', '');
-      video.playsInline = true;
       video.src = blobUrl;
-
-      const stopFn = () => { if (!video.paused) video.pause(); };
-      video.addEventListener('play', () => claimPlayback(stopFn));
-      video.addEventListener('pause', () => releasePlayback(stopFn));
-      video.addEventListener('ended', () => releasePlayback(stopFn));
-      video.addEventListener('error', () => {
-        releasePlayback(stopFn);
-        root.replaceChildren(el('div', 'mm-media-error', 'Video konnte nicht abgespielt werden.'));
-      });
-
-      registerRemovalCleanup(root, () => {
-        try { video.pause(); } catch (e) { /* */ }
-        try { video.removeAttribute('src'); video.load(); } catch (e) { /* */ }
-        releasePlayback(stopFn);
-        if (blobUrl) { try { URL.revokeObjectURL(blobUrl); } catch (e) { /* */ } }
-      });
-
       root.replaceChildren(video);
       video.play().catch(() => { /* Autoplay evtl. blockiert – Controls sind da */ });
     } catch (err) {

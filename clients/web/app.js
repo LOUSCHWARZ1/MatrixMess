@@ -2553,8 +2553,19 @@ async function processSync(data, generation) {
     }
 
     const tl = jr.timeline || {};
-    if (tl.prev_batch && (room.events.length === 0 || tl.limited)) {
+    const hadEvents = room.events.length > 0;
+    if (tl.prev_batch && !hadEvents) {
+      // Erstkontakt mit dem Raum: Token für Rückwärts-Pagination ab Anfang.
       room.prevBatch = tl.prev_batch;
+    } else if (tl.limited && tl.prev_batch && hadEvents && !isInitial) {
+      // Limitierte Timeline auf einem Raum, den wir schon kennen = LÜCKE:
+      // zwischen dem letzten bekannten Event und diesem Batch fehlen
+      // Nachrichten (App war im Hintergrund/offline). prev_batch NICHT als
+      // neues Top-Token übernehmen (das würde die Rückwärts-Pagination am
+      // Anfang der Timeline kaputt machen); stattdessen die Lücke füllen,
+      // damit keine Nachrichten "mittendrin" fehlen.
+      await backfillLimitedGap(room, tl.prev_batch, generation);
+      if (!session || (generation !== undefined && generation !== syncGeneration)) return;
     }
     for (const ev of tl.events || []) {
       if (ev.state_key !== undefined) {
@@ -2745,14 +2756,25 @@ function maybeNotify(room, ev) {
   const mode = effectiveNotifyMode(room);
   if (mode === 'off') return;
   if (mode === 'mentions' && !eventMentionsMe(ev) && !eventMatchesKeyword(ev)) return;
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-  // Nur benachrichtigen, wenn der Tab nicht sichtbar ist (aktiver Tab: die
-  // Nachricht ist ohnehin sichtbar).
-  if (!document.hidden) return;
+
+  // Der aktuell geöffnete Raum braucht keine Benachrichtigung, solange der Tab
+  // sichtbar ist – die Nachricht steht ja schon in der Timeline.
+  if (!document.hidden && room.roomId === activeRoomId) return;
 
   const preview = settings.notifyPreview !== false;
+  const previewBody = preview ? truncate(eventDisplayBody(ev), 140) : 'Neue Nachricht';
+
+  // Tab sichtbar, aber ein ANDERER Raum: dezenter, klickbarer In-App-Hinweis.
+  // (System-Benachrichtigungen erscheinen bei sichtbarem Tab oft gar nicht.)
+  if (!document.hidden) {
+    showInAppNotice(room, preview ? previewBody : 'Neue Nachricht');
+    return;
+  }
+
+  // Tab im Hintergrund: System-/Service-Worker-Benachrichtigung.
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   const body = preview
-    ? memberName(room, ev.sender) + ': ' + truncate(eventDisplayBody(ev), 140)
+    ? memberName(room, ev.sender) + ': ' + previewBody
     : 'Neue Nachricht';
   notify.showNotification({
     title: roomDisplayName(room),
@@ -2761,6 +2783,39 @@ function maybeNotify(room, ev) {
     tag: 'mm-' + room.roomId,
     onClick: () => { try { window.focus(); } catch (e) { /* */ } openRoom(room.roomId); },
   });
+}
+
+/** Klickbarer In-App-Hinweis (Tab sichtbar, Nachricht in anderem Raum). Ersetzt
+ *  einen evtl. schon sichtbaren Hinweis desselben Raums, damit sich mehrere
+ *  Nachrichten nicht stapeln. */
+let inAppNoticeByRoom = new Map();
+function showInAppNotice(room, bodyText) {
+  const prev = inAppNoticeByRoom.get(room.roomId);
+  if (prev) { try { prev.remove(); } catch (e) { /* */ } }
+
+  const t = el('button', 'toast toast-notice');
+  t.type = 'button';
+  const av = el('span', 'toast-notice-avatar');
+  setAvatar(av, room.roomId, roomDisplayName(room), roomAvatarMxc(room));
+  t.appendChild(av);
+  const txt = el('span', 'toast-notice-text');
+  txt.appendChild(el('span', 'toast-notice-title', roomDisplayName(room)));
+  txt.appendChild(el('span', 'toast-notice-body', bodyText));
+  t.appendChild(txt);
+
+  let removed = false;
+  const kill = () => {
+    if (removed) return;
+    removed = true;
+    if (inAppNoticeByRoom.get(room.roomId) === t) inAppNoticeByRoom.delete(room.roomId);
+    t.style.opacity = '0';
+    t.style.transition = 'opacity 0.3s ease';
+    setTimeout(() => t.remove(), 320);
+  };
+  t.addEventListener('click', () => { const id = room.roomId; kill(); openRoom(id); });
+  toastContainer.appendChild(t);
+  inAppNoticeByRoom.set(room.roomId, t);
+  setTimeout(kill, 5000);
 }
 
 /** App-Badge (Taskleiste/Dock/Homescreen) mit der Gesamt-Ungelesen-Zahl. */
@@ -4868,6 +4923,49 @@ async function loadOlderMessages(room) {
   } finally {
     room.paginating = false;
     if (activeRoomId === room.roomId) renderTimeline('prepend');
+  }
+}
+
+/** Füllt eine Sync-Lücke: paginiert rückwärts ab `gapToken` (dem prev_batch
+ *  einer limitierten Timeline), bis ein bereits bekanntes Event erreicht ist,
+ *  und hängt die fehlenden Nachrichten in chronologischer Reihenfolge an das
+ *  Ende der bisherigen Timeline an – VOR dem neuen Batch, der im Anschluss
+ *  von processSync angefügt wird. So bleibt die Reihenfolge korrekt und es
+ *  fehlen keine Nachrichten "mittendrin". Bewusst begrenzt (max. 8 Seiten),
+ *  damit ein sehr großer Rückstand die Sync-Schleife nicht blockiert. */
+async function backfillLimitedGap(room, gapToken, generation) {
+  const collected = [];
+  let from = gapToken;
+  let reachedKnown = false;
+  for (let round = 0; round < 8 && from && !reachedKnown; round++) {
+    let res;
+    try {
+      res = await api('GET',
+        `/_matrix/client/v3/rooms/${enc(room.roomId)}/messages?dir=b&from=${enc(from)}&limit=50`);
+    } catch (e) { break; }
+    if (!session || (generation !== undefined && generation !== syncGeneration)) return;
+    for (const ev of res.state || []) applyStateEvent(room, ev);
+    const chunk = res.chunk || [];
+    if (chunk.length === 0) break;
+    for (const ev of chunk) {           // neu -> alt
+      if (ev.event_id && room.eventIndex.has(ev.event_id)) { reachedKnown = true; break; }
+      collected.push(ev);
+    }
+    from = res.end || null;
+    if (!res.end) break;
+  }
+  if (!collected.length) return;
+  collected.reverse();                  // jetzt alt -> neu
+  for (let ev of collected) {
+    if (ev.state_key !== undefined) {
+      applyStateEvent(room, ev);
+      const sys = makeSystemEventObject(room, ev);
+      if (sys) { room.events.push(sys); room.eventIndex.set(sys.eventId, sys); }
+      continue;
+    }
+    ev = await maybeDecryptRaw(room.roomId, ev);
+    if (!session || (generation !== undefined && generation !== syncGeneration)) return;
+    applyTimelineEvent(room, ev, false);
   }
 }
 
