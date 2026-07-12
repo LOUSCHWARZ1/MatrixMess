@@ -388,6 +388,9 @@ export async function initCalendar(opts) {
     sendEventMessage: typeof o.sendEventMessage === 'function' ? o.sendEventMessage : null,
     onChange: typeof o.onChange === 'function' ? o.onChange : null,
     getUserId: typeof o.getUserId === 'function' ? o.getUserId : null,
+    // Erlaubt der App, die Origin eines abonnierten Feeds fuer den Egress-Guard
+    // freizugeben (sonst wuerde der Guard den Feed-Abruf blockieren).
+    registerFeedOrigin: typeof o.registerFeedOrigin === 'function' ? o.registerFeedOrigin : null,
   };
 
   // 1) Lokaler Cache (sofort verfügbar)
@@ -709,7 +712,9 @@ function expandVevent(ve, windowStart, windowEnd, cap) {
       const weekAnchor = new Date(startDate);
       weekAnchor.setHours(0, 0, 0, 0);
       weekAnchor.setDate(weekAnchor.getDate() - weekAnchor.getDay()); // Sonntag
-      for (let w = 0; produced < count; w += interval) {
+      // Hartes Iterationslimit (wie im generischen Zweig): eine bosartige ICS mit
+      // uraltem DTSTART wuerde sonst zehntausende Wochen durchlaufen (UI-Freeze).
+      for (let w = 0, guard = 0; produced < count && guard < 4000; w += interval, guard++) {
         const base = new Date(weekAnchor);
         base.setDate(base.getDate() + w * 7);
         if (base.getTime() > Math.min(windowEnd, until)) break;
@@ -755,12 +760,18 @@ function expandVevent(ve, windowStart, windowEnd, cap) {
   return out;
 }
 
+const MAX_ICS_VEVENTS = 2000; // Obergrenze verarbeiteter VEVENTs (DoS-Schutz)
+
 /** Kompletten ICS-Text in Vorkommen im Standard-Fenster wandeln. */
 function icsToOccurrences(text, cap) {
   const windowStart = Date.now() - 24 * 3600 * 1000;
   const windowEnd = Date.now() + FEED_WINDOW_MS;
   const out = [];
-  for (const ve of parseIcs(text)) {
+  // Nur die ersten MAX_ICS_VEVENTS Ereignisse expandieren: begrenzt zusammen mit
+  // dem Per-Event-Iterationslimit die Gesamtarbeit, damit eine bosartige .ics den
+  // UI-Thread nicht einfrieren kann.
+  const events = parseIcs(text).slice(0, MAX_ICS_VEVENTS);
+  for (const ve of events) {
     for (const occ of expandVevent(ve, windowStart, windowEnd, cap - out.length)) {
       out.push(occ);
       if (out.length >= cap) return out;
@@ -795,6 +806,8 @@ function saveFeedCache() {
 /** Ein Abo abrufen und parsen; Fehler landen im Cache-Eintrag (UI zeigt sie). */
 async function refreshFeed(feed) {
   try {
+    // Origin des (vom Nutzer abonnierten) Feeds fuer den Egress-Guard freigeben.
+    if (hooks.registerFeedOrigin) { try { hooks.registerFeedOrigin(feed.url); } catch (e) { /* */ } }
     const res = await fetch(feed.url, {
       headers: { Accept: 'text/calendar, text/plain, */*' },
       redirect: 'follow',

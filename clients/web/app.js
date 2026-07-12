@@ -74,6 +74,59 @@ const LS_DRAFTS = 'mm.drafts';
 const LS_ROOM_ORDER = 'mm.roomOrder';
 const AD_ROOM_ORDER = 'io.matrixmess.roomorder';
 
+/* ---------- Egress-Allowlist (Defense-in-Depth gegen Exfiltration) ----------
+ * Die CSP muss connect-src 'https:' erlauben, weil der Homeserver frei waehlbar
+ * ist. Zusaetzlich begrenzt dieser JS-Guard fetch/XHR/sendBeacon auf: same-origin
+ * (App-Assets/WASM), die zur Laufzeit registrierten Homeserver-/Medien-Origins,
+ * abonnierte Kalender-Feeds und eine kleine statische Liste (YouTube-oEmbed).
+ * Falls je ein XSS entstuende, kann er ueber diese Standard-APIs keine Daten mehr
+ * an beliebige Hosts abfliessen lassen. Bewusst KEIN Ersatz fuer einen echten
+ * CSP-Header (ein entschlossener XSS umgeht JS-Guards, z. B. via iframe) – aber
+ * eine reale Reduktion der Exfiltrations-Flaeche. */
+const allowedConnectOrigins = new Set();
+const STATIC_CONNECT_ALLOW = new Set(['https://www.youtube.com', 'https://youtube.com']);
+
+function registerConnectOrigin(url) {
+  try { allowedConnectOrigins.add(new URL(url, location.href).origin); }
+  catch (e) { /* ungueltige URL ignorieren */ }
+}
+
+function isAllowedConnectUrl(rawUrl) {
+  let u;
+  try { u = new URL(String(rawUrl), location.href); } catch (e) { return false; }
+  if (u.protocol === 'blob:' || u.protocol === 'data:') return true;
+  if (u.origin === location.origin) return true;
+  if (allowedConnectOrigins.has(u.origin)) return true;
+  if (STATIC_CONNECT_ALLOW.has(u.origin)) return true;
+  return false;
+}
+
+(function installEgressGuard() {
+  if (typeof window === 'undefined') return;
+  const nativeFetch = window.fetch ? window.fetch.bind(window) : null;
+  if (nativeFetch) {
+    window.fetch = function (input, init) {
+      const url = (typeof input === 'string' || input instanceof URL) ? input : (input && input.url);
+      if (url && !isAllowedConnectUrl(url)) return Promise.reject(new TypeError('Egress blockiert: ' + url));
+      return nativeFetch(input, init);
+    };
+  }
+  if (window.XMLHttpRequest) {
+    const open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      if (url && !isAllowedConnectUrl(url)) throw new DOMException('Egress blockiert: ' + url, 'SecurityError');
+      return open.call(this, method, url, ...rest);
+    };
+  }
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    const beacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = function (url, data) {
+      if (url && !isAllowedConnectUrl(url)) return false;
+      return beacon(url, data);
+    };
+  }
+})();
+
 const MEMBER_CACHE_MS = 5 * 60 * 1000;
 
 const ACCENT_COLORS = [
@@ -405,6 +458,15 @@ function saveSettings() {
 
 /** Übernimmt geräteübergreifende Einstellungen aus account_data (ohne
  *  geräteabhängige Optionen zu überschreiben). Das eigene Echo wird ignoriert. */
+/** Ist der Wert eine sichere Akzentfarbe? Nur bekannte Palette oder striktes
+ *  #hex – kein beliebiger, vom (evtl. bosartigen) Homeserver gesteuerter String,
+ *  da accent in eine CSS-Custom-Property fliesst. */
+function isSafeAccent(v) {
+  if (typeof v !== 'string') return false;
+  if (/^#[0-9a-fA-F]{3,8}$/.test(v)) return true;
+  return ACCENT_COLORS.some((c) => c.value === v);
+}
+
 function applyRemoteSettings(content) {
   if (!content || typeof content !== 'object') return;
   // Eigenes Echo? Dann nichts tun – sonst würde es eine zwischenzeitliche
@@ -412,7 +474,11 @@ function applyRemoteSettings(content) {
   if (canonicalSharedSettings(content) === lastSentSettingsJson) return;
   let changed = false;
   for (const k of Object.keys(content)) {
+    // Prototype-Pollution verhindern: gefaehrliche Schluessel nie uebernehmen.
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
     if (DEVICE_LOCAL_SETTINGS.includes(k)) continue;
+    // accent aus account_data strikt validieren (bosartiger Homeserver).
+    if (k === 'accent' && !isSafeAccent(content[k])) continue;
     if (settings[k] !== content[k]) { settings[k] = content[k]; changed = true; }
   }
   if (changed) {
@@ -978,8 +1044,15 @@ async function saveSession(s) {
 }
 
 function clearSessionStorage() {
-  localStorage.removeItem(LS_SESSION);
-  localStorage.removeItem(LS_SYNC_TOKEN);
+  // Alle konto-identifizierenden bzw. inhaltlichen Reste entfernen, damit auf
+  // einem geteilten Geraet nach dem Abmelden nichts zurueckbleibt: Entwuerfe
+  // (ungesendeter Klartext!), Raum-IDs (Reihenfolge/Navigation) und die
+  // synchronisierten Einstellungen inkl. Benachrichtigungs-Keywords. Sie werden
+  // beim naechsten Login ohnehin aus account_data neu geladen.
+  for (const k of [LS_SESSION, LS_SYNC_TOKEN, LS_SETTINGS, LS_DRAFTS, LS_ROOM_ORDER,
+                   LS_NAV_COLLAPSED, LS_NAV_VIEW, LS_SIDEBAR_COLLAPSED]) {
+    try { localStorage.removeItem(k); } catch (e) { /* */ }
+  }
   secretstore.removeSecret('accessToken').catch(() => {});
 }
 
@@ -991,9 +1064,12 @@ function clearSessionStorage() {
  * lesen. Im Browser ist dies ein No-Op.
  */
 async function allowHomeserverOrigin(url) {
+  if (!url) return;
+  // Fuer den JS-Egress-Guard (Web + Desktop) freigeben.
+  registerConnectOrigin(url);
   try {
     const d = (typeof window !== 'undefined') ? window.matrixmessDesktop : null;
-    if (!d || typeof d.allowHomeserverOrigin !== 'function' || !url) return;
+    if (!d || typeof d.allowHomeserverOrigin !== 'function') return;
     await d.allowHomeserverOrigin(new URL(url).origin);
   } catch (e) { /* Registrierung ist best effort */ }
 }
@@ -1095,6 +1171,7 @@ async function initFeatureModules() {
       sendEventMessage,
       onChange: updateCalendarBadge,
       getUserId: () => (session ? session.userId : ''),
+      registerFeedOrigin: registerConnectOrigin,
     });
   } catch (err) {
     console.warn('Kalender konnte nicht initialisiert werden:', err);
@@ -1349,6 +1426,12 @@ function hardLogout() {
   clearTimeout(roomCacheSaveTimer);
   session = null;
   clearSessionStorage();
+  // In-Memory-Zustaende zuruecksetzen, damit ein Login auf demselben Tab OHNE
+  // Reload nicht die Entwuerfe/Navigation/Einstellungen des vorherigen Kontos
+  // erbt (sonst saehe Konto B beim Oeffnen eines gemeinsamen Raums A's Entwurf).
+  try { drafts.clear(); } catch (e) { /* */ }
+  try { navCollapsed.clear(); } catch (e) { /* */ }
+  try { settings = loadSettings(); } catch (e) { /* */ } // mm.settings geloescht -> Defaults
   rooms.clear();
   updateAppBadge();
   directRoomIds = new Set();
@@ -3985,7 +4068,9 @@ function renderChatHeader(room) {
   const name = roomDisplayName(room);
   chatNameEl.textContent = name;
   const subParts = [];
-  if (room.isEncrypted) subParts.push('Ende-zu-Ende-verschlüsselt');
+  // Verschluesselungs-Status IMMER anzeigen – auch das Fehlen. So haelt niemand
+  // versehentlich einen Klartext-Raum fuer verschluesselt.
+  subParts.push(room.isEncrypted ? 'Ende-zu-Ende-verschlüsselt' : 'Nicht verschlüsselt');
   if (room.isDirect) {
     subParts.push('Direktnachricht');
   } else {
@@ -4006,7 +4091,8 @@ function renderChatHeader(room) {
     subParts.push('Zuletzt aktiv ' + listTimeLabel(room.lastEventTs));
   }
   chatSubEl.textContent = '';
-  if (room.isEncrypted) chatSubEl.appendChild(icon('lock', 10));
+  chatSubEl.classList.toggle('chat-sub-unenc', !room.isEncrypted);
+  chatSubEl.appendChild(icon(room.isEncrypted ? 'lock' : 'unlock', 10));
   chatSubEl.appendChild(el('span', null, subParts.length ? subParts.join(' · ') : 'Raum'));
   setAvatar(chatAvatarEl, room.roomId, name, roomAvatarMxc(room));
 

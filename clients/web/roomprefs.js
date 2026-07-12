@@ -60,6 +60,8 @@ function sanitizeState(raw) {
   const rooms = raw.rooms;
   if (!rooms || typeof rooms !== 'object' || Array.isArray(rooms)) return out;
   for (const [roomId, p] of Object.entries(rooms)) {
+    // Prototype-Pollution verhindern (Schluessel stammen aus account_data).
+    if (roomId === '__proto__' || roomId === 'constructor' || roomId === 'prototype') continue;
     if (typeof roomId !== 'string' || !roomId || !p || typeof p !== 'object') continue;
     const entry = {
       muteUntil: typeof p.muteUntil === 'number' && (p.muteUntil === -1 || p.muteUntil > 0) ? p.muteUntil : 0,

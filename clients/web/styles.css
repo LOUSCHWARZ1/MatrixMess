@@ -518,6 +518,8 @@ input, textarea {
   white-space: nowrap;
 }
 #chat-sub svg { flex-shrink: 0; }
+/* Unverschluesselter Raum: dezent, aber deutlich sichtbar (bernstein). */
+#chat-sub.chat-sub-unenc { color: #d98324; }
 #chat-sub span { overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- Timeline ---------- */

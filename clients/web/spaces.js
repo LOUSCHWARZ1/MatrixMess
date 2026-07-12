@@ -203,6 +203,8 @@ function sanitizeState(raw) {
   }
   if (raw.assignments && typeof raw.assignments === 'object' && !Array.isArray(raw.assignments)) {
     for (const [roomId, ids] of Object.entries(raw.assignments)) {
+      // Prototype-Pollution verhindern (Schluessel stammen aus account_data).
+      if (roomId === '__proto__' || roomId === 'constructor' || roomId === 'prototype') continue;
       if (!Array.isArray(ids)) continue;
       const clean = [];
       for (const id of ids) {
