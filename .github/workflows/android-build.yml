@@ -54,6 +54,19 @@ jobs:
             echo "::warning::Keine Android-Signing-Secrets gesetzt – unsignierter Release-Build."
           fi
           gradle assembleRelease --no-daemon
+          # Fail-closed: Wenn ein Keystore-Secret gesetzt ist, MUSS eine signierte
+          # app-release.apk entstehen. Fehlt sie (z. B. Passwort-/Alias-Secret
+          # falsch), niemals still eine unsignierte APK ausliefern -> Build bricht ab.
+          OUT="app/build/outputs/apk/release"
+          echo "Erzeugte APKs:"; ls -la "$OUT" || true
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            if [ -f "$OUT/app-release.apk" ]; then
+              echo "VERIFY: signierte app-release.apk vorhanden."
+            else
+              echo "::error::Signing-Secret gesetzt, aber keine signierte app-release.apk erzeugt (Passwort-/Alias-Secret falsch?)."
+              exit 1
+            fi
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
