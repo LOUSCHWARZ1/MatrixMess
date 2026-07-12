@@ -170,9 +170,11 @@
         <ul class="checklist">
           <li>Ende-zu-Ende-Verschlüsselung mit derselben Rust-Engine wie Element</li>
           <li>Geräte-Verifizierung per Emoji-Abgleich und Recovery Key</li>
+          <li>Warnschilde pro Nachricht: nicht verifizierte Absender werden sichtbar markiert</li>
           <li>Lokaler Cache speichert in E2EE-Räumen nur Ciphertext – nie Klartext</li>
-          <li>Private Lesebestätigungen, App-Lock (iOS), keine Tracker, kein Analytics</li>
-          <li>Der komplette Quellcode ist offen – überprüfbar von allen</li>
+          <li>Strenge Verbindungs-Allowlist – keine Tracker, kein Analytics, keine versteckten Verbindungen</li>
+          <li>Bridge-Chats klar gekennzeichnet – transparent, was verschlüsselt ist und was nicht</li>
+          <li>Kompletter Quellcode offen auf GitHub – von allen überprüfbar</li>
         </ul>
       </div>
     </div>
@@ -263,7 +265,11 @@
         </details>
         <details>
           <summary>Sind meine Nachrichten wirklich sicher?<i aria-hidden="true"></i></summary>
-          <p>Matrix-eigene Chats sind Ende-zu-Ende-verschlüsselt – mit derselben Rust-Bibliothek, die auch Element nutzt. Der lokale Cache speichert in verschlüsselten Räumen ausschließlich Ciphertext. Bridge-Chats sind zwischen deinem Server und dem Fremddienst so sicher wie der jeweilige Dienst; auf deinem Server bleiben sie unter deiner Kontrolle.</p>
+          <p>Matrix-eigene Chats sind Ende-zu-Ende-verschlüsselt – mit derselben Rust-Bibliothek, die auch Element nutzt. Ein Warnschild an jeder Nachricht zeigt dir, ob der Absender verifiziert ist. Die App verbindet sich dabei ausschließlich mit deinem Homeserver (strenge Allowlist) – ohne Tracker, ohne Analytics. Bridge-Chats werden klar als solche gekennzeichnet (z.&nbsp;B. „Über WhatsApp-Bridge"), damit du immer siehst, was Matrix-verschlüsselt ist und was über eine Bridge läuft; zwischen Bridge und Fremddienst gilt die Sicherheit des jeweiligen Dienstes, und auf deinem Server bleibt alles unter deiner Kontrolle.</p>
+        </details>
+        <details>
+          <summary>Speichert die App etwas im Klartext?<i aria-hidden="true"></i></summary>
+          <p>In Ende-zu-Ende-verschlüsselten Räumen nie: Der lokale Cache legt dort ausschließlich Ciphertext ab – entschlüsselt wird nur flüchtig im Arbeitsspeicher zur Anzeige. Die Schlüssel liegen im geschützten Krypto-Store des Geräts. Beim Abmelden entfernt MatrixMess lokale Entwürfe, Metadaten und Einstellungen wieder.</p>
         </details>
         <details>
           <summary>Synchronisieren sich meine Einstellungen zwischen Geräten?<i aria-hidden="true"></i></summary>
