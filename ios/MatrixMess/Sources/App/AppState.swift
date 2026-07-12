@@ -2160,6 +2160,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Loescht das Matrix-Konto dauerhaft (Apple-Guideline 5.1.1(v): Konto-
+    /// loeschung muss in der App moeglich sein). Bei Erfolg wird die lokale
+    /// Session ebenfalls entfernt. Gibt true zurueck, wenn das Konto geloescht
+    /// wurde.
+    func deactivateAccount(password: String, erase: Bool) async -> Bool {
+        guard let currentSession, !password.isEmpty else {
+            errorMessage = "Zum Loeschen des Kontos wird das Account-Passwort benoetigt."
+            return false
+        }
+        do {
+            try await matrixService.deactivateAccount(password: password, erase: erase, session: currentSession)
+            AppLogger.info("Matrix-Konto wurde deaktiviert/geloescht.")
+            // Der Zugang ist serverseitig gesperrt: lokale Session aufraeumen.
+            signOut()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     // MARK: - Serverseitige Suche
 
     func searchMessagesOnServer(_ query: String) async -> [MatrixServerSearchResult] {

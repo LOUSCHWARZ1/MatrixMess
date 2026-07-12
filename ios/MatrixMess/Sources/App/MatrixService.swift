@@ -686,6 +686,76 @@ final class MatrixService {
         }
     }
 
+    /// Deaktiviert (loescht) das Matrix-Konto dauerhaft. Erfordert wie das
+    /// Abmelden eines Geraets die interaktive Authentifizierung (UIA) mit dem
+    /// Kontopasswort. `erase: true` bittet den Server zusaetzlich, bereits
+    /// gesendete Nachrichten-Inhalte des Nutzers zu anonymisieren (Server-
+    /// abhaengig). Danach ist der Zugang unwiderruflich gesperrt.
+    func deactivateAccount(password: String, erase: Bool, session storedSession: MatrixSession) async throws {
+        let homeserver = try normalizedHomeserver(from: storedSession.homeserver)
+        let path = "/_matrix/client/v3/account/deactivate"
+
+        var components = URLComponents(url: homeserver, resolvingAgainstBaseURL: false)
+        components?.path = combinedPath(basePath: homeserver.path, endpointPath: path)
+        guard let url = components?.url else {
+            throw MatrixServiceError.invalidHomeserver
+        }
+
+        func makeRequest(authBody: Data) -> URLRequest {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(storedSession.accessToken)", forHTTPHeaderField: "Authorization")
+            request.httpBody = authBody
+            return request
+        }
+
+        struct DeactivateBody: Encodable {
+            struct Auth: Encodable {
+                struct Identifier: Encodable {
+                    let type = "m.id.user"
+                    let user: String
+                }
+                let type = "m.login.password"
+                let identifier: Identifier
+                let password: String
+                let session: String?
+            }
+            let auth: Auth
+            let erase: Bool
+        }
+
+        // Schritt 1: leerer Auth-Body, um die UIA-Session zu erhalten.
+        struct EmptyBody: Encodable { let erase: Bool }
+        let firstBody = try jsonEncoder.encode(EmptyBody(erase: erase))
+        let (firstData, firstResponse) = try await session.data(for: makeRequest(authBody: firstBody))
+        if let httpResponse = firstResponse as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) {
+            return
+        }
+        let uiaSession = (try? jsonDecoder.decode(MatrixUIARequiredResponse.self, from: firstData))?.session
+
+        // Schritt 2: mit Passwort authentifizieren.
+        let body = try jsonEncoder.encode(
+            DeactivateBody(
+                auth: .init(
+                    identifier: .init(user: storedSession.userID),
+                    password: password,
+                    session: uiaSession
+                ),
+                erase: erase
+            )
+        )
+        let (secondData, secondResponse) = try await session.data(for: makeRequest(authBody: body))
+        guard let httpResponse = secondResponse as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            if let matrixError = try? jsonDecoder.decode(MatrixErrorResponse.self, from: secondData),
+               let message = matrixError.error {
+                throw MatrixServiceError.serverError(message)
+            }
+            throw MatrixServiceError.serverError("Konto konnte nicht geloescht werden.")
+        }
+    }
+
     // MARK: - Benachrichtigungsmodus pro Raum (Push Rules)
 
     /// Setzt den Benachrichtigungsmodus eines Raums serverseitig:

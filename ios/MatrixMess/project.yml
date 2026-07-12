@@ -11,8 +11,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: 5.10
-    CURRENT_PROJECT_VERSION: 5
-    MARKETING_VERSION: 0.4.2
+    CURRENT_PROJECT_VERSION: 6
+    MARKETING_VERSION: 1.0.0
 
 targets:
   MatrixMess:
@@ -45,6 +45,14 @@ targets:
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: MatrixMess nutzt die Fotomediathek, damit du Bilder und Videos auswaehlen kannst.
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: MatrixMess kann Medien lokal sichern, wenn du das in den Einstellungen aktivierst.
         INFOPLIST_KEY_NSFaceIDUsageDescription: MatrixMess nutzt Face ID, um die App und gesperrte Chats zu schuetzen.
+        # Export-Compliance: MatrixMess nutzt Ende-zu-Ende-Verschluesselung, also
+        # "nicht ausgenommene" Verschluesselung -> YES. Dadurch fragt App Store
+        # Connect nach der Ausfuhr-Einstufung. Standard-E2EE-Messenger qualifizieren
+        # sich fuer die Massenmarkt-Ausnahme (EAR 5D992.c): einmalig in App Store
+        # Connect selbst einstufen, dann den erhaltenen Code als
+        # ITSEncryptionExportComplianceCode hier eintragen, damit die Frage nicht
+        # bei jeder Einreichung erneut kommt. Details siehe docs/APP_STORE.md.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: YES
         INFOPLIST_KEY_UIBackgroundModes:
           - fetch
           - processing

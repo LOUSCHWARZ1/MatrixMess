@@ -5028,9 +5028,89 @@ private struct PrivacySettingsView: View {
             } footer: {
                 Text("Blockierte Kontakte werden ueber die Matrix-Ignorierliste auf allen Geraeten ausgeblendet. Bei deaktivierten Lesebestaetigungen sendet MatrixMess nur private Read-Receipts.")
             }
+
+            Section {
+                NavigationLink {
+                    DeleteAccountView()
+                } label: {
+                    Label("Konto loeschen", systemImage: "trash")
+                        .foregroundColor(.red)
+                }
+            } header: {
+                Text("Konto")
+            } footer: {
+                Text("Loescht dein Matrix-Konto dauerhaft auf dem Homeserver. Dieser Schritt kann nicht rueckgaengig gemacht werden.")
+            }
         }
         .navigationTitle("Privatsphaere")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct DeleteAccountView: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+    @State private var eraseContent = true
+    @State private var isWorking = false
+    @State private var showConfirm = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Wenn du dein Konto loeschst, wird es auf dem Homeserver dauerhaft deaktiviert. Du kannst dich danach nicht mehr anmelden, und der Benutzername bleibt in der Regel fuer immer gesperrt.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+
+            Section {
+                Toggle("Gesendete Nachrichten anonymisieren", isOn: $eraseContent)
+            } footer: {
+                Text("Bittet den Homeserver zusaetzlich, deine bereits gesendeten Inhalte zu entfernen. Ob und wie das umgesetzt wird, haengt vom Server ab.")
+            }
+
+            Section {
+                SecureField("Account-Passwort", text: $password)
+                    .textContentType(.password)
+
+                Button(role: .destructive) {
+                    showConfirm = true
+                } label: {
+                    if isWorking {
+                        ProgressView()
+                    } else {
+                        Label("Konto endgueltig loeschen", systemImage: "trash")
+                    }
+                }
+                .disabled(password.isEmpty || isWorking)
+            } header: {
+                Text("Bestaetigung")
+            } footer: {
+                Text("Der Homeserver verlangt zur Bestaetigung dein Passwort.")
+            }
+        }
+        .navigationTitle("Konto loeschen")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Konto wirklich dauerhaft loeschen?",
+            isPresented: $showConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Konto loeschen", role: .destructive) {
+                isWorking = true
+                Task { @MainActor in
+                    let success = await appState.deactivateAccount(password: password, erase: eraseContent)
+                    isWorking = false
+                    if success {
+                        // Session ist entfernt; zurueck zur Anmeldung.
+                        dismiss()
+                    }
+                }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Dieser Schritt kann nicht rueckgaengig gemacht werden.")
+        }
     }
 }
 
