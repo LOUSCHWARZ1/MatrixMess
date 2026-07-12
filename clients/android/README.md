@@ -27,6 +27,27 @@ cp -r ../web/. app/src/main/assets/web/
 gradle assembleDebug
 ```
 
+## Release-Signing
+
+Der Release-Keystore liegt **nicht** im Repo. `app/build.gradle.kts` liest Keystore und
+Passwoerter aus einer gitignorierten `keystore.properties` (lokal) oder aus Umgebungs-
+variablen. Der CI-Workflow dekodiert den Keystore aus GitHub-Actions-Secrets:
+
+| Secret | Inhalt |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | Base64 des Keystores (`base64 -w0 release.keystore`) |
+| `ANDROID_KEYSTORE_PASSWORD` | Keystore-Passwort |
+| `ANDROID_KEY_ALIAS` | Key-Alias (z. B. `matrixmess`) |
+| `ANDROID_KEY_PASSWORD` | Key-Passwort (bei PKCS12 = Keystore-Passwort) |
+
+Fehlen die Secrets, wird der Release **unsigniert** gebaut (lokale Entwicklungsbuilds bleiben
+so lauffaehig). Neuen Keystore erzeugen:
+
+```sh
+keytool -genkeypair -v -keystore release.keystore -alias matrixmess \
+  -keyalg RSA -keysize 4096 -validity 10000 -storetype PKCS12
+```
+
 ## Installation (Sideload)
 
 1. Workflow-Artefakt `MatrixMess-Android-APK` herunterladen und entpacken (`app-debug.apk`).
