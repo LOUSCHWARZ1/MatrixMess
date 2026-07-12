@@ -28,6 +28,12 @@ clients/android/build/
 clients/android/app/build/
 clients/android/local.properties
 
+# Android Signing – NIE einchecken. Keystore + Passwoerter gehoeren in
+# CI-Secrets (bzw. lokal in eine gitignorierte keystore.properties).
+*.keystore
+*.jks
+keystore.properties
+
 # Editor
 .idea/
 .vscode/

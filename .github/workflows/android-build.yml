@@ -37,13 +37,27 @@ jobs:
           cp -r clients/web/. clients/android/app/src/main/assets/web/
 
       - name: Build release APK
+        env:
+          # Signing-Material kommt ausschliesslich aus GitHub-Actions-Secrets,
+          # nie aus dem Repo. Fehlen die Secrets, wird unsigniert gebaut.
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           cd clients/android
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/release.keystore
+            export ANDROID_KEYSTORE_FILE="release.keystore"
+            echo "Release-Keystore aus Secret dekodiert – signierter Build."
+          else
+            echo "::warning::Keine Android-Signing-Secrets gesetzt – unsignierter Release-Build."
+          fi
           gradle assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: MatrixMess-Android-APK
-          path: clients/android/app/build/outputs/apk/release/app-release.apk
+          path: clients/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error

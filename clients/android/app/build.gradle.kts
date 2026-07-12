@@ -1,7 +1,28 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// Release-Signing wird NICHT mehr im Repo hinterlegt. Keystore + Passwoerter
+// kommen aus einer lokalen, NICHT eingecheckten keystore.properties oder aus
+// Umgebungsvariablen (CI-Secrets). Fehlt beides, bleibt der Release-Build
+// unsigniert – lokale Entwicklungsbuilds funktionieren weiterhin.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) FileInputStream(keystorePropsFile).use { load(it) }
+}
+fun signingValue(propKey: String, envKey: String): String? =
+    keystoreProps.getProperty(propKey) ?: System.getenv(envKey)
+
+val ksStoreFile = signingValue("storeFile", "ANDROID_KEYSTORE_FILE")
+val ksStorePassword = signingValue("storePassword", "ANDROID_KEYSTORE_PASSWORD")
+val ksKeyAlias = signingValue("keyAlias", "ANDROID_KEY_ALIAS")
+val ksKeyPassword = signingValue("keyPassword", "ANDROID_KEY_PASSWORD")
+val hasReleaseSigning = ksStoreFile != null && ksStorePassword != null &&
+    ksKeyAlias != null && ksKeyPassword != null
 
 android {
     namespace = "dev.matrixmess.android"
@@ -16,14 +37,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            // Selbstsignierter Schluessel fuer Sideload-Verteilung (kein Play Store).
-            // Der feste Schluessel sorgt dafuer, dass Updates ueber vorhandene
-            // Installationen installierbar bleiben; er ist bewusst kein Geheimnis.
-            storeFile = file("matrixmess-release.keystore")
-            storePassword = "matrixmess"
-            keyAlias = "matrixmess"
-            keyPassword = "matrixmess"
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(ksStoreFile!!)
+                storePassword = ksStorePassword
+                keyAlias = ksKeyAlias
+                keyPassword = ksKeyPassword
+            }
         }
     }
 
@@ -31,7 +51,7 @@ android {
         getByName("release") {
             isMinifyEnabled = false
             isDebuggable = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else null
         }
     }
 
