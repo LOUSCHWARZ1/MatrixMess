@@ -4068,9 +4068,17 @@ function renderChatHeader(room) {
   const name = roomDisplayName(room);
   chatNameEl.textContent = name;
   const subParts = [];
-  // Verschluesselungs-Status IMMER anzeigen – auch das Fehlen. So haelt niemand
-  // versehentlich einen Klartext-Raum fuer verschluesselt.
-  subParts.push(room.isEncrypted ? 'Ende-zu-Ende-verschlüsselt' : 'Nicht verschlüsselt');
+  // Verschluesselungs-Status IMMER anzeigen – auch das Fehlen. Aber genau:
+  // Ein Bridge-Chat ist nicht MATRIX-Ende-zu-Ende, aber auch nicht "gar nicht
+  // verschluesselt" (der Fremddienst verschluesselt seine Seite, Transport ist
+  // TLS). Das pauschale "Nicht verschlüsselt" waere irrefuehrend.
+  if (room.isEncrypted) {
+    subParts.push('Ende-zu-Ende-verschlüsselt');
+  } else if (spaces.detectBridge(room)) {
+    subParts.push('Nicht Ende-zu-Ende (Bridge)');
+  } else {
+    subParts.push('Nicht Ende-zu-Ende-verschlüsselt');
+  }
   if (room.isDirect) {
     subParts.push('Direktnachricht');
   } else {
@@ -4178,9 +4186,23 @@ function renderTimeline(mode) {
       : 'Dies ist der Beginn von „' + roomDisplayName(room) + '“.'));
     const encLine = el('div', 'room-intro-enc' + (room.isEncrypted ? ' enc' : ''));
     encLine.appendChild(icon(room.isEncrypted ? 'lock' : 'unlock', 12));
-    encLine.appendChild(el('span', null, room.isEncrypted
-      ? 'Ende-zu-Ende-verschlüsselt'
-      : 'Nicht Ende-zu-Ende-verschlüsselt – üblich bei Bridge-Chats (WhatsApp & Co. laufen über deinen Server).'));
+    const introBridge = spaces.detectBridge(room);
+    let introEnc;
+    if (room.isEncrypted) {
+      introEnc = 'Ende-zu-Ende-verschlüsselt';
+    } else if (introBridge) {
+      const svc = ({ whatsapp: 'WhatsApp', signal: 'Signal', telegram: 'Telegram',
+        instagram: 'Instagram', discord: 'Discord' })[introBridge] || 'der Dienst';
+      // Präzise statt alarmierend: Der Fremddienst verschlüsselt seine Seite
+      // selbst, nur die Matrix-Strecke ist nicht zusätzlich Ende-zu-Ende.
+      introEnc = 'Über die Bridge verbunden. ' + svc + ' verschlüsselt seine Seite '
+        + 'Ende-zu-Ende; zwischen Bridge und Matrix ist der Chat nicht zusätzlich '
+        + 'Ende-zu-Ende-verschlüsselt – deine Bridge und dein Homeserver können ihn sehen.';
+    } else {
+      introEnc = 'Nicht Ende-zu-Ende-verschlüsselt. Nachrichten sind per '
+        + 'Transportverschlüsselung (HTTPS) geschützt; dein Homeserver kann sie sehen.';
+    }
+    encLine.appendChild(el('span', null, introEnc));
     intro.appendChild(encLine);
     timelineEl.appendChild(intro);
   }
