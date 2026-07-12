@@ -4068,17 +4068,26 @@ function renderChatHeader(room) {
   const name = roomDisplayName(room);
   chatNameEl.textContent = name;
   const subParts = [];
-  // Verschluesselungs-Status IMMER anzeigen – auch das Fehlen. Aber genau:
-  // Ein Bridge-Chat ist nicht MATRIX-Ende-zu-Ende, aber auch nicht "gar nicht
-  // verschluesselt" (der Fremddienst verschluesselt seine Seite, Transport ist
-  // TLS). Das pauschale "Nicht verschlüsselt" waere irrefuehrend.
+  // Verschluesselungs-Status IMMER anzeigen – auch das Fehlen. Bei Bridge-Raeumen
+  // differenzierter: die WhatsApp-/Signal-Strecke ist E2EE, aber die Bridge sieht
+  // den Klartext (muss sie, um zu uebersetzen), und Matrix-seitig ist der Raum
+  // unverschluesselt. "Nicht verschluesselt" allein waere irrefuehrend.
+  const bridgeId = room.isEncrypted ? null : spaces.detectBridge(room);
+  const BRIDGE_NAMES = { whatsapp: 'WhatsApp', signal: 'Signal', telegram: 'Telegram', instagram: 'Instagram', discord: 'Discord' };
+  const bridgeName = bridgeId ? (BRIDGE_NAMES[bridgeId] || null) : null;
+  let encLabel, encTitle;
   if (room.isEncrypted) {
-    subParts.push('Ende-zu-Ende-verschlüsselt');
-  } else if (spaces.detectBridge(room)) {
-    subParts.push('Nicht Ende-zu-Ende (Bridge)');
+    encLabel = 'Ende-zu-Ende-verschlüsselt';
+    encTitle = 'Diese Unterhaltung ist Ende-zu-Ende-verschlüsselt.';
+  } else if (bridgeId) {
+    encLabel = bridgeName ? ('Über ' + bridgeName + '-Bridge') : 'Über eine Bridge';
+    encTitle = 'Nicht Matrix-verschlüsselt: deine Bridge sieht den Klartext, um die Nachrichten zu übersetzen'
+      + (bridgeName ? (' (die ' + bridgeName + '-Strecke selbst ist Ende-zu-Ende-verschlüsselt).') : '.');
   } else {
-    subParts.push('Nicht Ende-zu-Ende-verschlüsselt');
+    encLabel = 'Nicht verschlüsselt';
+    encTitle = 'Diese Unterhaltung ist nicht Ende-zu-Ende-verschlüsselt; der Homeserver kann den Inhalt sehen.';
   }
+  subParts.push(encLabel);
   if (room.isDirect) {
     subParts.push('Direktnachricht');
   } else {
@@ -4086,7 +4095,8 @@ function renderChatHeader(room) {
     // ohne Bridge-Bot und eigenen Ghost (ein Signal-1:1 ist sonst "4 Mitglieder").
     const real = namingMembers(room, true).length;
     if (real === 1) {
-      subParts.push('Direktnachricht' + (spaces.detectBridge(room) ? ' (Bridge)' : ''));
+      // Bridge ist bereits im Verschluesselungs-Label sichtbar -> hier nicht doppeln.
+      subParts.push('Direktnachricht');
     } else if (real > 1) {
       subParts.push((real + 1) + ' Mitglieder');
     } else {
@@ -4100,7 +4110,8 @@ function renderChatHeader(room) {
   }
   chatSubEl.textContent = '';
   chatSubEl.classList.toggle('chat-sub-unenc', !room.isEncrypted);
-  chatSubEl.appendChild(icon(room.isEncrypted ? 'lock' : 'unlock', 10));
+  chatSubEl.title = encTitle; // erklaert v.a. bei Bridge-Raeumen den Klartext-Zugriff
+  chatSubEl.appendChild(icon(room.isEncrypted ? 'lock' : (bridgeId ? 'link' : 'unlock'), 10));
   chatSubEl.appendChild(el('span', null, subParts.length ? subParts.join(' · ') : 'Raum'));
   setAvatar(chatAvatarEl, room.roomId, name, roomAvatarMxc(room));
 
