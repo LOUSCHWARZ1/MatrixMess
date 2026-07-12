@@ -649,6 +649,14 @@ input, textarea {
   align-items: center;
   opacity: 0.85;
 }
+/* Authentizitäts-Warnung (MismatchedSender / VerificationViolation) */
+.msg-shield-warn {
+  display: inline-flex;
+  align-items: center;
+  color: #e5484d;
+  opacity: 1;
+}
+.mine .msg-shield-warn { color: #ffd7d7; }
 
 /* Platzhalter verschlüsselter Nachrichten (Icon + Text) */
 .encrypted-ph-inner {

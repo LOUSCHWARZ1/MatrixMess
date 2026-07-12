@@ -983,6 +983,21 @@ function clearSessionStorage() {
   secretstore.removeSecret('accessToken').catch(() => {});
 }
 
+/**
+ * Desktop (Electron): die Homeserver-Origin für die GEZIELTE CORS-Freigabe
+ * registrieren. Der Desktop-Wrapper weicht die Same-Origin-Leseregel NUR für
+ * die hier gemeldeten Origins auf – nicht global für jeden http(s)-Host. So
+ * kann der Renderer keine Antwort-Bodies beliebiger (auch interner) Hosts
+ * lesen. Im Browser ist dies ein No-Op.
+ */
+async function allowHomeserverOrigin(url) {
+  try {
+    const d = (typeof window !== 'undefined') ? window.matrixmessDesktop : null;
+    if (!d || typeof d.allowHomeserverOrigin !== 'function' || !url) return;
+    await d.allowHomeserverOrigin(new URL(url).origin);
+  } catch (e) { /* Registrierung ist best effort */ }
+}
+
 class ApiError extends Error {
   constructor(message, errcode, status, data) {
     super(message);
@@ -1201,13 +1216,18 @@ async function discoverBaseUrl(input) {
   if (!hs) hs = 'https://matrix.org';
   if (!/^https?:\/\//i.test(hs)) hs = 'https://' + hs;
   hs = hs.replace(/\/+$/, '');
+  // Desktop: eingegebene Origin für die CORS-Freigabe registrieren, BEVOR die
+  // erste Anfrage (well-known) rausgeht.
+  await allowHomeserverOrigin(hs);
   try {
     const res = await fetch(hs + '/.well-known/matrix/client');
     if (res.ok) {
       const wk = await res.json();
       const base = wk && wk['m.homeserver'] && wk['m.homeserver'].base_url;
       if (typeof base === 'string' && /^https?:\/\//i.test(base)) {
-        return base.replace(/\/+$/, '');
+        const resolved = base.replace(/\/+$/, '');
+        await allowHomeserverOrigin(resolved); // ggf. abweichende Ziel-Origin freigeben
+        return resolved;
       }
     }
   } catch (e) { /* Fallback: eingegebene URL */ }
@@ -1502,6 +1522,8 @@ async function maybeDecryptRaw(roomId, ev) {
       content: decrypted.content || {},
       __mmEncrypted: true,
       __mmRawContent: ev.content || null,
+      __mmShield: typeof decrypted.__mmShieldCode === 'number' ? decrypted.__mmShieldCode : null,
+      __mmShieldMsg: decrypted.__mmShieldMsg || null,
     });
   }
   markPendingDecryption(roomId, ev);
@@ -1553,9 +1575,12 @@ async function retryPendingDecryption() {
       byId.delete(eventId);
       changedRooms.add(roomId);
 
+      const shieldCode = typeof decrypted.__mmShieldCode === 'number' ? decrypted.__mmShieldCode : null;
       const merged = Object.assign({}, raw, {
         type: decrypted.type,
         content: decrypted.content || {},
+        __mmShield: shieldCode,
+        __mmShieldMsg: decrypted.__mmShieldMsg || null,
       });
       const rel = merged.content && merged.content['m.relates_to'];
 
@@ -1575,9 +1600,11 @@ async function retryPendingDecryption() {
           obj.type = merged.type;
           obj.content = merged.content;
           obj.encrypted = true;
+          obj.shield = shieldCode;
+          obj.shieldMsg = decrypted.__mmShieldMsg || null;
           obj.rawContent = raw.content || null;
           updateRoomPreview(room, obj);
-          maybeIngestSharedContent(obj);
+          maybeIngestSharedContent(room, obj);
         }
       }
     }
@@ -1857,8 +1884,14 @@ function isSelfSender(room, senderId) {
 
 /** Geteilte Inhalte aus Chat-Nachrichten übernehmen (Termin-Karten anderer
  *  Teilnehmer landen so auch im eigenen Kalender). */
-function maybeIngestSharedContent(obj) {
-  const shared = obj && obj.content && obj.content['io.matrixmess.event'];
+function maybeIngestSharedContent(room, obj) {
+  // NUR eigene Termin-Karten übernehmen (eigenes Gerät bzw. eigener
+  // Bridge-Ghost). Ohne diese Absenderprüfung könnte jedes Raum-Mitglied
+  // fremde Termine in den privaten, geräteübergreifend synchronisierten
+  // Kalender einschleusen oder – bei kollidierender id – bestehende Termine
+  // (Titel/Zeit) überschreiben.
+  if (!room || !obj || !isSelfSender(room, obj.sender)) return;
+  const shared = obj.content && obj.content['io.matrixmess.event'];
   if (shared && typeof shared === 'object') {
     try { ingestSharedEvent(shared); } catch (e) { /* Kalender optional */ }
   }
@@ -2095,6 +2128,10 @@ function makeEventObject(ev) {
     failed: false,
     txnId: null,
     encrypted: !!ev.__mmEncrypted, // wurde aus m.room.encrypted entschlüsselt
+    // Authentizitäts-Code des Absenders (ShieldStateCode) bzw. null. 4/5 =
+    // Impersonation-Warnung; wird beim Rendern als rotes Warnschild angezeigt.
+    shield: typeof ev.__mmShield === 'number' ? ev.__mmShield : null,
+    shieldMsg: ev.__mmShieldMsg || null,
     // Original-Ciphertext (nur bei entschlüsselten Events gesetzt): erlaubt
     // dem Raum-Cache, statt Klartext den Ciphertext zu persistieren.
     rawContent: ev.__mmRawContent || null,
@@ -2238,7 +2275,7 @@ function applyTimelineEvent(room, ev, live) {
   room.events.push(obj);
   if (obj.eventId) room.eventIndex.set(obj.eventId, obj);
   updateRoomPreview(room, obj);
-  maybeIngestSharedContent(obj);
+  maybeIngestSharedContent(room, obj);
 
   if (live && !isSelfSender(room, obj.sender)) {
     maybeNotify(room, obj);
@@ -4275,9 +4312,23 @@ function fillBubbleContent(room, ev, bubble, endsGroup, readState) {
     meta.insertBefore(el('span', 'edited-tag', '(bearbeitet)'), meta.firstChild);
   }
   if (ev.encrypted && !ev.redacted) {
-    const lock = el('span', 'msg-lock');
-    lock.appendChild(icon('lock', 10));
-    meta.appendChild(lock);
+    // Authentizitäts-Warnung: MismatchedSender (5) / VerificationViolation (4)
+    // bedeuten, dass der angezeigte Absender NICHT zum tatsächlichen Absender-
+    // gerät passt bzw. eine zuvor verifizierte Identität gewechselt hat – also
+    // eine mögliche Impersonation. Statt des neutralen Schlosses ein deutliches
+    // rotes Warnschild zeigen, damit solche Nachrichten nicht als echt gelten.
+    if (ev.shield === 4 || ev.shield === 5) {
+      const warn = el('span', 'msg-shield-warn');
+      warn.appendChild(icon('shield-alert', 12));
+      warn.title = ev.shieldMsg || (ev.shield === 5
+        ? 'Warnung: Der Absender dieser Nachricht ist nicht authentisch (Absender passt nicht zum Schlüssel).'
+        : 'Warnung: Die Identität dieses Kontakts hat sich seit der Verifizierung geändert.');
+      meta.appendChild(warn);
+    } else {
+      const lock = el('span', 'msg-lock');
+      lock.appendChild(icon('lock', 10));
+      meta.appendChild(lock);
+    }
   }
   const hasMeta = meta.childNodes.length > 0;
 
@@ -4681,7 +4732,7 @@ async function loadOlderMessages(room) {
         const obj = makeEventObject(ev);
         older.push(obj);
         if (obj.eventId) room.eventIndex.set(obj.eventId, obj);
-        maybeIngestSharedContent(obj);
+        maybeIngestSharedContent(room, obj);
       } else if (type === 'm.reaction') {
         applyReactionEvent(room, ev);
       } else if (type === 'm.room.redaction') {
@@ -6378,6 +6429,9 @@ async function init() {
   // Session-Token wird verschlüsselt entschlüsselt geladen (async).
   try { session = await loadSession(); } catch (e) { session = null; }
   if (session) {
+    // Desktop: Homeserver-Origin für die gezielte CORS-Freigabe registrieren,
+    // bevor der Sync die erste Anfrage stellt.
+    await allowHomeserverOrigin(session.baseUrl);
     showApp();
     cryptoInitPromise = initCrypto();
     // P0: Räume sofort aus dem lokalen Cache rendern (gefühlter Start < 1 s),

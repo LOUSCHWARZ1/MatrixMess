@@ -51,6 +51,7 @@ import {
   DecryptionSettings,
   TrustRequirement,
   EncryptionSettings,
+  CollectStrategy,
   BackupDecryptionKey,
 } from './vendor/matrix-sdk-crypto-wasm/index.mjs';
 import { getSecret, setSecret } from './secretstore.js';
@@ -356,7 +357,22 @@ export class CryptoEngine {
         new RoomId(roomId),
         settings
       );
-      return JSON.parse(result.event);
+      const parsed = JSON.parse(result.event);
+      // Authentizität des Absenders mitliefern: shieldState(strict) meldet u. a.
+      // MismatchedSender (Absenderfeld passt nicht zum Megolm-Session-Besitzer)
+      // und VerificationViolation (verifizierter Kontakt hat Identität gewechselt).
+      // Ohne diese Info würde eine Impersonation wie eine echte Nachricht wirken.
+      // ShieldStateCode: 0=AuthenticityNotGuaranteed,1=UnknownDevice,2=UnsignedDevice,
+      // 3=UnverifiedIdentity,4=VerificationViolation,5=MismatchedSender.
+      try {
+        const shield = result.shieldState(true);
+        const code = shield && shield.code;
+        if (typeof code === 'number') {
+          parsed.__mmShieldCode = code;
+          if (shield.message) parsed.__mmShieldMsg = String(shield.message);
+        }
+      } catch (e) { /* Shield-Info ist optional */ }
+      return parsed;
     } catch (err) {
       // MegolmDecryptionError (u. a. MissingRoomKey/UnableToDecrypt) -> Platzhalter
       return null;
@@ -395,11 +411,20 @@ export class CryptoEngine {
       await machine.markRequestAsSent(claim.id, claim.type, JSON.stringify(res || {}));
     }
 
-    // 3) Room-Key als to-device-Nachrichten an alle Geräte verteilen.
+    // 3) Room-Key als to-device-Nachrichten verteilen.
+    //    Sharing-Strategie: errorOnUnverifiedUserProblem() statt des Defaults
+    //    „an ALLE Geräte". An unverifizierte Nutzer wird weiterhin normal
+    //    geteilt (kein Bruch für den Alltag), ABER wenn ein bereits VERIFIZIERTER
+    //    Kontakt ein unsigniertes Gerät hat oder seine Identität gewechselt hat,
+    //    schlägt das Teilen fail-closed fehl – so landet der Room-Key nicht
+    //    still bei einem rogue/ausgetauschten Gerät (Element-Default).
+    const encSettings = new EncryptionSettings();
+    try { encSettings.sharingStrategy = CollectStrategy.errorOnUnverifiedUserProblem(); }
+    catch (e) { /* ältere WASM ohne Strategie-Setter: Default beibehalten */ }
     const toDeviceRequests = await machine.shareRoomKey(
       new RoomId(roomId),
       this._toUserIds(ids),
-      new EncryptionSettings()
+      encSettings
     );
     for (const req of toDeviceRequests) {
       const res = await this.api(

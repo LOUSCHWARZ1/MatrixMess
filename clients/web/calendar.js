@@ -136,6 +136,7 @@ const LS_FEED_CACHE = 'mm.calendarFeedCache';
 const FEED_STALE_MS = 15 * 60 * 1000;   // Panel-Öffnen: nur ältere Abos neu laden
 const FEED_WINDOW_MS = 120 * 24 * 3600 * 1000; // Termine bis 120 Tage voraus
 const FEED_MAX_EVENTS = 300;            // pro Abo
+const MAX_STORED_EVENTS = 1000;         // Obergrenze für persistierte Termine (Flut-Schutz)
 
 let putTimer = null;
 let activeModal = null;
@@ -449,6 +450,7 @@ export function ingestSharedEvent(raw) {
     changed();
     return;
   }
+  if (state.events.length >= MAX_STORED_EVENTS) return; // Flut-Schutz
   state.events.push(evt);
   changed();
 }
@@ -461,7 +463,12 @@ export function applyRemoteState(content) {
   if (json === JSON.stringify(sanitizeState(state))) return; // keine Änderung
   state = incoming;
   saveLocal(LS_STATE, state);
-  refreshAllFeeds(false); // neue Abos anderer Geräte gleich laden
+  // Abos, die per account_data hereinkommen, NICHT still im Hintergrund
+  // abrufen: sonst könnte ein bösartiger/kompromittierter Homeserver durch
+  // Schreiben von account_data jederzeit HTTP-Requests auf beliebige URLs
+  // auslösen (client-seitige SSRF). Nur laden, wenn der Nutzer den Kalender
+  // gerade offen hat; sonst werden die Abos beim nächsten Öffnen aktualisiert.
+  if (activeModal) refreshAllFeeds(false);
   notifyChange();
 }
 
@@ -496,7 +503,35 @@ function deleteEvent(id) {
 
 /* ============================ ICS-Parser ============================ */
 
-/** webcal:// -> https://; nur http(s) zulassen. */
+/**
+ * Blockt Hosts, die auf das lokale/interne Netz zeigen, damit ein Feed-Abo
+ * nicht als client-seitige SSRF gegen loopback/LAN/Cloud-Metadaten-Dienste
+ * missbraucht werden kann (literale private IPs + offensichtlich lokale Namen;
+ * DNS-Rebinding lässt sich clientseitig nicht vollständig verhindern).
+ */
+function isBlockedFeedHost(hostname) {
+  if (!hostname) return true;
+  let h = hostname.toLowerCase();
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1); // IPv6-Klammern
+  if (h === 'localhost' || /\.(local|internal|localhost|lan|home|corp|intranet)$/.test(h)) return true;
+  // IPv6 loopback / link-local (fe80::/10) / unique-local (fc00::/7)
+  if (h === '::1' || h === '::' || /^fe80:/.test(h) || /^f[cd][0-9a-f]{2}:/.test(h)) return true;
+  // IPv4 (auch als Endteil einer IPv4-mapped IPv6-Adresse)
+  const m = h.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    if (a > 255 || b > 255 || +m[3] > 255 || +m[4] > 255) return false; // keine gültige IPv4
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;          // link-local
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;          // 192.168.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
+    if (a >= 224) return true;                         // Multicast/reserviert
+  }
+  return false;
+}
+
+/** webcal:// -> https://; nur http(s) und keine lokalen/internen Hosts zulassen. */
 function normalizeFeedUrl(raw) {
   if (typeof raw !== 'string') return null;
   let s = raw.trim();
@@ -505,6 +540,7 @@ function normalizeFeedUrl(raw) {
   try {
     const u = new URL(s);
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    if (isBlockedFeedHost(u.hostname)) return null; // SSRF-Schutz: keine internen Ziele
     return u.toString();
   } catch (e) {
     return null;

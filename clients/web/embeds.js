@@ -377,40 +377,6 @@ async function fetchYouTubeTitle(watchUrl) {
 }
 
 /**
- * Thumbnail per fetch -> blob -> img.src laden (CSP: nur connect-src https:,
- * kein direktes img-src auf fremde Hosts). Fehler werden toleriert.
- * @param {string} videoId
- * @param {HTMLElement} target
- */
-async function loadYouTubeThumb(videoId, target) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(
-      'https://i.ytimg.com/vi/' + encodeURIComponent(videoId) + '/hqdefault.jpg',
-      { signal: ctrl.signal },
-    );
-    if (!res.ok) return;
-    const blob = await res.blob();
-    if (!blob || !blob.type.startsWith('image/')) return;
-
-    const objUrl = URL.createObjectURL(blob);
-    const img = el('img', 'mm-embed-thumb-img');
-    img.alt = '';
-    img.decoding = 'async';
-    const revoke = () => URL.revokeObjectURL(objUrl);
-    img.addEventListener('load', revoke, { once: true });
-    img.addEventListener('error', revoke, { once: true });
-    img.src = objUrl; // ausschließlich blob:-URL
-    target.prepend(img);
-  } catch {
-    /* Netzwerkfehler tolerieren – Platzhalter bleibt sichtbar */
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
  * @param {{ id: string }} yt
  * @param {URL} u Original-URL
  * @returns {HTMLElement}
@@ -422,7 +388,16 @@ function buildYouTubeCard(yt, u) {
   const poster = el('button', 'mm-embed-poster mm-poster-youtube');
   poster.type = 'button';
   poster.setAttribute('aria-label', 'YouTube-Video abspielen');
-  poster.append(playOverlay());
+  // Statischer, markierter Platzhalter (wie TikTok/Instagram) – KEIN Fetch
+  // von Thumbnail oder Titel beim Rendern. Erst beim Klick wird YouTube
+  // kontaktiert, sodass das bloße Anzeigen einer Nachricht mit YouTube-Link
+  // nicht ungefragt die IP + das Video an Google verrät ("click to load").
+  poster.append(
+    el('span', 'mm-embed-brandmark', '▶'),
+    el('span', 'mm-embed-brandname', 'YouTube'),
+    el('span', 'mm-embed-hint', 'Zum Abspielen tippen'),
+    playOverlay(),
+  );
   media.append(poster);
 
   const canonical = 'https://www.youtube.com/watch?v=' + yt.id;
@@ -438,16 +413,13 @@ function buildYouTubeCard(yt, u) {
     wrap.firstChild.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture');
     media.replaceChildren(wrap);
     card.classList.add('mm-embed-playing');
+    // Titel erst JETZT (nach bewusstem Klick) laden – vorher kein Google-Kontakt.
+    fetchYouTubeTitle(canonical).then((title) => {
+      if (title && titleEl) titleEl.textContent = title;
+    });
   }, { once: true });
 
   card.append(media, info);
-
-  // Asynchron (Fehler toleriert): Thumbnail + Titel nachladen.
-  loadYouTubeThumb(yt.id, poster);
-  fetchYouTubeTitle(canonical).then((title) => {
-    if (title && titleEl) titleEl.textContent = title;
-  });
-
   return card;
 }
 

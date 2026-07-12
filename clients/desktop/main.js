@@ -1,8 +1,25 @@
 'use strict';
 
-const { app, BrowserWindow, shell, protocol, session } = require('electron');
+const { app, BrowserWindow, shell, protocol, session, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+// Origins (scheme://host:port) of the user's configured homeserver(s). The
+// renderer registers these via the "mm:allow-origin" IPC (see preload.js).
+// CORS is relaxed ONLY for these origins — never globally — so the renderer
+// cannot read cross-origin response bodies from arbitrary (incl. internal) hosts.
+const allowedHomeserverOrigins = new Set();
+
+function rememberHomeserverOrigin(raw) {
+  try {
+    const origin = new URL(String(raw)).origin;
+    if (/^https?:\/\//i.test(origin)) {
+      allowedHomeserverOrigins.add(origin);
+      return true;
+    }
+  } catch (e) { /* ungültige URL ignorieren */ }
+  return false;
+}
 
 // Single instance lock: if another instance is already running, quit and
 // let the existing instance focus its window instead.
@@ -147,11 +164,14 @@ if (!gotTheLock) {
    * subject to browser CORS. The desktop app runs inside Chromium, so without
    * help it would be blocked by homeservers that don't send CORS headers.
    *
-   * This adds the required Access-Control-* headers to every http(s) response
-   * the renderer receives and forces preflight OPTIONS requests to succeed.
-   * It only lets the renderer READ responses to requests it may already send;
-   * it does not grant new network reach and keeps webSecurity enabled. We use
-   * a Bearer token (not cookies), so a wildcard origin is safe here.
+   * This adds the required Access-Control-* headers so the renderer may READ
+   * responses from the user's configured homeserver, and forces preflight
+   * OPTIONS to succeed. Crucially it is SCOPED to the registered homeserver
+   * origin(s) only (see allowedHomeserverOrigins) — NOT every http(s) host.
+   * A global relaxation would let the renderer read cross-origin response
+   * bodies from arbitrary (including internal/LAN) hosts, amplifying any SSRF
+   * or injection into a same-origin-policy bypass. We use a Bearer token (not
+   * cookies), so the wildcard allow-origin value is safe for these origins.
    */
   function installHomeserverCors() {
     const CORS = {
@@ -162,7 +182,12 @@ if (!gotTheLock) {
     };
 
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-      if (!/^https?:\/\//i.test(details.url)) {
+      let origin = null;
+      try { origin = new URL(details.url).origin; } catch (e) { /* */ }
+      // Only relax CORS for the user's homeserver origin(s). Every other host
+      // keeps its own (usually absent) CORS headers, so its response body stays
+      // opaque to the renderer — same as in a normal browser.
+      if (!origin || !allowedHomeserverOrigins.has(origin)) {
         callback({});
         return;
       }
@@ -186,6 +211,11 @@ if (!gotTheLock) {
       callback(override);
     });
   }
+
+  // The renderer registers its homeserver origin(s) here before it starts
+  // talking to them; CORS is then relaxed only for these (see
+  // installHomeserverCors). Returns true once the origin is remembered.
+  ipcMain.handle('mm:allow-origin', (_event, origin) => rememberHomeserverOrigin(origin));
 
   app.whenReady().then(() => {
     protocol.handle('mm', (request) => handleAppRequest(request));

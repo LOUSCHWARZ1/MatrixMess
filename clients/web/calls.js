@@ -64,6 +64,35 @@ function newId(prefix) {
 
 function log(...a) { try { console.info('[calls]', ...a); } catch (e) { /* */ } }
 
+/** Ermittelt den erwarteten Gesprächspartner eines Raums: Anrufe sind streng
+ *  1:1. Liefert die Matrix-User-ID GENAU EINES anderen (beigetretenen bzw.
+ *  eingeladenen) Mitglieds – sonst null. Damit werden Call-Events aus
+ *  Gruppenräumen und von fremden Absendern (bösartiger Homeserver / anderes
+ *  Raum-Mitglied) abgewiesen, statt sie an das fälschbare party_id zu binden. */
+function expectedPeer(roomId) {
+  const room = deps.getRoom ? deps.getRoom(roomId) : null;
+  if (!room || !(room.members instanceof Map)) return null;
+  const me = deps.getUserId ? deps.getUserId() : null;
+  let peer = null;
+  let others = 0;
+  for (const [uid, m] of room.members) {
+    if (uid === me) continue;
+    const mem = m && m.membership;
+    if (mem && mem !== 'join' && mem !== 'invite') continue; // left/ban/knock ignorieren
+    others++;
+    peer = uid;
+    if (others > 1) return null; // Gruppenraum – kein 1:1
+  }
+  return others === 1 ? peer : null;
+}
+
+/** Gehört ein eingehendes Signal zum aktiven Anruf? Gleicher Raum UND gleiche
+ *  call_id. Verhindert, dass ein Event aus einem anderen Raum / mit fremder
+ *  call_id den laufenden Anruf manipuliert. */
+function matchesActiveCall(roomId, c) {
+  return !!call && call.roomId === roomId && !!c && call.callId === c.call_id;
+}
+
 export function setIceServers(list) {
   if (Array.isArray(list) && list.length) iceServers = list;
 }
@@ -168,6 +197,8 @@ export async function startCall(roomId, withVideo) {
   if (isBusy()) { deps.toast('Es läuft bereits ein Anruf.'); return; }
   const room = deps.getRoom(roomId);
   if (!room) return;
+  const peer = expectedPeer(roomId);
+  if (!peer) { deps.toast('Anrufe sind nur in direkten 1:1-Chats möglich.'); return; }
   if (!navigator.mediaDevices || !window.RTCPeerConnection) {
     deps.toast('Anrufe werden in diesem Browser nicht unterstützt.');
     return;
@@ -175,6 +206,7 @@ export async function startCall(roomId, withVideo) {
 
   call = {
     roomId,
+    peer,
     callId: newId('c'),
     partyId: newId('p'),
     remoteParty: null,
@@ -236,29 +268,41 @@ export function handleCallEvent(roomId, ev) {
   // select_answer separat.
   const me = deps.getUserId ? deps.getUserId() : null;
   if (me && ev.sender === me) return;
+  // Anrufe sind streng 1:1: Nur Signale vom erwarteten Gesprächspartner
+  // akzeptieren. Während eines laufenden Anrufs ist das der beim Start/Invite
+  // gebundene Partner (stabil, auch wenn sich später die Mitgliederliste
+  // ändert); für einen neuen Invite der einzige andere Teilnehmer eines echten
+  // 1:1-Raums. Verhindert, dass ein Mitglied eines beliebigen gemeinsamen
+  // (Gruppen-)Raums oder – in E2EE-DMs – ein bösartiger Homeserver fremde
+  // Call-Events einschleust (Kaperung/DoS).
+  const peer = (call && call.roomId === roomId) ? call.peer : expectedPeer(roomId);
+  if (!peer || ev.sender !== peer) return;
 
   switch (type) {
-    case 'm.call.invite': return onInvite(roomId, ev, c);
-    case 'm.call.answer': return onAnswer(ev, c);
-    case 'm.call.candidates': return onCandidates(ev, c);
-    case 'm.call.hangup': return onHangup(ev, c);
-    case 'm.call.reject': return onReject(ev, c);
-    case 'm.call.select_answer': return onSelectAnswer(ev, c);
+    case 'm.call.invite': return onInvite(roomId, ev, c, peer);
+    case 'm.call.answer': return onAnswer(roomId, ev, c);
+    case 'm.call.candidates': return onCandidates(roomId, ev, c);
+    case 'm.call.hangup': return onHangup(roomId, ev, c);
+    case 'm.call.reject': return onReject(roomId, ev, c);
+    case 'm.call.select_answer': return onSelectAnswer(roomId, ev, c);
   }
 }
 
-function onInvite(roomId, ev, c) {
+function onInvite(roomId, ev, c, peer) {
   // Alte Invites (aus dem Verlauf) verwerfen.
   const age = Date.now() - (ev.origin_server_ts || 0);
   if (age > (c.lifetime || INVITE_LIFETIME)) return;
+  // Ungültiges/fehlendes Offer abweisen (kein SDP -> nichts anzunehmen).
+  if (!c.offer || typeof c.offer.sdp !== 'string') return;
   if (isBusy()) {
     // Schon im Gespräch: automatisch ablehnen.
     tempReject(roomId, c);
     return;
   }
-  const hasVideo = !!(c.offer && /m=video/.test(c.offer.sdp || ''));
+  const hasVideo = /m=video/.test(c.offer.sdp || '');
   call = {
     roomId,
+    peer,
     callId: c.call_id,
     partyId: newId('p'),
     remoteParty: c.party_id || null,
@@ -310,9 +354,10 @@ export async function acceptCall() {
   }
 }
 
-async function onAnswer(ev, c) {
-  if (!call || call.state !== 'ringing_out') return;
+async function onAnswer(roomId, ev, c) {
+  if (!matchesActiveCall(roomId, c) || call.state !== 'ringing_out') return;
   if (call.remoteParty && c.party_id && call.remoteParty !== c.party_id) return; // andere Antwort
+  if (!c.answer || typeof c.answer.sdp !== 'string') return; // ohne gültiges SDP nichts anzuwenden
   call.remoteParty = c.party_id || call.remoteParty;
   clearTimeout(call.uiTimer);
   stopRingtone();
@@ -329,8 +374,8 @@ async function onAnswer(ev, c) {
   }
 }
 
-async function onCandidates(ev, c) {
-  if (!call) return;
+async function onCandidates(roomId, ev, c) {
+  if (!matchesActiveCall(roomId, c)) return;
   if (call.remoteParty && c.party_id && call.remoteParty !== c.party_id) return;
   for (const cand of c.candidates || []) {
     if (!cand || !cand.candidate) continue;
@@ -361,21 +406,21 @@ async function applyEarlyCandidates() {
   for (const cand of list) await addRemoteCandidate(cand);
 }
 
-function onHangup(ev, c) {
-  if (!call || call.callId !== c.call_id) return;
+function onHangup(roomId, ev, c) {
+  if (!matchesActiveCall(roomId, c)) return;
   deps.toast('Anruf beendet.');
   endCall('remote_hangup', false);
 }
 
-function onReject(ev, c) {
-  if (!call || call.callId !== c.call_id || call.state !== 'ringing_out') return;
+function onReject(roomId, ev, c) {
+  if (!matchesActiveCall(roomId, c) || call.state !== 'ringing_out') return;
   deps.toast('Anruf abgelehnt.');
   endCall('remote_reject', false);
 }
 
-function onSelectAnswer(ev, c) {
+function onSelectAnswer(roomId, ev, c) {
   // Ein anderes eigenes Gerät wurde als Antwort gewählt → hier auflegen.
-  if (!call || call.callId !== c.call_id || call.state !== 'ringing_in') return;
+  if (!matchesActiveCall(roomId, c) || call.state !== 'ringing_in') return;
   if (c.selected_party_id && c.selected_party_id !== call.partyId) {
     endCall('answered_elsewhere', false);
   }
