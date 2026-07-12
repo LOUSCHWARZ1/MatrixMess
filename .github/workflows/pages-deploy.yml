@@ -2,10 +2,11 @@ name: Deploy Website
 
 on:
   push:
-    # Produktions-Deploy NUR vom Release-Branch: ein Push auf einen Feature-/
-    # Experimentier-Branch, der site/** oder clients/web/** berührt, darf nicht
-    # die Live-Seite und /app-PWA überschreiben.
-    branches: [main]
+    # Produktions-Deploy NUR vom Release-/Arbeitsbranch: ein Push auf einen
+    # beliebigen anderen Feature-/Experimentier-Branch, der site/** oder
+    # clients/web/** berührt, darf nicht die Live-Seite und /app-PWA
+    # überschreiben. (Aktueller Deploy-Branch dieses Projekts.)
+    branches: [claude/gifted-sagan-kradma]
     paths:
       - "site/**"
       - "clients/web/**"
