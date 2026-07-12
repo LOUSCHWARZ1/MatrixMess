@@ -24,6 +24,8 @@ import {
   getUpcomingCount,
   applyRemoteState as applyRemoteCalendar,
   ingestSharedEvent,
+  eventsToIcsText,
+  icsFilename,
   CALENDAR_ACCOUNT_DATA_TYPE,
 } from './calendar.js';
 import {
@@ -218,6 +220,14 @@ const passwordNew = $('#password-new');
 const passwordNew2 = $('#password-new2');
 const passwordLogoutDevices = $('#password-logout-devices');
 const passwordSubmit = $('#password-submit');
+const blockForm = $('#block-form');
+const blockInput = $('#block-input');
+const blockedListEl = $('#blocked-list');
+const deleteAccountBtn = $('#delete-account-btn');
+const deleteAccountForm = $('#delete-account-form');
+const deleteAccountPassword = $('#delete-account-password');
+const deleteAccountErase = $('#delete-account-erase');
+const deleteAccountSubmit = $('#delete-account-submit');
 const sidebarEl = $('#sidebar');
 const sidebarToggle = $('#sidebar-toggle');
 const calendarBtn = $('#calendar-btn');
@@ -662,6 +672,145 @@ function finishPasswordChange() {
   passwordNew2.value = '';
   passwordForm.classList.add('hidden');
   toast('Passwort geändert.');
+}
+
+/* ---------- Kontakte blockieren (m.ignored_user_list) ---------- */
+// Die Ignorierliste ist geräteübergreifendes account_data; der Homeserver
+// blendet Nachrichten ignorierter Nutzer bereits serverseitig aus /sync aus.
+
+const IGNORED_AD_TYPE = 'm.ignored_user_list';
+let ignoredUsers = new Set();
+
+// Localpart, dann ":" und Servername (darf einen :Port enthalten).
+const MXID_RE = /^@[^\s:]+:[^\s/]+$/;
+
+async function loadIgnoredUsers() {
+  if (!session) return;
+  try {
+    const data = await api('GET',
+      `/_matrix/client/v3/user/${enc(session.userId)}/account_data/${IGNORED_AD_TYPE}`);
+    applyIgnoredContent(data);
+  } catch (e) {
+    // 404 = noch keine Liste gesetzt; einfach leer lassen.
+    applyIgnoredContent({ ignored_users: {} });
+  }
+}
+
+/** Übernimmt eine m.ignored_user_list aus account_data (Laden oder Sync). */
+function applyIgnoredContent(content) {
+  const map = content && content.ignored_users;
+  const next = new Set();
+  if (map && typeof map === 'object') {
+    for (const uid of Object.keys(map)) next.add(uid);
+  }
+  ignoredUsers = next;
+  renderBlockedList();
+}
+
+async function saveIgnoredUsers() {
+  if (!session) return;
+  const ignored_users = {};
+  for (const uid of ignoredUsers) ignored_users[uid] = {};
+  await api('PUT',
+    `/_matrix/client/v3/user/${enc(session.userId)}/account_data/${IGNORED_AD_TYPE}`,
+    { ignored_users });
+}
+
+function renderBlockedList() {
+  if (!blockedListEl) return;
+  blockedListEl.textContent = '';
+  if (!ignoredUsers.size) {
+    blockedListEl.appendChild(el('div', 'settings-hint', 'Keine blockierten Kontakte.'));
+    return;
+  }
+  const sorted = Array.from(ignoredUsers).sort((a, b) => a.localeCompare(b));
+  for (const uid of sorted) {
+    const row = el('div', 'blocked-row');
+    row.appendChild(el('span', 'blocked-id', uid));
+    const btn = el('button', 'ghost-btn', 'Freigeben');
+    btn.type = 'button';
+    btn.addEventListener('click', () => unblockUser(uid));
+    row.appendChild(btn);
+    blockedListEl.appendChild(row);
+  }
+}
+
+async function blockUser(rawId) {
+  const uid = String(rawId || '').trim();
+  if (!MXID_RE.test(uid)) { toast('Bitte eine gültige Matrix-ID eingeben (@name:server).'); return; }
+  if (session && uid === session.userId) { toast('Du kannst dich nicht selbst blockieren.'); return; }
+  if (ignoredUsers.has(uid)) { toast('Kontakt ist bereits blockiert.'); return; }
+  ignoredUsers.add(uid);
+  renderBlockedList();
+  try {
+    await saveIgnoredUsers();
+    toast('Kontakt blockiert.');
+  } catch (e) {
+    ignoredUsers.delete(uid);
+    renderBlockedList();
+    toast('Blockieren fehlgeschlagen.');
+  }
+}
+
+async function unblockUser(uid) {
+  if (!ignoredUsers.has(uid)) return;
+  ignoredUsers.delete(uid);
+  renderBlockedList();
+  try {
+    await saveIgnoredUsers();
+    toast('Kontakt freigegeben.');
+  } catch (e) {
+    ignoredUsers.add(uid);
+    renderBlockedList();
+    toast('Freigeben fehlgeschlagen.');
+  }
+}
+
+/* ---------- Konto löschen (POST /account/deactivate) ---------- */
+
+async function deactivateAccount() {
+  if (!session) return;
+  const pw = deleteAccountPassword.value;
+  if (!pw) { toast('Bitte Passwort zur Bestätigung eingeben.'); return; }
+  if (!window.confirm('Konto wirklich dauerhaft löschen? Dieser Schritt kann nicht rückgängig gemacht werden.')) {
+    return;
+  }
+  deleteAccountSubmit.disabled = true;
+  const body = {
+    erase: !!deleteAccountErase.checked,
+    auth: {
+      type: 'm.login.password',
+      identifier: { type: 'm.id.user', user: session.userId },
+      password: pw,
+    },
+  };
+  const done = () => {
+    deleteAccountPassword.value = '';
+    settingsOverlay.classList.add('hidden');
+    hardLogout();
+    toast('Konto wurde gelöscht.');
+  };
+  try {
+    await api('POST', '/_matrix/client/v3/account/deactivate', body);
+    done();
+  } catch (err) {
+    if (err && err.status === 401 && err.data && err.data.session) {
+      body.auth.session = err.data.session;
+      try {
+        await api('POST', '/_matrix/client/v3/account/deactivate', body);
+        done();
+        return;
+      } catch (err2) {
+        toast('Konto löschen fehlgeschlagen: ' +
+          (err2 && err2.errcode === 'M_FORBIDDEN' ? 'Passwort falsch' : ((err2 && err2.message) || 'Fehler')));
+      }
+    } else if (err && err.errcode === 'M_FORBIDDEN') {
+      toast('Passwort falsch.');
+    } else {
+      toast('Konto löschen fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+    }
+    deleteAccountSubmit.disabled = false;
+  }
 }
 
 function renderCryptoSection() {
@@ -1279,10 +1428,41 @@ async function sendEventMessage(roomId, evt) {
   if (!room) throw new Error('Raum nicht gefunden');
   const when = new Date(evt.startTs).toLocaleDateString('de-DE',
     { weekday: 'short', day: 'numeric', month: 'long' }) + ', ' + formatTime(evt.startTs);
+  const body = '📅 ' + evt.title + ' – ' + when;
+  const eventField = Object.assign({}, evt);
+
+  // Nicht-verschlüsselte Räume (u. a. Bridge-Chats zu WhatsApp/Signal): den
+  // Termin zusätzlich als echte .ics-Datei anhängen. MatrixMess rendert die
+  // Termin-Karte aus dem io.matrixmess.event-Feld, ALLE anderen Clients zeigen
+  // eine herunterladbare Kalenderdatei, die direkt in Apple/Google/Outlook
+  // importierbar ist. In E2EE-Räumen ist Klartext-Medienversand nicht erlaubt
+  // (und Web-E2EE-Medien noch nicht unterstützt) – dort Text-Fallback.
+  if (!room.isEncrypted) {
+    try {
+      const icsText = eventsToIcsText([evt]);
+      if (icsText) {
+        const filename = icsFilename([evt]);
+        const bytes = new Blob([icsText], { type: 'text/calendar;charset=utf-8' });
+        const mxc = await uploadMedia(bytes, filename, 'text/calendar');
+        await sendRoomMessage(room, {
+          msgtype: 'm.file',
+          body: filename,
+          filename,
+          url: mxc,
+          info: { mimetype: 'text/calendar', size: bytes.size },
+          'io.matrixmess.event': eventField,
+        });
+        return;
+      }
+    } catch (e) {
+      // Upload/Netz fehlgeschlagen: auf reine Text-/Kartennachricht zurückfallen.
+    }
+  }
+
   await sendRoomMessage(room, {
     msgtype: 'm.text',
-    body: '📅 ' + evt.title + ' – ' + when,
-    'io.matrixmess.event': Object.assign({}, evt),
+    body,
+    'io.matrixmess.event': eventField,
   });
 }
 
@@ -2072,6 +2252,12 @@ function eventDisplayBody(ev) {
   if (hasReplyRelation(c) && (ev.editedBody === undefined || ev.editedBody === null)) {
     body = stripReplyFallback(body);
   }
+  // Termin-Nachricht (wird als .ics-Anhang gesendet): in der Vorschau als
+  // Termin zeigen, nicht als "📎 termin-xyz.ics".
+  const shared = c['io.matrixmess.event'];
+  if (shared && typeof shared === 'object' && typeof shared.title === 'string') {
+    return '📅 ' + shared.title;
+  }
   switch (c.msgtype) {
     case 'm.image': return '📷 Bild';
     case 'm.video': return '🎬 Video';
@@ -2526,6 +2712,9 @@ async function processSync(data, generation) {
       // Termine/Kalender-Abos anderer Geräte live übernehmen.
       applyRemoteCalendar(ev.content);
       updateCalendarBadge();
+    } else if (ev.type === IGNORED_AD_TYPE) {
+      // Blockierliste eines anderen Geräts live übernehmen.
+      applyIgnoredContent(ev.content);
     }
   }
 
@@ -6370,6 +6559,7 @@ settingsBtn.addEventListener('click', () => {
   settingsOverlay.classList.remove('hidden');
   loadSessions(); // frische Geräteliste beim Öffnen holen
   loadProfile();  // aktuellen Anzeigenamen/Avatar holen
+  loadIgnoredUsers(); // aktuelle Blockierliste holen
 });
 
 if (sessionsRefreshBtn) sessionsRefreshBtn.addEventListener('click', () => loadSessions());
@@ -6386,6 +6576,21 @@ if (passwordBtn) passwordBtn.addEventListener('click', () => {
   if (!passwordForm.classList.contains('hidden')) passwordCurrent.focus();
 });
 if (passwordForm) passwordForm.addEventListener('submit', (e) => { e.preventDefault(); changePassword(); });
+
+if (blockForm) blockForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  blockUser(blockInput.value);
+  blockInput.value = '';
+});
+
+if (deleteAccountBtn) deleteAccountBtn.addEventListener('click', () => {
+  deleteAccountForm.classList.toggle('hidden');
+  if (!deleteAccountForm.classList.contains('hidden')) deleteAccountPassword.focus();
+});
+if (deleteAccountForm) deleteAccountForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  deactivateAccount();
+});
 
 /* Mobile Bottom-Tab-Bar: Icons montieren und verdrahten. */
 (function initTabBar() {

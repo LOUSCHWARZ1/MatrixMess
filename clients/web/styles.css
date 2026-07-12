@@ -1180,6 +1180,40 @@ html.force-mobile .settings-header {
 }
 .segmented.mini { flex: 0 0 auto; padding: 2px; gap: 2px; }
 .segmented.mini button { padding: 4px 10px; font-size: 12px; flex: 0 0 auto; }
+
+/* Blockierte Kontakte (Privatsphäre) */
+.block-add-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.block-add-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--input-bg, var(--surface));
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.block-add-row .ghost-btn { flex: 0 0 auto; width: auto; }
+.blocked-list { display: flex; flex-direction: column; }
+.blocked-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.blocked-row:last-child { border-bottom: none; }
+.blocked-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+}
+.blocked-row .ghost-btn { flex: 0 0 auto; width: auto; }
+.danger-text { color: var(--danger); }
 .area-notify-row {
   display: flex;
   align-items: center;

@@ -299,6 +299,18 @@
       </section>
 
       <section class="settings-section">
+        <h4>Privatsphäre</h4>
+        <h5 class="settings-subhead">Blockierte Kontakte</h5>
+        <p class="settings-hint">Blockierte Kontakte werden über die Matrix-Ignorierliste auf allen deinen Geräten ausgeblendet.</p>
+        <form id="block-form" class="block-add-row">
+          <input id="block-input" type="text" inputmode="email" autocomplete="off" spellcheck="false"
+                 placeholder="@name:server.org">
+          <button id="block-submit" class="ghost-btn" type="submit">Blockieren</button>
+        </form>
+        <div id="blocked-list" class="blocked-list"></div>
+      </section>
+
+      <section class="settings-section">
         <h4>Konto</h4>
         <div id="settings-user" class="settings-user"></div>
         <button id="password-btn" class="ghost-btn" type="button">Passwort ändern</button>
@@ -323,7 +335,23 @@
           <button id="password-submit" class="primary-btn" type="submit">Passwort ändern</button>
         </form>
         <button id="logout-btn" class="danger-btn">Abmelden</button>
-        <div class="settings-version">MatrixMess Web · Version 0.12.1</div>
+
+        <h5 class="settings-subhead" style="margin-top:18px">Konto löschen</h5>
+        <p class="settings-hint">Löscht dein Matrix-Konto dauerhaft auf dem Homeserver. Dieser Schritt kann nicht rückgängig gemacht werden.</p>
+        <button id="delete-account-btn" class="ghost-btn danger-text" type="button">Konto löschen …</button>
+        <form id="delete-account-form" class="hidden">
+          <label class="field">
+            <span>Passwort zur Bestätigung</span>
+            <input id="delete-account-password" type="password" autocomplete="current-password">
+          </label>
+          <label class="toggle-row">
+            <span>Gesendete Nachrichten anonymisieren</span>
+            <input id="delete-account-erase" type="checkbox" checked>
+            <span class="toggle-slider" aria-hidden="true"></span>
+          </label>
+          <button id="delete-account-submit" class="danger-btn" type="submit">Konto endgültig löschen</button>
+        </form>
+        <div class="settings-version">MatrixMess Web · Version 0.13.0</div>
       </section>
     </div>
   </div>

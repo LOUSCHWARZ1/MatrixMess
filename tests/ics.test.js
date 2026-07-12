@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseIcs, icsToOccurrences, normalizeFeedUrl, parseIcsDuration } from '../clients/web/calendar.js';
+import { parseIcs, icsToOccurrences, normalizeFeedUrl, parseIcsDuration, eventsToIcsText, icsFilename } from '../clients/web/calendar.js';
 
 function ical(lines) { return ['BEGIN:VCALENDAR', ...lines, 'END:VCALENDAR'].join('\r\n'); }
 
@@ -44,5 +44,22 @@ describe('ICS-Parser', () => {
   it('parseIcsDuration versteht ISO-8601', () => {
     expect(parseIcsDuration('P1D')).toBe(86400000);
     expect(parseIcsDuration('PT30M')).toBe(1800000);
+  });
+
+  it('eventsToIcsText erzeugt einen round-trip-fähigen VEVENT (für den .ics-Anhang)', () => {
+    const start = Date.now() + 3 * 86400000;
+    const evt = {
+      id: 'evt-1', title: 'Kaffee, Treffen', note: 'Kurz halten',
+      startTs: start, endTs: start + 45 * 60000, roomName: 'Familie',
+    };
+    const text = eventsToIcsText([evt]);
+    expect(text).toContain('BEGIN:VCALENDAR');
+    expect(text).toContain('SUMMARY:Kaffee\\, Treffen');
+    // Nicht-MatrixMess-Clients müssen die Datei wieder einlesen können.
+    const occ = icsToOccurrences(text, 10);
+    expect(occ.length).toBe(1);
+    expect(occ[0].title).toBe('Kaffee, Treffen');
+    expect(icsFilename([evt])).toMatch(/\.ics$/);
+    expect(eventsToIcsText([])).toBe(null);
   });
 });

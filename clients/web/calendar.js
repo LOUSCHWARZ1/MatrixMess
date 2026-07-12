@@ -1617,14 +1617,19 @@ function icsFileSlug(title) {
   return slug || 'termin';
 }
 
-export function exportIcs(events) {
+/** Erzeugt den reinen RFC-5545-Text (BEGIN:VCALENDAR …) für einen oder mehrere
+ *  Termine – ohne DOM/Download. Gibt null zurück, wenn kein gültiger Termin
+ *  dabei ist. Wird sowohl für den Download (exportIcs) als auch für den
+ *  .ics-Anhang an Chat-Nachrichten (damit Nicht-MatrixMess-Clients den Termin
+ *  als Kalenderdatei sehen) genutzt. */
+export function eventsToIcsText(events) {
   const list = Array.isArray(events) ? events : (events ? [events] : []);
   const clean = [];
   for (const raw of list) {
     const evt = coerceEvent(raw);
     if (evt) clean.push(evt);
   }
-  if (!clean.length) return;
+  if (!clean.length) return null;
 
   const dtstamp = icsUtc(Date.now());
   const lines = [
@@ -1646,11 +1651,22 @@ export function exportIcs(events) {
     lines.push('END:VEVENT');
   }
   lines.push('END:VCALENDAR');
+  return lines.map(foldIcsLine).join('\r\n') + '\r\n';
+}
 
-  const text = lines.map(foldIcsLine).join('\r\n') + '\r\n';
-  const filename = clean.length === 1
-    ? 'termin-' + icsFileSlug(clean[0].title) + '.ics'
+/** Passenden Dateinamen für einen .ics-Export/-Anhang bilden. */
+export function icsFilename(events) {
+  const list = Array.isArray(events) ? events : (events ? [events] : []);
+  const first = list.length ? coerceEvent(list[0]) : null;
+  return list.length === 1 && first
+    ? 'termin-' + icsFileSlug(first.title) + '.ics'
     : 'matrixmess-termine.ics';
+}
+
+export function exportIcs(events) {
+  const text = eventsToIcsText(events);
+  if (!text) return;
+  const filename = icsFilename(events);
 
   const blob = new Blob([text], { type: 'text/calendar;charset=utf-8' });
   const url = URL.createObjectURL(blob);
