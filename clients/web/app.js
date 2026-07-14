@@ -2106,6 +2106,9 @@ function getRoom(roomId) {
       bridgeProtocol: null,     // aus m.bridge / uk.half-shot.bridge
       bridgeHint: null,         // aus Sender-Prefixen (@whatsapp_ …)
       powerLevels: null,        // m.room.power_levels-Content (null = noch unbekannt)
+      pinnedEvents: [],         // m.room.pinned_events (Event-IDs)
+      joinRule: null,           // m.room.join_rules
+      historyVisibility: null,  // m.room.history_visibility
     };
     rooms.set(roomId, room);
   }
@@ -2303,6 +2306,15 @@ function applyStateEvent(room, ev) {
       break;
     case 'm.room.power_levels':
       room.powerLevels = c || {};
+      break;
+    case 'm.room.pinned_events':
+      room.pinnedEvents = Array.isArray(c.pinned) ? c.pinned.filter((x) => typeof x === 'string') : [];
+      break;
+    case 'm.room.join_rules':
+      room.joinRule = typeof c.join_rule === 'string' ? c.join_rule : null;
+      break;
+    case 'm.room.history_visibility':
+      room.historyVisibility = typeof c.history_visibility === 'string' ? c.history_visibility : null;
       break;
     case 'm.bridge':
     case 'uk.half-shot.bridge':
@@ -3266,6 +3278,446 @@ async function openRoomEditDialog(roomId) {
   });
   body.appendChild(save);
   if (canName) nameInput.focus();
+
+  // Erweiterte Raum-Einstellungen (nur relevant für echte Gruppenräume, nicht DMs).
+  if (!room.isDirect) appendAdvancedRoomSettings(body, room);
+}
+
+/* ========================================================================
+ * Erweiterte Raum-Einstellungen (Sichtbarkeit, Beitritt, Verlauf, Rolle, Alias)
+ * ====================================================================== */
+
+const HISTORY_OPTIONS = [
+  ['shared', 'Ab Beitritt + vorherige (geteilt)'],
+  ['invited', 'Ab Einladung'],
+  ['joined', 'Nur ab Beitritt'],
+  ['world_readable', 'Öffentlich lesbar (auch ohne Beitritt)'],
+];
+const JOINRULE_OPTIONS = [
+  ['invite', 'Nur mit Einladung'],
+  ['public', 'Öffentlich (jeder darf beitreten)'],
+];
+
+function ncSelectField(labelText, options, current, disabled, onChange) {
+  const label = el('label', 'nc-field-label', labelText);
+  const sel = el('select', 'nc-input');
+  sel.disabled = !!disabled;
+  for (const [val, text] of options) {
+    const opt = el('option', null, text);
+    opt.value = val;
+    if (val === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => onChange(sel.value));
+  return { label, sel };
+}
+
+async function appendAdvancedRoomSettings(body, room) {
+  await ensurePowerLevels(room);
+  body.appendChild(el('div', 'nc-divider'));
+  const head = el('div', 'nc-adv-head');
+  head.appendChild(icon('settings', 15));
+  head.appendChild(el('span', null, 'Erweiterte Einstellungen'));
+  body.appendChild(head);
+
+  const canJoin = canSendState(room, 'm.room.join_rules');
+  const canHist = canSendState(room, 'm.room.history_visibility');
+  const canPL = canSendState(room, 'm.room.power_levels');
+  const canAlias = canSendState(room, 'm.room.canonical_alias');
+
+  // --- Wer darf beitreten (join_rules) ---
+  {
+    const { label, sel } = ncSelectField('Wer darf beitreten', JOINRULE_OPTIONS,
+      room.joinRule || 'invite', !canJoin, async (val) => {
+        try {
+          await sendStateEvent(room.roomId, 'm.room.join_rules', { join_rule: val });
+          room.joinRule = val;
+          toast('Beitrittsregel gespeichert');
+        } catch (e) { toast('Speichern fehlgeschlagen: ' + ((e && e.message) || 'Fehler')); }
+      });
+    body.appendChild(label); body.appendChild(sel);
+  }
+
+  // --- Verlaufssichtbarkeit ---
+  {
+    const { label, sel } = ncSelectField('Verlauf sichtbar', HISTORY_OPTIONS,
+      room.historyVisibility || 'shared', !canHist, async (val) => {
+        try {
+          await sendStateEvent(room.roomId, 'm.room.history_visibility', { history_visibility: val });
+          room.historyVisibility = val;
+          toast('Verlaufssichtbarkeit gespeichert');
+        } catch (e) { toast('Speichern fehlgeschlagen: ' + ((e && e.message) || 'Fehler')); }
+      });
+    body.appendChild(label); body.appendChild(sel);
+  }
+
+  // --- Standard-Rolle neuer Mitglieder (users_default) ---
+  {
+    const cur = typeof plContent(room).users_default === 'number' ? plContent(room).users_default : 0;
+    const curVal = cur >= 50 ? '50' : '0';
+    const { label, sel } = ncSelectField('Standard-Rolle neuer Mitglieder',
+      [['0', 'Mitglied'], ['50', 'Moderator']], curVal, !canPL, async (val) => {
+        try {
+          const c = JSON.parse(JSON.stringify(plContent(room)));
+          c.users_default = parseInt(val, 10);
+          await sendStateEvent(room.roomId, 'm.room.power_levels', c);
+          room.powerLevels = c;
+          toast('Standard-Rolle gespeichert');
+        } catch (e) { toast('Speichern fehlgeschlagen: ' + ((e && e.message) || 'Fehler')); }
+      });
+    body.appendChild(label); body.appendChild(sel);
+  }
+
+  // --- Verzeichnis-Sichtbarkeit (public/private im Raumverzeichnis) ---
+  {
+    const label = el('label', 'nc-field-label', 'Im öffentlichen Raumverzeichnis');
+    const sel = el('select', 'nc-input');
+    for (const [val, text] of [['private', 'Nicht gelistet'], ['public', 'Gelistet']]) {
+      const opt = el('option', null, text); opt.value = val; sel.appendChild(opt);
+    }
+    sel.disabled = true; // bis der aktuelle Wert geladen ist
+    api('GET', `/_matrix/client/v3/directory/list/room/${enc(room.roomId)}`)
+      .then((r) => { sel.value = (r && r.visibility) || 'private'; if (canJoin) sel.disabled = false; })
+      .catch(() => { sel.disabled = false; });
+    sel.addEventListener('change', async () => {
+      try {
+        await api('PUT', `/_matrix/client/v3/directory/list/room/${enc(room.roomId)}`,
+          { visibility: sel.value });
+        toast('Verzeichnis-Sichtbarkeit gespeichert');
+      } catch (e) { toast('Speichern fehlgeschlagen: ' + ((e && e.message) || 'Fehler')); }
+    });
+    body.appendChild(label); body.appendChild(sel);
+  }
+
+  // --- Öffentliche Adresse (Alias) ---
+  if (canAlias) {
+    const label = el('label', 'nc-field-label', 'Öffentliche Adresse (Alias)');
+    body.appendChild(label);
+    const row = el('div', 'nc-alias-row');
+    const prefix = el('span', 'nc-alias-prefix', '#');
+    const input = el('input', 'nc-input');
+    input.type = 'text';
+    input.placeholder = 'mein-raum';
+    const domain = session ? session.userId.slice(session.userId.indexOf(':')) : '';
+    const suffix = el('span', 'nc-alias-suffix', domain);
+    if (room.canonicalAlias) {
+      const m = /^#([^:]+):/.exec(room.canonicalAlias);
+      if (m) input.value = m[1];
+    }
+    const setBtn = el('button', 'ghost-btn', 'Setzen');
+    setBtn.type = 'button';
+    setBtn.addEventListener('click', async () => {
+      const local = input.value.trim().replace(/[^a-zA-Z0-9._=\-/]/g, '');
+      if (!local) { toast('Bitte einen Adressnamen eingeben.'); return; }
+      const alias = '#' + local + domain;
+      setBtn.disabled = true;
+      try {
+        // 1) Alias -> Raum-Mapping anlegen, 2) als kanonische Adresse setzen.
+        await api('PUT', `/_matrix/client/v3/directory/room/${enc(alias)}`, { room_id: room.roomId });
+        await sendStateEvent(room.roomId, 'm.room.canonical_alias', { alias });
+        room.canonicalAlias = alias;
+        toast('Adresse ' + alias + ' gesetzt');
+      } catch (e) {
+        toast('Adresse fehlgeschlagen: ' +
+          (e && e.errcode === 'M_ROOM_IN_USE' ? 'Adresse bereits vergeben' : ((e && e.message) || 'Fehler')));
+      } finally {
+        setBtn.disabled = false;
+      }
+    });
+    row.appendChild(prefix);
+    row.appendChild(input);
+    row.appendChild(suffix);
+    row.appendChild(setBtn);
+    body.appendChild(row);
+  }
+
+  if (!canJoin && !canHist && !canPL && !canAlias) {
+    body.appendChild(el('p', 'nc-hint',
+      'Für die erweiterten Einstellungen brauchst du Admin-Rechte in diesem Raum.'));
+  }
+}
+
+/* ========================================================================
+ * Kontakt-/Profilansicht
+ * ====================================================================== */
+
+/** Öffnet das Profil eines Nutzers. `room` (optional) zeigt Rolle + Kontext. */
+async function openUserProfile(userId, room) {
+  if (!userId) return;
+  const isMe = session && userId === session.userId;
+  const body = ncShell('Profil', false);
+
+  // Kopf: großer Avatar, Name, MXID
+  const hero = el('div', 'nc-profile-hero');
+  const av = el('div', 'nc-profile-avatar');
+  const localMember = room && room.members ? room.members.get(userId) : null;
+  const localName = room ? memberName(room, userId) : userId;
+  setAvatar(av, userId, localName, localMember && localMember.avatarUrl);
+  hero.appendChild(av);
+  const nameEl = el('div', 'nc-profile-name', localName);
+  hero.appendChild(nameEl);
+  const idRow = el('button', 'nc-profile-id');
+  idRow.type = 'button';
+  idRow.title = 'Matrix-ID kopieren';
+  idRow.appendChild(el('span', null, userId));
+  idRow.appendChild(icon('file', 13));
+  idRow.addEventListener('click', () => copyText(userId, 'Matrix-ID kopiert'));
+  hero.appendChild(idRow);
+  if (room && room.powerLevels) {
+    const lvl = plUserLevel(room, userId);
+    const rl = lvl >= 100 ? 'Admin' : lvl >= 50 ? 'Moderator' : null;
+    if (rl) hero.appendChild(el('div', 'nc-profile-role', rl + ' in diesem Raum'));
+  }
+  body.appendChild(hero);
+
+  // Frischen Namen/Avatar vom Server nachladen (falls lokal unbekannt).
+  api('GET', `/_matrix/client/v3/profile/${enc(userId)}`).then((p) => {
+    if (!ncOverlay) return;
+    if (p && p.displayname) nameEl.textContent = p.displayname;
+    if (p && p.avatar_url) setAvatar(av, userId, p.displayname || localName, p.avatar_url);
+  }).catch(() => { /* Profil evtl. nicht abrufbar */ });
+
+  // Aktionen
+  if (!isMe) {
+    const actions = el('div', 'nc-profile-actions');
+    const dm = el('button', 'primary-btn');
+    dm.type = 'button';
+    dm.appendChild(icon('chat', 16));
+    dm.appendChild(el('span', null, 'Direktnachricht'));
+    dm.addEventListener('click', async () => {
+      dm.disabled = true;
+      try {
+        const rid = await startDirectChat(userId);
+        closeNewChatDialog();
+        renderRoomList();
+        openRoom(rid);
+      } catch (e) {
+        dm.disabled = false;
+        toast('Chat konnte nicht erstellt werden: ' + ((e && e.message) || 'Fehler'));
+      }
+    });
+    actions.appendChild(dm);
+
+    const blocked = ignoredUsers.has(userId);
+    const blockBtn = el('button', 'ghost-btn' + (blocked ? '' : ' danger-text'));
+    blockBtn.type = 'button';
+    blockBtn.appendChild(icon(blocked ? 'check' : 'shield-alert', 16));
+    blockBtn.appendChild(el('span', null, blocked ? 'Blockierung aufheben' : 'Blockieren'));
+    blockBtn.addEventListener('click', async () => {
+      blockBtn.disabled = true;
+      if (blocked) await unblockUser(userId); else await blockUser(userId);
+      openUserProfile(userId, room); // neu rendern (Status wechselt)
+    });
+    actions.appendChild(blockBtn);
+    body.appendChild(actions);
+  }
+
+  // Gemeinsame Räume
+  const shared = [];
+  for (const r of rooms.values()) {
+    if (r.members && r.members.has(userId) && !roomprefs.isArchived(r.roomId)) shared.push(r);
+  }
+  shared.sort((a, b) => roomDisplayName(a).localeCompare(roomDisplayName(b)));
+  const sharedBox = el('div', 'nc-profile-shared');
+  sharedBox.appendChild(el('div', 'nc-field-label',
+    shared.length ? 'Gemeinsame Räume (' + shared.length + ')' : 'Keine gemeinsamen Räume'));
+  for (const r of shared.slice(0, 30)) {
+    const rrow = el('button', 'nc-row');
+    rrow.type = 'button';
+    const rav = el('span', 'nc-row-avatar');
+    setAvatar(rav, r.roomId, roomDisplayName(r), roomAvatarMxc(r));
+    rrow.appendChild(rav);
+    const info = el('span', 'nc-row-info');
+    info.appendChild(el('span', 'nc-row-title', roomDisplayName(r)));
+    rrow.appendChild(info);
+    rrow.addEventListener('click', () => { closeNewChatDialog(); openRoom(r.roomId); });
+    sharedBox.appendChild(rrow);
+  }
+  body.appendChild(sharedBox);
+}
+
+/* ========================================================================
+ * Text kopieren + Nachrichten-Aktionen (Pin, Quelle)
+ * ====================================================================== */
+
+async function copyText(text, okMsg) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    toast(okMsg || 'Kopiert');
+  } catch (e) {
+    toast('Kopieren nicht möglich');
+  }
+}
+
+function isPinned(room, eventId) {
+  return Array.isArray(room.pinnedEvents) && room.pinnedEvents.includes(eventId);
+}
+
+async function togglePinMessage(room, ev) {
+  if (!ev.eventId) return;
+  await ensurePowerLevels(room);
+  if (!canSendState(room, 'm.room.pinned_events')) {
+    toast('Keine Berechtigung, Nachrichten anzupinnen.');
+    return;
+  }
+  const cur = Array.isArray(room.pinnedEvents) ? room.pinnedEvents.slice() : [];
+  const idx = cur.indexOf(ev.eventId);
+  if (idx >= 0) cur.splice(idx, 1); else cur.push(ev.eventId);
+  const prev = room.pinnedEvents;
+  room.pinnedEvents = cur;
+  renderPinnedBar(room);
+  try {
+    await sendStateEvent(room.roomId, 'm.room.pinned_events', { pinned: cur });
+    toast(idx >= 0 ? 'Nachricht losgelöst' : 'Nachricht angepinnt');
+  } catch (e) {
+    room.pinnedEvents = prev;
+    renderPinnedBar(room);
+    toast('Anpinnen fehlgeschlagen: ' + ((e && e.message) || 'Fehler'));
+  }
+}
+
+/** Roh-Quelle (JSON) einer Nachricht anzeigen. */
+function showEventSource(room, ev) {
+  const body = ncShell('Nachrichtenquelle', false);
+  const obj = {
+    event_id: ev.eventId || null,
+    type: ev.encrypted ? 'm.room.encrypted' : (ev.type || 'm.room.message'),
+    sender: ev.sender || null,
+    origin_server_ts: ev.ts || null,
+    content: ev.content || {},
+  };
+  let json = '';
+  try { json = JSON.stringify(obj, null, 2); } catch (e) { json = String(obj); }
+  const pre = el('pre', 'nc-source');
+  pre.textContent = json;
+  body.appendChild(pre);
+  const copyBtn = el('button', 'ghost-btn');
+  copyBtn.type = 'button';
+  copyBtn.appendChild(icon('file', 15));
+  copyBtn.appendChild(el('span', null, 'JSON kopieren'));
+  copyBtn.addEventListener('click', () => copyText(json, 'Quelle kopiert'));
+  body.appendChild(copyBtn);
+}
+
+/** Kontextmenü einer Nachricht (⋯-Button oder Rechtsklick). */
+function openMessageMenu(anchor, room, ev, mine) {
+  const c = ev.content || {};
+  const pop = openPopoverShell('msg-menu');
+
+  const item = (iconName, label, danger, handler) => {
+    const b = el('button', 'room-menu-item' + (danger ? ' danger' : ''));
+    b.type = 'button';
+    b.appendChild(icon(iconName, 16));
+    b.appendChild(el('span', null, label));
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closePopover();
+      handler();
+    });
+    pop.appendChild(b);
+  };
+
+  if (ev.type === 'm.room.message') {
+    item('reply', 'Antworten', false, () => startReply(room, ev));
+    item('forward', 'Weiterleiten', false, () => openForwardPicker(anchor, room, ev));
+    const text = ev.editedBody != null ? ev.editedBody : (c.body || '');
+    if (text) item('file', 'Text kopieren', false, () => copyText(text, 'Text kopiert'));
+  }
+  item(isPinned(room, ev.eventId) ? 'pin' : 'pin', isPinned(room, ev.eventId) ? 'Lospinnen' : 'Anpinnen',
+    false, () => togglePinMessage(room, ev));
+  item('search', 'Quelle anzeigen', false, () => showEventSource(room, ev));
+
+  if (mine && ev.type === 'm.room.message') {
+    const editable = !c.msgtype || c.msgtype === 'm.text' || c.msgtype === 'm.notice' || c.msgtype === 'm.emote';
+    if (editable) item('edit', 'Bearbeiten', false, () => startEdit(room, ev));
+  }
+  // Löschen: eigene Nachricht ODER Redaktionsrecht.
+  const canRedact = mine || canDoRoomAction(room, 'redact');
+  if (canRedact && ev.eventId) {
+    item('trash', 'Löschen', true, () => deleteMessage(room, ev));
+  }
+  placePopover(pop, anchor);
+}
+
+/** Gepinnte-Nachrichten-Leiste über der Timeline aktualisieren. */
+function renderPinnedBar(room) {
+  const bar = document.getElementById('pinned-bar');
+  if (!bar) return;
+  bar.textContent = '';
+  const ids = (room && Array.isArray(room.pinnedEvents)) ? room.pinnedEvents : [];
+  if (!ids.length || activeRoomId !== room.roomId) { bar.classList.add('hidden'); return; }
+  // Neueste Pins zuerst.
+  const lastId = ids[ids.length - 1];
+  const ev = room.eventIndex.get(lastId);
+
+  const icn = el('span', 'pinned-icon');
+  icn.appendChild(icon('pin', 14));
+  bar.appendChild(icn);
+
+  const txt = el('button', 'pinned-text');
+  txt.type = 'button';
+  const label = el('span', 'pinned-label',
+    ids.length > 1 ? 'Angepinnt · ' + ids.length : 'Angepinnt');
+  txt.appendChild(label);
+  txt.appendChild(el('span', 'pinned-preview',
+    ev ? truncate(eventDisplayBody(ev), 80) : 'Nachricht im Verlauf'));
+  txt.addEventListener('click', () => jumpToMessage(room, lastId));
+  bar.appendChild(txt);
+
+  const listBtn = el('button', 'pinned-more');
+  listBtn.type = 'button';
+  listBtn.title = 'Alle angepinnten Nachrichten';
+  listBtn.appendChild(icon('more-v', 16));
+  listBtn.addEventListener('click', (e) => { e.stopPropagation(); openPinnedList(room); });
+  bar.appendChild(listBtn);
+
+  bar.classList.remove('hidden');
+}
+
+/** Liste aller angepinnten Nachrichten. */
+function openPinnedList(room) {
+  const body = ncShell('Angepinnte Nachrichten', false);
+  const ids = (room && Array.isArray(room.pinnedEvents)) ? room.pinnedEvents.slice().reverse() : [];
+  if (!ids.length) { body.appendChild(el('div', 'nc-empty', 'Keine angepinnten Nachrichten.')); return; }
+  const canUnpin = canSendState(room, 'm.room.pinned_events');
+  for (const id of ids) {
+    const ev = room.eventIndex.get(id);
+    const row = el('div', 'nc-row');
+    const info = el('button', 'nc-row-info nc-pin-jump');
+    info.type = 'button';
+    info.appendChild(el('span', 'nc-row-title', ev ? memberName(room, ev.sender) : 'Nachricht'));
+    info.appendChild(el('span', 'nc-row-sub', ev ? truncate(eventDisplayBody(ev), 80) : id));
+    info.addEventListener('click', () => { closeNewChatDialog(); jumpToMessage(room, id); });
+    row.appendChild(info);
+    if (canUnpin) {
+      const unpin = el('button', 'icon-btn');
+      unpin.type = 'button';
+      unpin.title = 'Lospinnen';
+      unpin.appendChild(icon('x', 15));
+      unpin.addEventListener('click', async () => {
+        const cur = room.pinnedEvents.filter((x) => x !== id);
+        room.pinnedEvents = cur;
+        try {
+          await sendStateEvent(room.roomId, 'm.room.pinned_events', { pinned: cur });
+          renderPinnedBar(room);
+          openPinnedList(room);
+        } catch (e) { toast('Lospinnen fehlgeschlagen'); }
+      });
+      row.appendChild(unpin);
+    }
+    body.appendChild(row);
+  }
 }
 
 /* ========================================================================
@@ -3514,6 +3966,7 @@ async function processSync(data, generation) {
       renderChatHeader(room);
       renderTypingBar(room);
       renderTimeline(nearBottom ? 'bottom' : 'keep');
+      renderPinnedBar(room);
       refreshRoomInfo(activeRoomId);
       if (newRemoteInActive > 0) {
         if (nearBottom) {
@@ -4996,6 +5449,7 @@ function openRoom(roomId) {
   }
   updateScrollDownBtn();
   updateDecryptionBanner();
+  renderPinnedBar(room);
   // Öffnen hebt "als ungelesen markiert" auf.
   if (room.markedUnread) {
     room.markedUnread = false;
@@ -5301,7 +5755,12 @@ function buildMessageRow(room, ev, startsGroup, endsGroup, readState) {
   const frag = document.createDocumentFragment();
 
   if (!mine && startsGroup) {
-    frag.appendChild(el('div', 'msg-sender', memberName(room, ev.sender)));
+    const senderEl = el('button', 'msg-sender');
+    senderEl.type = 'button';
+    senderEl.textContent = memberName(room, ev.sender);
+    senderEl.title = 'Profil ansehen';
+    senderEl.addEventListener('click', () => openUserProfile(ev.sender, room));
+    frag.appendChild(senderEl);
   }
 
   const row = el('div', 'msg-row');
@@ -5318,6 +5777,13 @@ function buildMessageRow(room, ev, startsGroup, endsGroup, readState) {
   const wrap = el('div', 'bubble-wrap');
   const bubble = el('div', 'bubble');
   fillBubbleContent(room, ev, bubble, endsGroup, readState);
+  // Rechtsklick / Long-Press öffnet das Nachrichten-Kontextmenü.
+  if (!ev.pending && !ev.redacted && ev.eventId) {
+    bubble.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openMessageMenu(bubble, room, ev, mine);
+    });
+  }
   wrap.appendChild(bubble);
 
   // Reaktions-Chips
@@ -5415,15 +5881,21 @@ function fillBubbleContent(room, ev, bubble, endsGroup, readState) {
   const c = ev.content || {};
   const msgtype = c.msgtype || 'm.text';
 
-  // Reply-Zitat
+  // Reply-Zitat (klickbar: springt zur zitierten Nachricht)
   if (hasReplyRelation(c)) {
     const origId = c['m.relates_to']['m.in_reply_to'].event_id;
     const orig = room.eventIndex.get(origId);
-    const quote = el('span', 'reply-quote');
+    const quote = el('button', 'reply-quote');
+    quote.type = 'button';
+    quote.title = 'Zur zitierten Nachricht springen';
     quote.appendChild(el('span', 'rq-sender', orig ? memberName(room, orig.sender) : 'Antwort'));
     quote.appendChild(document.createTextNode(
       orig ? truncate(eventDisplayBody(orig), 90) : 'Ursprüngliche Nachricht'
     ));
+    quote.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (origId) jumpToMessage(room, origId);
+    });
     bubble.appendChild(quote);
   }
 
@@ -5588,13 +6060,18 @@ function buildMessageActions(room, ev, mine) {
       editBtn.addEventListener('click', () => startEdit(room, ev));
       actions.appendChild(editBtn);
     }
-    const delBtn = el('button');
-    delBtn.appendChild(icon('trash', 15));
-    delBtn.title = 'Löschen';
-    delBtn.setAttribute('aria-label', 'Löschen');
-    delBtn.addEventListener('click', () => deleteMessage(room, ev));
-    actions.appendChild(delBtn);
   }
+
+  // ⋯-Menü: Kopieren, Anpinnen, Quelle anzeigen, Löschen …
+  const moreBtn = el('button');
+  moreBtn.appendChild(icon('more-h', 16));
+  moreBtn.title = 'Mehr';
+  moreBtn.setAttribute('aria-label', 'Weitere Aktionen');
+  moreBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openMessageMenu(moreBtn, room, ev, mine);
+  });
+  actions.appendChild(moreBtn);
   return actions;
 }
 
@@ -7574,6 +8051,7 @@ async function init() {
       renderRoomList();
       openRoom(rid);
     },
+    openProfile: (uid, room) => openUserProfile(uid, room),
   });
   applySettings();
   autoGrowComposer();

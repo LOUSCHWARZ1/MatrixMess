@@ -2030,6 +2030,70 @@ html.force-mobile .settings-header {
 .nc-avatar-big img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .nc-avatar-big:disabled { cursor: default; }
 
+/* Profilansicht */
+.nc-profile-hero { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px 0 4px; }
+.nc-profile-avatar {
+  width: 96px; height: 96px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 38px; font-weight: 600; overflow: hidden; position: relative;
+}
+.nc-profile-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.nc-profile-name { font-size: 19px; font-weight: 700; text-align: center; }
+.nc-profile-id {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--text-secondary);
+  padding: 3px 8px; border-radius: 999px;
+}
+.nc-profile-id:hover { background: var(--hover); }
+.nc-profile-role { font-size: 12.5px; color: var(--accent); font-weight: 600; }
+.nc-profile-actions { display: flex; flex-direction: column; gap: 8px; margin: 6px 0; }
+.nc-profile-actions .primary-btn,
+.nc-profile-actions .ghost-btn { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.nc-profile-shared { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+
+/* Erweiterte Raum-Einstellungen */
+.nc-adv-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-secondary); }
+.nc-adv-head svg { color: var(--text-secondary); }
+select.nc-input { cursor: pointer; }
+.nc-alias-row { display: flex; align-items: center; gap: 4px; }
+.nc-alias-prefix, .nc-alias-suffix { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+.nc-alias-row .nc-input { flex: 1; min-width: 0; }
+.nc-alias-row .ghost-btn { flex: 0 0 auto; width: auto; }
+
+/* Nachrichtenquelle (JSON) */
+.nc-source {
+  margin: 0; padding: 12px; border-radius: 10px;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  max-height: 50vh; overflow: auto;
+}
+
+/* Kompaktes Nachrichten-Kontextmenü (nutzt room-menu-item) */
+.mm-popover.msg-menu { width: min(230px, calc(100vw - 16px)); padding: 5px; gap: 0; }
+
+/* Klickbarer Sendername + klickbares Reply-Zitat (jetzt <button>) */
+.msg-sender { background: none; border: none; cursor: pointer; text-align: left; display: block; max-width: 100%; }
+.msg-sender:hover { text-decoration: underline; }
+.reply-quote { background: none; border: none; border-left: 3px solid currentColor; cursor: pointer; text-align: left; width: 100%; font: inherit; color: inherit; }
+.reply-quote:hover { opacity: 1; }
+
+/* Angepinnte-Nachrichten-Leiste über der Timeline */
+#pinned-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary, rgba(0,0,0,.02));
+  flex: 0 0 auto;
+}
+.pinned-icon { display: inline-flex; color: var(--accent); flex: 0 0 auto; }
+.pinned-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; text-align: left; color: var(--text); }
+.pinned-label { font-size: 12px; font-weight: 700; color: var(--accent); flex: 0 0 auto; }
+.pinned-preview { font-size: 13px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pinned-more { flex: 0 0 auto; color: var(--text-secondary); padding: 2px; border-radius: 6px; }
+.pinned-more:hover { background: var(--hover); }
+.nc-pin-jump { text-align: left; }
+
 /* Handy: Dialog als Vollbild-Sheet */
 @media (max-width: 719px) {
   .nc-overlay { align-items: stretch; justify-content: stretch; padding: 0; }

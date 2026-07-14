@@ -213,6 +213,9 @@ export function serializeRoom(room) {
     bridgeProtocol: room.bridgeProtocol || null,
     bridgeHint: room.bridgeHint || null,
     powerLevels: room.powerLevels || null,
+    pinnedEvents: Array.isArray(room.pinnedEvents) ? room.pinnedEvents : [],
+    joinRule: room.joinRule || null,
+    historyVisibility: room.historyVisibility || null,
   };
 }
 
@@ -249,6 +252,9 @@ export function deserializeRoom(obj) {
     bridgeProtocol: obj.bridgeProtocol || null,
     bridgeHint: obj.bridgeHint || null,
     powerLevels: obj.powerLevels || null,
+    pinnedEvents: Array.isArray(obj.pinnedEvents) ? obj.pinnedEvents : [],
+    joinRule: obj.joinRule || null,
+    historyVisibility: obj.historyVisibility || null,
   };
 }
 

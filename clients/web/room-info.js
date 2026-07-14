@@ -257,6 +257,9 @@ async function renderMembers(room, c) {
       box.appendChild(b);
     };
 
+    if (typeof D.openProfile === 'function') {
+      action('user', 'Profil ansehen', false, () => D.openProfile(uid, room));
+    }
     if (!isSelf && typeof D.startDm === 'function') {
       action('chat', 'Nachricht senden', false, () => D.startDm(uid));
     }
