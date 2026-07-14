@@ -45,7 +45,9 @@
 .ri-row-value { text-align: right; word-break: break-all; }
 
 .ri-count { font-size: 12px; color: var(--text-secondary, #999); margin-bottom: 8px; }
-.ri-member { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+.ri-member { display: flex; align-items: center; gap: 10px; padding: 7px 0;
+  width: 100%; text-align: left; border-radius: 10px; color: var(--text, #111); }
+.ri-member:hover { background: var(--hover, rgba(0,0,0,.05)); }
 .ri-member-avatar { width: 38px; height: 38px; border-radius: 50%; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 600; overflow: hidden; position: relative; }
 .ri-member-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .ri-member-info { min-width: 0; }
@@ -79,6 +81,40 @@
 .ri-media-cell.ri-media-video { background: var(--bg-tertiary, #ddd); cursor: default; }
 
 .ri-member-list { display: flex; flex-direction: column; }
+
+/* Bearbeiten-Knopf im Info-Kopf (Name/Thema/Bild) */
+.ri-edit-btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px;
+  padding: 6px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+  border: 1px solid var(--border, rgba(0,0,0,.1)); color: var(--text, #111); }
+.ri-edit-btn:hover { background: var(--hover, rgba(0,0,0,.05)); }
+
+/* Einladen-Zeile über der Mitgliederliste */
+.ri-invite-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.ri-invite-input { flex: 1; min-width: 0; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--border, rgba(0,0,0,.12)); background: var(--bg, #fff);
+  color: var(--text, #111); font: inherit; font-size: 13.5px; }
+.ri-invite-btn { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  padding: 8px 12px; border-radius: 10px; font-size: 12.5px; font-weight: 600;
+  border: 1px solid var(--border, rgba(0,0,0,.12)); color: var(--text, #111); }
+.ri-invite-btn:hover { background: var(--hover, rgba(0,0,0,.05)); }
+.ri-invite-btn:disabled { opacity: .5; }
+
+/* Rollen-Badge (Admin/Moderator) am Mitgliedsnamen */
+.ri-role-badge { display: inline-block; margin-left: 6px; padding: 1px 7px;
+  border-radius: 999px; font-size: 10.5px; font-weight: 700; vertical-align: 1px;
+  background: color-mix(in srgb, var(--accent, #8b4df7) 14%, transparent);
+  color: var(--accent, #8b4df7); }
+
+/* Aufgeklappte Aktionsliste unter einem Mitglied */
+.ri-member-actions { display: flex; flex-direction: column; gap: 2px;
+  margin: 2px 0 8px 48px; padding: 6px; border-radius: 12px;
+  border: 1px solid var(--border, rgba(0,0,0,.08)); background: var(--bg-secondary, rgba(0,0,0,.02)); }
+.ri-action { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-radius: 8px; font-size: 13px; text-align: left; color: var(--text, #111); }
+.ri-action:hover { background: var(--hover, rgba(0,0,0,.05)); }
+.ri-action.danger { color: var(--danger, #e5484d); }
+.ri-action:disabled { opacity: .5; }
+.ri-action-empty { padding: 8px 10px; font-size: 12.5px; color: var(--text-secondary, #999); }
 
 /* Ab 1200px: echte dritte Spalte statt Overlay (UX-Analyse Kap. 8) –
    der Chat bleibt sichtbar und bedienbar, kein abdunkelnder Backdrop. */

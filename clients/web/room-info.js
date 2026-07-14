@@ -18,6 +18,15 @@
  *     openImageLightbox({getBlobUrl,filename}),
  *     extractFirstUrl(text)->string|null,
  *     formatBytes(n)->string,
+ *     // Optional (Verwaltung – Buttons erscheinen nur, wenn vorhanden UND erlaubt):
+ *     toast(msg), myUserId()->string|null,
+ *     userPowerLevel(room,uid)->number, canEditRoom(room)->bool,
+ *     openRoomEdit(roomId), canInvite(room)->bool,
+ *     canKick(room,uid)->bool, canBan(room,uid)->bool,
+ *     canSetPower(room,uid,level)->bool,
+ *     inviteUser(roomId,uid)->Promise, kickUser(roomId,uid)->Promise,
+ *     banUser(roomId,uid)->Promise, setPower(roomId,uid,level)->Promise,
+ *     startDm(uid)->Promise,
  *   }
  *   openRoomInfo(roomId)   – Panel für einen Raum öffnen
  *   closeRoomInfo()        – Panel schließen
@@ -129,6 +138,15 @@ function renderInfo(room, c) {
   if (room.isDirect) meta.push('Direktnachricht');
   if (room.isEncrypted) meta.push('Ende-zu-Ende-verschlüsselt');
   head.appendChild(D.el('div', 'ri-hero-meta', meta.join(' · ')));
+  // Bearbeiten (Name/Thema/Bild), wenn die eigenen Rechte dafür reichen.
+  if (typeof D.canEditRoom === 'function' && D.canEditRoom(room)) {
+    const edit = D.el('button', 'ri-edit-btn');
+    edit.type = 'button';
+    edit.appendChild(D.icon('edit', 14));
+    edit.appendChild(D.el('span', null, 'Bearbeiten'));
+    edit.addEventListener('click', () => D.openRoomEdit(room.roomId));
+    head.appendChild(edit);
+  }
   c.appendChild(head);
 
   if (room.topic) {
@@ -153,7 +171,48 @@ function addRow(parent, label, value) {
   parent.appendChild(row);
 }
 
+/** Power-Level in ein lesbares Rollen-Label übersetzen. */
+function roleLabel(level) {
+  if (level >= 100) return 'Admin';
+  if (level >= 50) return 'Moderator';
+  return null;
+}
+
 async function renderMembers(room, c) {
+  // Einladen (wenn die eigenen Rechte reichen).
+  if (typeof D.canInvite === 'function' && D.canInvite(room)) {
+    const inviteRow = D.el('form', 'ri-invite-row');
+    const input = D.el('input', 'ri-invite-input');
+    input.type = 'text';
+    input.placeholder = '@name:server einladen';
+    input.setAttribute('aria-label', 'Nutzer einladen');
+    const btn = D.el('button', 'ri-invite-btn');
+    btn.type = 'submit';
+    btn.appendChild(D.icon('plus', 14));
+    btn.appendChild(D.el('span', null, 'Einladen'));
+    inviteRow.appendChild(input);
+    inviteRow.appendChild(btn);
+    inviteRow.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const uid = input.value.trim();
+      if (!/^@[^\s:]+:[^\s/]+$/.test(uid)) {
+        D.toast('Bitte eine gültige Matrix-ID eingeben (@name:server).');
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await D.inviteUser(room.roomId, uid);
+        input.value = '';
+        D.toast(uid + ' wurde eingeladen.');
+      } catch (err) {
+        D.toast('Einladen fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    c.appendChild(inviteRow);
+  }
+
   const list = D.el('div', 'ri-member-list');
   c.appendChild(list);
   // Sofort aus dem lokalen State, danach vom Server nachladen.
@@ -161,22 +220,119 @@ async function renderMembers(room, c) {
     const m = room.members.get(id);
     return !m || !m.membership || m.membership === 'join';
   }) : [];
+  let expandedUid = null;
+
+  const buildActions = (uid) => {
+    const box = D.el('div', 'ri-member-actions');
+    const me = typeof D.myUserId === 'function' ? D.myUserId() : null;
+    const isSelf = uid === me;
+    const level = typeof D.userPowerLevel === 'function' ? D.userPowerLevel(room, uid) : 0;
+
+    const action = (iconName, label, danger, handler) => {
+      const b = D.el('button', 'ri-action' + (danger ? ' danger' : ''));
+      b.type = 'button';
+      b.appendChild(D.icon(iconName, 14));
+      b.appendChild(D.el('span', null, label));
+      let confirming = false;
+      b.addEventListener('click', async () => {
+        if (danger && !confirming) {
+          confirming = true;
+          b.replaceChildren(D.icon(iconName, 14), D.el('span', null, 'Wirklich? Erneut tippen'));
+          setTimeout(() => {
+            if (b.isConnected && confirming) {
+              confirming = false;
+              b.replaceChildren(D.icon(iconName, 14), D.el('span', null, label));
+            }
+          }, 3000);
+          return;
+        }
+        b.disabled = true;
+        try {
+          await handler();
+        } catch (err) {
+          D.toast('Aktion fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+          b.disabled = false;
+        }
+      });
+      box.appendChild(b);
+    };
+
+    if (!isSelf && typeof D.startDm === 'function') {
+      action('chat', 'Nachricht senden', false, () => D.startDm(uid));
+    }
+    if (typeof D.canSetPower === 'function') {
+      if (level < 50 && D.canSetPower(room, uid, 50)) {
+        action('shield', 'Zum Moderator ernennen', false, async () => {
+          await D.setPower(room.roomId, uid, 50);
+          D.toast('Moderator-Rechte vergeben.');
+          render();
+        });
+      }
+      if (level < 100 && D.canSetPower(room, uid, 100)) {
+        action('shield-alert', 'Zum Admin ernennen', false, async () => {
+          await D.setPower(room.roomId, uid, 100);
+          D.toast('Admin-Rechte vergeben.');
+          render();
+        });
+      }
+      if (level >= 50 && !isSelf && D.canSetPower(room, uid, 0)) {
+        action('shield', 'Rechte entziehen', true, async () => {
+          await D.setPower(room.roomId, uid, 0);
+          D.toast('Rechte entzogen.');
+          render();
+        });
+      }
+    }
+    if (!isSelf && typeof D.canKick === 'function' && D.canKick(room, uid)) {
+      action('logout', 'Aus dem Raum entfernen', true, async () => {
+        await D.kickUser(room.roomId, uid);
+        D.toast(D.memberName(room, uid) + ' wurde entfernt.');
+        render();
+      });
+    }
+    if (!isSelf && typeof D.canBan === 'function' && D.canBan(room, uid)) {
+      action('shield-alert', 'Bannen', true, async () => {
+        await D.banUser(room.roomId, uid);
+        D.toast(D.memberName(room, uid) + ' wurde gebannt.');
+        render();
+      });
+    }
+    if (!box.childNodes.length) {
+      box.appendChild(D.el('div', 'ri-action-empty', 'Keine Aktionen verfügbar.'));
+    }
+    return box;
+  };
+
   const fill = (userIds) => {
     list.textContent = '';
-    const sorted = userIds.slice().sort((a, b) =>
-      D.memberName(room, a).localeCompare(D.memberName(room, b)));
+    const sorted = userIds.slice().sort((a, b) => {
+      // Admins/Moderatoren zuerst, dann alphabetisch – wie in Element.
+      const la = typeof D.userPowerLevel === 'function' ? D.userPowerLevel(room, a) : 0;
+      const lb = typeof D.userPowerLevel === 'function' ? D.userPowerLevel(room, b) : 0;
+      if (la !== lb) return lb - la;
+      return D.memberName(room, a).localeCompare(D.memberName(room, b));
+    });
     list.appendChild(D.el('div', 'ri-count', sorted.length + ' Mitglieder'));
     for (const uid of sorted) {
-      const item = D.el('div', 'ri-member');
+      const item = D.el('button', 'ri-member');
+      item.type = 'button';
       const av = D.el('div', 'ri-member-avatar');
       const m = room.members && room.members.get(uid);
       D.setAvatar(av, uid, D.memberName(room, uid), m && m.avatarUrl);
       item.appendChild(av);
       const info = D.el('div', 'ri-member-info');
-      info.appendChild(D.el('div', 'ri-member-name', D.memberName(room, uid)));
+      const nameRow = D.el('div', 'ri-member-name', D.memberName(room, uid));
+      const role = roleLabel(typeof D.userPowerLevel === 'function' ? D.userPowerLevel(room, uid) : 0);
+      if (role) nameRow.appendChild(D.el('span', 'ri-role-badge', role));
+      info.appendChild(nameRow);
       info.appendChild(D.el('div', 'ri-member-id', uid));
       item.appendChild(info);
+      item.addEventListener('click', () => {
+        expandedUid = expandedUid === uid ? null : uid;
+        fill(userIds);
+      });
       list.appendChild(item);
+      if (expandedUid === uid) list.appendChild(buildActions(uid));
     }
   };
   fill(ids);

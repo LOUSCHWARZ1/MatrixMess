@@ -2105,6 +2105,7 @@ function getRoom(roomId) {
       joinedCount: 0,           // m.joined_member_count aus dem Sync-Summary
       bridgeProtocol: null,     // aus m.bridge / uk.half-shot.bridge
       bridgeHint: null,         // aus Sender-Prefixen (@whatsapp_ …)
+      powerLevels: null,        // m.room.power_levels-Content (null = noch unbekannt)
     };
     rooms.set(roomId, room);
   }
@@ -2300,6 +2301,9 @@ function applyStateEvent(room, ev) {
     case 'm.room.encryption':
       room.isEncrypted = true;
       break;
+    case 'm.room.power_levels':
+      room.powerLevels = c || {};
+      break;
     case 'm.bridge':
     case 'uk.half-shot.bridge':
       if (c.protocol && typeof c.protocol.id === 'string' && c.protocol.id) {
@@ -2487,7 +2491,10 @@ const BRIDGE_SENDER_PREFIXES = [
   ['@facebook_', 'bridge'],
   ['@messenger_', 'bridge'],
   ['@imessage_', 'bridge'],
-  ['@slack_', 'bridge'],
+  ['@slack_', 'slack'],
+  ['@slackbot', 'slack'],
+  ['@slackgo_', 'slack'],
+  ['@googlechat_', 'bridge'],
 ];
 
 function updateBridgeHint(room, sender) {
@@ -2571,13 +2578,694 @@ function upgradePendingEvent(room, pendingEv, ev) {
 
 /* ---------- m.direct ---------- */
 
+let directMap = {}; // Roh-Inhalt von m.direct (userId -> [roomId]) – fürs Zurückschreiben
+
 function applyDirectAccountData(content) {
   const set = new Set();
-  for (const roomIds of Object.values(content || {})) {
-    if (Array.isArray(roomIds)) for (const id of roomIds) set.add(id);
+  directMap = {};
+  for (const [uid, roomIds] of Object.entries(content || {})) {
+    if (!Array.isArray(roomIds)) continue;
+    directMap[uid] = roomIds.filter((id) => typeof id === 'string');
+    for (const id of directMap[uid]) set.add(id);
   }
   directRoomIds = set;
   for (const room of rooms.values()) room.isDirect = directRoomIds.has(room.roomId);
+}
+
+/** Einen Raum in m.direct (account_data) als DM mit userId eintragen. */
+async function markRoomAsDirect(userId, roomId) {
+  if (!session) return;
+  const map = {};
+  for (const [uid, ids] of Object.entries(directMap)) map[uid] = ids.slice();
+  const list = Array.isArray(map[userId]) ? map[userId] : [];
+  if (!list.includes(roomId)) list.push(roomId);
+  map[userId] = list;
+  await api('PUT', `/_matrix/client/v3/user/${enc(session.userId)}/account_data/m.direct`, map);
+  applyDirectAccountData(map);
+}
+
+/** Bestehenden DM-Raum mit einem Nutzer finden (m.direct zuerst, dann Mitglieder). */
+function findDirectRoomWith(userId) {
+  const listed = directMap[userId];
+  if (Array.isArray(listed)) {
+    for (const id of listed) {
+      if (rooms.has(id)) return id;
+    }
+  }
+  for (const room of rooms.values()) {
+    if (room.isDirect && room.members.has(userId)) return room.roomId;
+  }
+  return null;
+}
+
+/* ========================================================================
+ * Berechtigungen (m.room.power_levels) & Raum-Verwaltung
+ * ====================================================================== */
+
+function plContent(room) { return (room && room.powerLevels) || {}; }
+
+function plUserLevel(room, userId) {
+  const c = plContent(room);
+  const users = c.users || {};
+  if (typeof users[userId] === 'number') return users[userId];
+  return typeof c.users_default === 'number' ? c.users_default : 0;
+}
+
+function plMyLevel(room) {
+  return session ? plUserLevel(room, session.userId) : 0;
+}
+
+/** Darf ich ein bestimmtes State-Event senden (Name/Thema/Bild …)? */
+function canSendState(room, type) {
+  if (!room || !room.powerLevels) return false; // unbekannt = konservativ nein
+  const c = plContent(room);
+  const events = c.events || {};
+  const threshold = typeof events[type] === 'number'
+    ? events[type]
+    : (typeof c.state_default === 'number' ? c.state_default : 50);
+  return plMyLevel(room) >= threshold;
+}
+
+/** Darf ich eine Moderations-Aktion ausführen (invite/kick/ban/redact)? */
+function canDoRoomAction(room, action) {
+  if (!room || !room.powerLevels) return action === 'invite'; // invite-Default ist 0
+  const c = plContent(room);
+  const threshold = typeof c[action] === 'number' ? c[action] : (action === 'invite' ? 0 : 50);
+  return plMyLevel(room) >= threshold;
+}
+
+/** Moderation gegen ein ZIEL: eigenes Level muss zusätzlich ÜBER dem des Ziels
+ *  liegen (Matrix-Regel; sonst könnten sich gleichrangige gegenseitig kicken). */
+function canActOnMember(room, action, targetUserId) {
+  if (!canDoRoomAction(room, action)) return false;
+  if (isSelfSender(room, targetUserId)) return false;
+  return plMyLevel(room) > plUserLevel(room, targetUserId);
+}
+
+/** Darf ich das Power-Level eines Nutzers auf `level` setzen? */
+function canSetPowerLevel(room, targetUserId, level) {
+  if (!canSendState(room, 'm.room.power_levels')) return false;
+  const mine = plMyLevel(room);
+  // Nie über das eigene Level heben und niemanden ÜBER/GLEICH sich anfassen
+  // (außer sich selbst herabstufen, das lassen wir hier bewusst weg).
+  if (level > mine) return false;
+  if (!isSelfSender(room, targetUserId) && plUserLevel(room, targetUserId) >= mine) return false;
+  return true;
+}
+
+/** Power-Levels bei Bedarf vom Server nachladen (Cache-Räume kennen sie noch
+ *  nicht; inkrementelle Syncs senden den State nur bei Änderungen erneut). */
+async function ensurePowerLevels(room) {
+  if (!room || room.powerLevels) return;
+  try {
+    const c = await api('GET',
+      `/_matrix/client/v3/rooms/${enc(room.roomId)}/state/m.room.power_levels/`);
+    room.powerLevels = c || {};
+  } catch (e) {
+    if (e && e.status === 404) room.powerLevels = {}; // Raum ohne PL-Event
+  }
+}
+
+/** Beliebiges State-Event senden (Name, Thema, Bild, Power-Levels …). */
+function sendStateEvent(roomId, type, content, stateKey = '') {
+  return api('PUT',
+    `/_matrix/client/v3/rooms/${enc(roomId)}/state/${enc(type)}/${enc(stateKey)}`,
+    content);
+}
+
+async function setRoomName(room, name) {
+  await sendStateEvent(room.roomId, 'm.room.name', { name });
+  room.explicitName = name || null;
+}
+
+async function setRoomTopic(room, topic) {
+  await sendStateEvent(room.roomId, 'm.room.topic', { topic });
+  room.topic = topic || null;
+}
+
+async function setRoomAvatarFile(room, file) {
+  const mxc = await uploadMedia(file, file.name || 'raumbild', file.type || 'image/png');
+  await sendStateEvent(room.roomId, 'm.room.avatar', { url: mxc });
+  room.avatarMxc = mxc;
+}
+
+async function inviteToRoom(roomId, userId) {
+  await api('POST', `/_matrix/client/v3/rooms/${enc(roomId)}/invite`, { user_id: userId });
+}
+
+async function kickRoomMember(roomId, userId, reason) {
+  const body = { user_id: userId };
+  if (reason) body.reason = reason;
+  await api('POST', `/_matrix/client/v3/rooms/${enc(roomId)}/kick`, body);
+}
+
+async function banRoomMember(roomId, userId, reason) {
+  const body = { user_id: userId };
+  if (reason) body.reason = reason;
+  await api('POST', `/_matrix/client/v3/rooms/${enc(roomId)}/ban`, body);
+}
+
+async function setMemberPowerLevel(room, userId, level) {
+  // Kompletten PL-Content klonen und nur den einen Nutzer ändern –
+  // ein PUT ersetzt IMMER das ganze Event.
+  const c = JSON.parse(JSON.stringify(plContent(room)));
+  c.users = c.users || {};
+  if (level === null || level === undefined) delete c.users[userId];
+  else c.users[userId] = level;
+  await sendStateEvent(room.roomId, 'm.room.power_levels', c);
+  room.powerLevels = c;
+}
+
+/* ---------- Chats/Räume erstellen & beitreten ---------- */
+
+const E2EE_INITIAL_STATE = [
+  { type: 'm.room.encryption', state_key: '', content: { algorithm: 'm.megolm.v1.aes-sha2' } },
+];
+
+/** 1:1-Chat mit einem Nutzer öffnen: bestehende DM wiederverwenden, sonst neu
+ *  erstellen (auch mit Nutzern anderer Homeserver – Federation). */
+async function startDirectChat(userId, { encrypted } = {}) {
+  const existing = findDirectRoomWith(userId);
+  if (existing) return existing;
+  const body = {
+    is_direct: true,
+    preset: 'trusted_private_chat',
+    invite: [userId],
+  };
+  // E2EE standardmäßig an, wenn die Verschlüsselung dieses Geräts läuft –
+  // sonst wäre der neue Raum sofort unbenutzbar.
+  const wantE2EE = encrypted === undefined ? cryptoReady : !!encrypted;
+  if (wantE2EE) body.initial_state = E2EE_INITIAL_STATE;
+  const res = await api('POST', '/_matrix/client/v3/createRoom', body);
+  const roomId = res.room_id;
+  markRoomAsDirect(userId, roomId).catch(() => {});
+  const room = getRoom(roomId);
+  room.isDirect = true;
+  if (wantE2EE) room.isEncrypted = true;
+  renderRoomList();
+  return roomId;
+}
+
+/** Gruppenraum erstellen (privat; optional E2EE + Einladungen). */
+async function createGroupRoom({ name, topic, invites = [], encrypted = false }) {
+  const body = {
+    name,
+    preset: 'private_chat',
+    invite: invites,
+  };
+  if (topic) body.topic = topic;
+  if (encrypted) body.initial_state = E2EE_INITIAL_STATE;
+  const res = await api('POST', '/_matrix/client/v3/createRoom', body);
+  const room = getRoom(res.room_id);
+  room.explicitName = name || null;
+  if (encrypted) room.isEncrypted = true;
+  renderRoomList();
+  return res.room_id;
+}
+
+/** "#alias:server", "!raumId:server", "@nutzer:server" oder matrix.to-Link
+ *  in ein normalisiertes Ziel zerlegen. */
+function parseMatrixTarget(input) {
+  let s = String(input || '').trim();
+  if (!s) return null;
+  // matrix.to-Links: https://matrix.to/#/#alias:server?via=… (ggf. URL-codiert)
+  const mto = /^https?:\/\/matrix\.to\/#\/(.+)$/i.exec(s);
+  if (mto) {
+    s = mto[1].split('?')[0];
+    try { s = decodeURIComponent(s); } catch (e) { /* schon dekodiert */ }
+  }
+  if (/^@[^\s:]+:[^\s/]+$/.test(s)) return { kind: 'user', id: s };
+  if (/^#[^\s:]+:[^\s/]+$/.test(s)) return { kind: 'alias', id: s };
+  if (/^![^\s]+$/.test(s)) return { kind: 'room', id: s };
+  return null;
+}
+
+/** Raum per Alias/ID beitreten; gibt die Raum-ID zurück. */
+async function joinRoomByAddress(target) {
+  let path = `/_matrix/client/v3/join/${enc(target.id)}`;
+  // Bei rohen Raum-IDs hilft ein server_name-Hinweis der Federation beim
+  // Auffinden (Aliasse lösen den Server bereits selbst auf).
+  if (target.kind === 'room') {
+    const idx = target.id.indexOf(':');
+    const domain = idx > 0 ? target.id.slice(idx + 1) : '';
+    if (domain && domain.includes('.')) path += `?server_name=${enc(domain)}`;
+  }
+  const res = await api('POST', path, {});
+  return res.room_id;
+}
+
+/** Nutzerverzeichnis des Homeservers durchsuchen. */
+async function searchUserDirectory(term) {
+  const res = await api('POST', '/_matrix/client/v3/user_directory/search',
+    { search_term: term, limit: 10 });
+  return (res && Array.isArray(res.results)) ? res.results : [];
+}
+
+/** Öffentliche Räume des eigenen Servers listen/durchsuchen. */
+async function searchPublicRooms(term) {
+  const body = { limit: 30 };
+  if (term) body.filter = { generic_search_term: term };
+  const res = await api('POST', '/_matrix/client/v3/publicRooms', body);
+  return (res && Array.isArray(res.chunk)) ? res.chunk : [];
+}
+
+/* ========================================================================
+ * "Neuer Chat"-Dialog (DM, Gruppe, Raum beitreten, Raumverzeichnis)
+ * ====================================================================== */
+
+let ncOverlay = null;
+
+function closeNewChatDialog() {
+  if (ncOverlay) { ncOverlay.remove(); ncOverlay = null; }
+}
+
+function ncOpenAndClose(roomId) {
+  closeNewChatDialog();
+  getRoom(roomId); // sicherstellen, dass der Raum lokal existiert
+  renderRoomList();
+  openRoom(roomId);
+}
+
+/** Grundgerüst: Overlay + Panel mit Titel, Zurück-/Schließen-Knopf. */
+function ncShell(title, showBack, onBack) {
+  closeNewChatDialog();
+  ncOverlay = el('div', 'nc-overlay');
+  const panel = el('div', 'nc-panel');
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-label', title);
+  const head = el('header', 'nc-head');
+  if (showBack) {
+    const back = el('button', 'icon-btn');
+    back.type = 'button';
+    back.title = 'Zurück';
+    back.appendChild(icon('chevron-left', 18));
+    back.addEventListener('click', onBack);
+    head.appendChild(back);
+  }
+  head.appendChild(el('h3', null, title));
+  const close = el('button', 'icon-btn');
+  close.type = 'button';
+  close.title = 'Schließen';
+  close.appendChild(icon('x', 16));
+  close.addEventListener('click', closeNewChatDialog);
+  head.appendChild(close);
+  panel.appendChild(head);
+  const body = el('div', 'nc-body');
+  panel.appendChild(body);
+  ncOverlay.appendChild(panel);
+  ncOverlay.addEventListener('click', (e) => { if (e.target === ncOverlay) closeNewChatDialog(); });
+  document.body.appendChild(ncOverlay);
+  return body;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && ncOverlay) closeNewChatDialog();
+});
+
+/** Nutzer-Zeile (Avatar, Name, ID) mit Klick-Aktion. */
+function ncUserRow(userId, displayName, avatarMxc, onPick) {
+  const row = el('button', 'nc-row');
+  row.type = 'button';
+  const av = el('span', 'nc-row-avatar');
+  setAvatar(av, userId, displayName || userId, avatarMxc || null);
+  row.appendChild(av);
+  const info = el('span', 'nc-row-info');
+  info.appendChild(el('span', 'nc-row-title', displayName || userId));
+  info.appendChild(el('span', 'nc-row-sub', userId));
+  row.appendChild(info);
+  row.addEventListener('click', onPick);
+  return row;
+}
+
+async function ncStartDm(userId, busyRow) {
+  if (busyRow) busyRow.classList.add('nc-busy');
+  try {
+    const roomId = await startDirectChat(userId);
+    ncOpenAndClose(roomId);
+    toast('Chat mit ' + userId + ' geöffnet');
+  } catch (err) {
+    if (busyRow) busyRow.classList.remove('nc-busy');
+    toast('Chat konnte nicht erstellt werden: ' + ((err && err.message) || 'Fehler'));
+  }
+}
+
+/** Hauptansicht: Suche + Einstiege für Gruppe/Beitreten/Verzeichnis. */
+function openNewChatDialog() {
+  const body = ncShell('Neuer Chat', false);
+
+  const input = el('input', 'nc-input');
+  input.type = 'search';
+  input.placeholder = 'Name suchen oder @nutzer:server eingeben';
+  input.setAttribute('aria-label', 'Nutzer suchen');
+  body.appendChild(input);
+
+  const results = el('div', 'nc-results');
+  body.appendChild(results);
+
+  const hint = el('p', 'nc-hint',
+    'Auch Kontakte auf anderen Matrix-Servern erreichst du über die vollständige ' +
+    'Adresse, z. B. @anna:matrix.org.');
+  body.appendChild(hint);
+
+  body.appendChild(el('div', 'nc-divider'));
+
+  const groupBtn = el('button', 'nc-action');
+  groupBtn.type = 'button';
+  groupBtn.appendChild(icon('users', 18));
+  groupBtn.appendChild(el('span', null, 'Neue Gruppe erstellen'));
+  groupBtn.addEventListener('click', () => openNewGroupView());
+  body.appendChild(groupBtn);
+
+  const joinBtn = el('button', 'nc-action');
+  joinBtn.type = 'button';
+  joinBtn.appendChild(icon('globe', 18));
+  joinBtn.appendChild(el('span', null, 'Raum beitreten / entdecken'));
+  joinBtn.addEventListener('click', () => openJoinRoomView());
+  body.appendChild(joinBtn);
+
+  let searchSeq = 0;
+  const runSearch = async () => {
+    const term = input.value.trim();
+    const seq = ++searchSeq;
+    results.textContent = '';
+    if (!term) return;
+
+    // Vollständige Matrix-ID: direkte Zeile anbieten (auch fremde Server).
+    const target = parseMatrixTarget(term);
+    if (target && target.kind === 'user') {
+      const row = ncUserRow(target.id, null, null, () => ncStartDm(target.id, row));
+      row.classList.add('nc-row-primary');
+      results.appendChild(row);
+    } else if (target && (target.kind === 'alias' || target.kind === 'room')) {
+      const row = el('button', 'nc-row nc-row-primary');
+      row.type = 'button';
+      const av = el('span', 'nc-row-avatar');
+      av.appendChild(icon('globe', 16));
+      row.appendChild(av);
+      const info = el('span', 'nc-row-info');
+      info.appendChild(el('span', 'nc-row-title', 'Raum beitreten'));
+      info.appendChild(el('span', 'nc-row-sub', target.id));
+      row.appendChild(info);
+      row.addEventListener('click', async () => {
+        row.classList.add('nc-busy');
+        try {
+          const roomId = await joinRoomByAddress(target);
+          ncOpenAndClose(roomId);
+          toast('Raum beigetreten');
+        } catch (err) {
+          row.classList.remove('nc-busy');
+          toast('Beitritt fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+        }
+      });
+      results.appendChild(row);
+    }
+
+    if (term.length < 2) return;
+    try {
+      const found = await searchUserDirectory(term);
+      if (seq !== searchSeq || !ncOverlay) return;
+      for (const u of found) {
+        if (session && u.user_id === session.userId) continue;
+        const row = ncUserRow(u.user_id, u.display_name, u.avatar_url,
+          () => ncStartDm(u.user_id, row));
+        results.appendChild(row);
+      }
+      if (!results.childNodes.length) {
+        results.appendChild(el('div', 'nc-empty', 'Keine Nutzer gefunden.'));
+      }
+    } catch (e) { /* Verzeichnis evtl. deaktiviert – MXID-Zeile bleibt nutzbar */ }
+  };
+
+  let debounce = 0;
+  input.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(runSearch, 300);
+  });
+  input.focus();
+}
+
+/** Ansicht: Neue Gruppe erstellen. */
+function openNewGroupView() {
+  const body = ncShell('Neue Gruppe', true, openNewChatDialog);
+
+  const nameInput = el('input', 'nc-input');
+  nameInput.type = 'text';
+  nameInput.maxLength = 100;
+  nameInput.placeholder = 'Gruppenname';
+  body.appendChild(nameInput);
+
+  const inviteInput = el('textarea', 'nc-input nc-textarea');
+  inviteInput.rows = 3;
+  inviteInput.placeholder = 'Mitglieder einladen: @anna:server.org, @ben:matrix.org …';
+  body.appendChild(inviteInput);
+
+  const encRow = el('label', 'nc-toggle-row');
+  const encBox = el('input');
+  encBox.type = 'checkbox';
+  encBox.checked = cryptoReady;
+  encBox.disabled = !cryptoReady;
+  encRow.appendChild(encBox);
+  encRow.appendChild(el('span', null, cryptoReady
+    ? 'Ende-zu-Ende-Verschlüsselung aktivieren'
+    : 'Ende-zu-Ende-Verschlüsselung (Verschlüsselung dieses Geräts inaktiv)'));
+  body.appendChild(encRow);
+
+  const err = el('div', 'nc-error hidden');
+  body.appendChild(err);
+
+  const createBtn = el('button', 'primary-btn');
+  createBtn.type = 'button';
+  createBtn.textContent = 'Gruppe erstellen';
+  createBtn.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    if (!name) { err.textContent = 'Bitte einen Gruppennamen eingeben.'; err.classList.remove('hidden'); return; }
+    const raw = inviteInput.value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+    const bad = raw.filter((s) => !/^@[^\s:]+:[^\s/]+$/.test(s));
+    if (bad.length) {
+      err.textContent = 'Ungültige Matrix-ID: ' + bad[0] + ' (Format: @name:server)';
+      err.classList.remove('hidden');
+      return;
+    }
+    err.classList.add('hidden');
+    createBtn.disabled = true;
+    createBtn.textContent = 'Wird erstellt …';
+    try {
+      const roomId = await createGroupRoom({
+        name,
+        invites: raw,
+        encrypted: encBox.checked,
+      });
+      ncOpenAndClose(roomId);
+      toast('Gruppe „' + name + '“ erstellt');
+    } catch (e2) {
+      createBtn.disabled = false;
+      createBtn.textContent = 'Gruppe erstellen';
+      err.textContent = 'Erstellen fehlgeschlagen: ' + ((e2 && e2.message) || 'Fehler');
+      err.classList.remove('hidden');
+    }
+  });
+  body.appendChild(createBtn);
+  nameInput.focus();
+}
+
+/** Ansicht: Raum per Adresse beitreten + öffentliches Raumverzeichnis. */
+function openJoinRoomView() {
+  const body = ncShell('Raum beitreten', true, openNewChatDialog);
+
+  const input = el('input', 'nc-input');
+  input.type = 'search';
+  input.placeholder = '#raum:server, !raumId, matrix.to-Link oder Suchbegriff';
+  body.appendChild(input);
+
+  const results = el('div', 'nc-results');
+  body.appendChild(results);
+
+  const joinByTarget = async (target, row) => {
+    if (row) row.classList.add('nc-busy');
+    try {
+      const roomId = await joinRoomByAddress(target);
+      ncOpenAndClose(roomId);
+      toast('Raum beigetreten');
+    } catch (err) {
+      if (row) row.classList.remove('nc-busy');
+      toast('Beitritt fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+    }
+  };
+
+  let seq = 0;
+  const refresh = async () => {
+    const term = input.value.trim();
+    const mySeq = ++seq;
+    results.textContent = '';
+
+    const target = parseMatrixTarget(term);
+    if (target && (target.kind === 'alias' || target.kind === 'room')) {
+      const row = el('button', 'nc-row nc-row-primary');
+      row.type = 'button';
+      const av = el('span', 'nc-row-avatar');
+      av.appendChild(icon('link', 16));
+      row.appendChild(av);
+      const info = el('span', 'nc-row-info');
+      info.appendChild(el('span', 'nc-row-title', 'Dieser Adresse beitreten'));
+      info.appendChild(el('span', 'nc-row-sub', target.id));
+      row.appendChild(info);
+      row.addEventListener('click', () => joinByTarget(target, row));
+      results.appendChild(row);
+      return; // konkrete Adresse: kein Verzeichnis-Rauschen darunter
+    }
+
+    const loading = el('div', 'nc-empty', 'Öffentliche Räume werden geladen …');
+    results.appendChild(loading);
+    try {
+      const found = await searchPublicRooms(term);
+      if (mySeq !== seq || !ncOverlay) return;
+      results.textContent = '';
+      if (!found.length) {
+        results.appendChild(el('div', 'nc-empty', 'Keine öffentlichen Räume gefunden.'));
+        return;
+      }
+      for (const r of found) {
+        const row = el('button', 'nc-row');
+        row.type = 'button';
+        const av = el('span', 'nc-row-avatar');
+        setAvatar(av, r.room_id, r.name || r.canonical_alias || r.room_id, r.avatar_url || null);
+        row.appendChild(av);
+        const info = el('span', 'nc-row-info');
+        info.appendChild(el('span', 'nc-row-title', r.name || r.canonical_alias || 'Unbenannter Raum'));
+        const subParts = [];
+        if (r.canonical_alias) subParts.push(r.canonical_alias);
+        if (typeof r.num_joined_members === 'number') subParts.push(r.num_joined_members + ' Mitglieder');
+        info.appendChild(el('span', 'nc-row-sub', subParts.join(' · ')));
+        row.appendChild(info);
+        row.addEventListener('click', () => joinByTarget(
+          { kind: r.canonical_alias ? 'alias' : 'room', id: r.canonical_alias || r.room_id }, row));
+        results.appendChild(row);
+      }
+    } catch (e) {
+      if (mySeq !== seq || !ncOverlay) return;
+      results.textContent = '';
+      results.appendChild(el('div', 'nc-empty', 'Raumverzeichnis nicht verfügbar.'));
+    }
+  };
+
+  let debounce = 0;
+  input.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(refresh, 350);
+  });
+  refresh();
+  input.focus();
+}
+
+/* ========================================================================
+ * Raum bearbeiten (Name, Thema, Raumbild)
+ * ====================================================================== */
+
+async function openRoomEditDialog(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  await ensurePowerLevels(room);
+
+  const canName = canSendState(room, 'm.room.name');
+  const canTopic = canSendState(room, 'm.room.topic');
+  const canAvatar = canSendState(room, 'm.room.avatar');
+
+  const body = ncShell('Raum bearbeiten', false);
+
+  // Avatar mit Ändern-Overlay
+  const avWrap = el('div', 'nc-avatar-wrap');
+  const av = el('button', 'nc-avatar-big');
+  av.type = 'button';
+  setAvatar(av, room.roomId, roomDisplayName(room), roomAvatarMxc(room));
+  av.title = canAvatar ? 'Raumbild ändern' : 'Keine Berechtigung, das Raumbild zu ändern';
+  av.disabled = !canAvatar;
+  const fileInput = el('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/*';
+  fileInput.classList.add('hidden');
+  av.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    av.classList.add('nc-busy');
+    try {
+      await setRoomAvatarFile(room, file);
+      setAvatar(av, room.roomId, roomDisplayName(room), roomAvatarMxc(room));
+      renderRoomList();
+      if (activeRoomId === room.roomId) renderChatHeader(room);
+      toast('Raumbild geändert');
+    } catch (err) {
+      toast('Raumbild ändern fehlgeschlagen: ' + ((err && err.message) || 'Fehler'));
+    } finally {
+      av.classList.remove('nc-busy');
+    }
+  });
+  avWrap.appendChild(av);
+  avWrap.appendChild(fileInput);
+  body.appendChild(avWrap);
+
+  const nameLabel = el('label', 'nc-field-label', 'Name');
+  body.appendChild(nameLabel);
+  const nameInput = el('input', 'nc-input');
+  nameInput.type = 'text';
+  nameInput.maxLength = 100;
+  nameInput.value = room.explicitName || '';
+  nameInput.placeholder = roomDisplayName(room);
+  nameInput.disabled = !canName;
+  if (!canName) nameInput.title = 'Keine Berechtigung, den Raumnamen zu ändern';
+  body.appendChild(nameInput);
+
+  const topicLabel = el('label', 'nc-field-label', 'Thema');
+  body.appendChild(topicLabel);
+  const topicInput = el('textarea', 'nc-input nc-textarea');
+  topicInput.rows = 3;
+  topicInput.maxLength = 500;
+  topicInput.value = room.topic || '';
+  topicInput.placeholder = 'Worum geht es in diesem Raum?';
+  topicInput.disabled = !canTopic;
+  if (!canTopic) topicInput.title = 'Keine Berechtigung, das Thema zu ändern';
+  body.appendChild(topicInput);
+
+  if (!canName && !canTopic && !canAvatar) {
+    body.appendChild(el('p', 'nc-hint',
+      'Du hast in diesem Raum keine Berechtigung, Name, Thema oder Bild zu ändern. ' +
+      'Frage eine Person mit Admin-/Moderator-Rechten.'));
+  }
+
+  const err = el('div', 'nc-error hidden');
+  body.appendChild(err);
+
+  const save = el('button', 'primary-btn');
+  save.type = 'button';
+  save.textContent = 'Speichern';
+  save.disabled = !canName && !canTopic;
+  save.addEventListener('click', async () => {
+    const newName = nameInput.value.trim();
+    const newTopic = topicInput.value.trim();
+    save.disabled = true;
+    save.textContent = 'Wird gespeichert …';
+    try {
+      if (canName && newName && newName !== (room.explicitName || '')) {
+        await setRoomName(room, newName);
+      }
+      if (canTopic && newTopic !== (room.topic || '')) {
+        await setRoomTopic(room, newTopic);
+      }
+      renderRoomList();
+      if (activeRoomId === room.roomId) renderChatHeader(room);
+      refreshRoomInfo(room.roomId);
+      closeNewChatDialog();
+      toast('Raum aktualisiert');
+    } catch (e2) {
+      save.disabled = false;
+      save.textContent = 'Speichern';
+      err.textContent = 'Speichern fehlgeschlagen: ' + ((e2 && e2.message) || 'Fehler');
+      err.classList.remove('hidden');
+    }
+  });
+  body.appendChild(save);
+  if (canName) nameInput.focus();
 }
 
 /* ========================================================================
@@ -3309,6 +3997,16 @@ function openRoomMenu(anchor, room) {
     openSpaceCreate(anchor, { assignRoomId: room.roomId });
   });
   menu.appendChild(create);
+
+  // --- Raum bearbeiten (Name/Thema/Bild – Dialog prüft die Berechtigung) ---
+  const editRoom = el('button', 'room-menu-item');
+  editRoom.appendChild(icon('edit', 16));
+  editRoom.appendChild(el('span', null, 'Raum bearbeiten'));
+  editRoom.addEventListener('click', () => {
+    closeRoomMenu();
+    openRoomEditDialog(room.roomId);
+  });
+  menu.appendChild(editRoom);
 
   // --- Raum verlassen (mit Inline-Bestätigung) ---
   const leave = el('button', 'room-menu-item danger');
@@ -6222,8 +6920,17 @@ eventBtn.addEventListener('click', () => {
 });
 
 roomInfoBtn.addEventListener('click', () => {
-  if (activeRoomId) openRoomInfo(activeRoomId);
+  if (!activeRoomId) return;
+  const room = rooms.get(activeRoomId);
+  openRoomInfo(activeRoomId);
+  // Berechtigungen (Bearbeiten/Einladen/Moderation) ggf. nachladen.
+  if (room && !room.powerLevels) {
+    ensurePowerLevels(room).then(() => refreshRoomInfo(room.roomId));
+  }
 });
+
+const newChatBtn = $('#new-chat-btn');
+if (newChatBtn) newChatBtn.addEventListener('click', openNewChatDialog);
 
 chatSearchBtn.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -6372,6 +7079,7 @@ function mountStaticIcons() {
     ['.login-icon', 'chat', 36],
     ['.app-badge', 'chat', 18],
     ['.chat-empty-icon', 'chat', 48],
+    ['#new-chat-btn', 'plus', 20],
     ['#settings-btn', 'settings', 20],
     ['#sidebar-toggle', 'sidebar', 20],
     ['#back-btn', 'chevron-left', 24],
@@ -6845,6 +7553,27 @@ async function init() {
     icon, el, getRoom, roomDisplayName, memberName, roomAvatarMxc,
     setAvatar, avatarColor, getJoinedMembers, getAttachmentBlob,
     openImageLightbox, extractFirstUrl, formatBytes,
+    // Verwaltung (Raum bearbeiten, Einladen, Moderation, Rollen)
+    toast,
+    myUserId: () => (session ? session.userId : null),
+    userPowerLevel: plUserLevel,
+    canEditRoom: (room) => canSendState(room, 'm.room.name') ||
+      canSendState(room, 'm.room.topic') || canSendState(room, 'm.room.avatar'),
+    openRoomEdit: openRoomEditDialog,
+    canInvite: (room) => canDoRoomAction(room, 'invite'),
+    canKick: (room, uid) => canActOnMember(room, 'kick', uid),
+    canBan: (room, uid) => canActOnMember(room, 'ban', uid),
+    canSetPower: canSetPowerLevel,
+    inviteUser: inviteToRoom,
+    kickUser: kickRoomMember,
+    banUser: banRoomMember,
+    setPower: (roomId, uid, level) => setMemberPowerLevel(rooms.get(roomId), uid, level),
+    startDm: async (uid) => {
+      const rid = await startDirectChat(uid);
+      closeRoomInfo();
+      renderRoomList();
+      openRoom(rid);
+    },
   });
   applySettings();
   autoGrowComposer();

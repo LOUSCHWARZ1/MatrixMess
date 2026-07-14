@@ -1936,6 +1936,107 @@ html.force-mobile .settings-header {
 }
 .toast-action-btn:hover { text-decoration: underline; }
 
+/* ===== "Neuer Chat"- und "Raum bearbeiten"-Dialog (nc-*) ===== */
+.nc-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 320;
+  padding: 20px;
+}
+.nc-panel {
+  width: 100%;
+  max-width: 420px;
+  max-height: min(85vh, 620px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.nc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.nc-head h3 { margin: 0; font-size: 16px; font-weight: 700; flex: 1; min-width: 0; }
+.nc-body { padding: 14px 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.nc-input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.nc-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.nc-textarea { resize: vertical; min-height: 64px; }
+.nc-field-label { font-size: 12px; font-weight: 700; color: var(--text-secondary); margin-bottom: -4px; }
+.nc-results { display: flex; flex-direction: column; gap: 2px; }
+.nc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  width: 100%;
+  text-align: left;
+  color: var(--text);
+}
+.nc-row:hover { background: var(--hover); }
+.nc-row-primary { border: 1px solid var(--border); }
+.nc-row-avatar {
+  width: 38px; height: 38px; border-radius: 50%; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 600; overflow: hidden; position: relative;
+  background: var(--bg-secondary);
+}
+.nc-row-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.nc-row-avatar svg { color: var(--text-secondary); }
+.nc-row-info { min-width: 0; display: flex; flex-direction: column; }
+.nc-row-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nc-row-sub { font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nc-busy { opacity: .5; pointer-events: none; }
+.nc-hint { margin: 0; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
+.nc-divider { height: 1px; background: var(--border); margin: 4px 0; }
+.nc-action {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 12px;
+  width: 100%; text-align: left; color: var(--text);
+  font-size: 14px; font-weight: 600;
+}
+.nc-action:hover { background: var(--hover); }
+.nc-action svg { color: var(--accent); flex: 0 0 auto; }
+.nc-toggle-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; padding: 2px 0; }
+.nc-error { font-size: 13px; color: var(--danger); }
+.nc-empty { padding: 14px 8px; font-size: 13px; color: var(--text-secondary); text-align: center; }
+.nc-avatar-wrap { display: flex; justify-content: center; padding: 4px 0; }
+.nc-avatar-big {
+  width: 84px; height: 84px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 32px; font-weight: 600; overflow: hidden; position: relative;
+  cursor: pointer;
+}
+.nc-avatar-big img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.nc-avatar-big:disabled { cursor: default; }
+
+/* Handy: Dialog als Vollbild-Sheet */
+@media (max-width: 719px) {
+  .nc-overlay { align-items: stretch; justify-content: stretch; padding: 0; }
+  .nc-panel { max-width: none; max-height: none; border-radius: 0; }
+  .nc-head { padding-top: calc(14px + env(safe-area-inset-top, 0px)); }
+}
+
 /* Klickbarer In-App-Hinweis (neue Nachricht in anderem Raum) */
 .toast.toast-notice {
   display: flex;

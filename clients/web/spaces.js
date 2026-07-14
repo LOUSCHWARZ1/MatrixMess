@@ -100,10 +100,11 @@ const BRIDGES = [
   { id: 'telegram',  title: 'Telegram',         icon: 'brand-telegram',  accent: '#2AABEE' },
   { id: 'instagram', title: 'Instagram',        icon: 'brand-instagram', accent: '#E1306C' },
   { id: 'discord',   title: 'Discord',          icon: 'brand-discord',   accent: '#5865F2' },
+  { id: 'slack',     title: 'Slack',            icon: 'brand-slack',     accent: '#611F69' },
   { id: 'bridge',    title: 'Sonstige Bridges', icon: 'link',            accent: '#8E8E93' },
 ];
 
-const KNOWN_BRIDGE_IDS = ['whatsapp', 'signal', 'telegram', 'instagram', 'discord'];
+const KNOWN_BRIDGE_IDS = ['whatsapp', 'signal', 'telegram', 'instagram', 'discord', 'slack'];
 
 /* ========================================================================
  * Modul-Zustand

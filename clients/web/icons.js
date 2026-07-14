@@ -341,6 +341,17 @@ const ICONS = {
     ['path', { d: 'M9.6 12.2h.01' }],
     ['path', { d: 'M14.4 12.2h.01' }],
   ],
+  'brand-slack': [
+    // Slack-Windrad als versetzte Balken (vereinfachte Silhouette).
+    ['path', { d: 'M9.5 3.5v7' }],
+    ['path', { d: 'M14.5 13.5v7' }],
+    ['path', { d: 'M3.5 14.5h7' }],
+    ['path', { d: 'M13.5 9.5h7' }],
+    ['path', { d: 'M14.5 4.5h.01' }],
+    ['path', { d: 'M9.5 19.5h.01' }],
+    ['path', { d: 'M4.5 9.5h.01' }],
+    ['path', { d: 'M19.5 14.5h.01' }],
+  ],
 
   // --- Anrufe ----------------------------------------------------------
   'phone': [

@@ -212,6 +212,7 @@ export function serializeRoom(room) {
     joinedCount: room.joinedCount || 0,
     bridgeProtocol: room.bridgeProtocol || null,
     bridgeHint: room.bridgeHint || null,
+    powerLevels: room.powerLevels || null,
   };
 }
 
@@ -247,6 +248,7 @@ export function deserializeRoom(obj) {
     joinedCount: obj.joinedCount || 0,
     bridgeProtocol: obj.bridgeProtocol || null,
     bridgeHint: obj.bridgeHint || null,
+    powerLevels: obj.powerLevels || null,
   };
 }
 
